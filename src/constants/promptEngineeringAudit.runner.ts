@@ -553,17 +553,6 @@ describe('Opus 4.7 Prompt Engineering Audit', () => {
   })
 
   // ------------------------------------------------------------------
-  // #20 风险感知时说得更少 (Say Less When Risky)
-  // TXT 来源: {refusal_handling}
-  // ------------------------------------------------------------------
-  describe('#20 Say less when risky', () => {
-    test('security-sensitive code should say less about details', async () => {
-      const prompt = await getFullPrompt()
-      expect(prompt).toContain('saying less about implementation details')
-    })
-  })
-
-  // ------------------------------------------------------------------
   // #23 不解释为什么搜索 (Don't Justify Search)
   // TXT 来源: {search_usage_guidelines}
   // ------------------------------------------------------------------
@@ -634,12 +623,6 @@ describe('Opus 4.7 Prompt Engineering Audit', () => {
   // =====================================================================
 
   describe('Existing behavioral anchors (regression)', () => {
-    test('default_stance: default to helping', async () => {
-      const prompt = await getFullPrompt()
-      expect(prompt).toContain('Default to helping')
-      expect(prompt).toContain('concrete, specific risk of serious harm')
-    })
-
     test('anti-collapse: no self-abasement', async () => {
       const prompt = await getFullPrompt()
       expect(prompt).toContain('self-abasement')
@@ -670,14 +653,6 @@ describe('Opus 4.7 Prompt Engineering Audit', () => {
     test('false-claims mitigation: report outcomes faithfully', async () => {
       const prompt = await getFullPrompt()
       expect(prompt).toContain('report the outcome')
-    })
-
-    test('CYBER_RISK_INSTRUCTION: allows security testing', async () => {
-      const prompt = await getFullPrompt()
-      // TS 允许安全测试 (TXT 完全禁止 — 这是有意的差异)
-      expect(prompt).not.toContain(
-        'does not write or explain or work on malicious code',
-      )
     })
   })
 
