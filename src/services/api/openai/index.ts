@@ -16,10 +16,25 @@ import type { Tools } from '../../../Tool.js'
 import { getSessionId } from '../../../bootstrap/state.js'
 import { getOpenAIClient } from './client.js'
 import {
-  formatOpenAIPromptCacheKey,
-  getOfficialOpenAIPromptCacheKey,
+  formatOpenAIErrorMessage,
+  formatOpenAIErrorStack,
+  formatOpenAIErrorWithStack,
+  getOpenAIPromptCacheKey,
+  isOpenAIUserAbortError,
+  toProviderHttpError,
+  type TransientRetryInfo,
   updateOpenAIUsage,
+  withTransientOpenAIRetry,
+  type OpenAIUsageCounters,
 } from './openaiShared.js'
+import {
+  getAssistantMessageFromError,
+  isProviderContextOverflowError,
+  isProviderRateLimitError,
+  isProviderRequestTooLargeError,
+} from '../errors.js'
+// Use Anthropic's abort class so claude.ts `instanceof APIUserAbortError` matches.
+import { APIUserAbortError } from '@anthropic-ai/sdk'
 import {
   anthropicMessagesToOpenAI,
   resolveOpenAIModel,
@@ -32,8 +47,10 @@ import {
   adaptResponsesStreamToAnthropic,
   buildResponsesRequest,
   createChatGPTResponsesStream,
+  createOfficialResponsesStream,
   type ResponsesReasoningEffort,
 } from './responsesAdapter.js'
+import { logOpenAIRawStream } from './rawStreamLogger.js'
 import { normalizeMessagesForAPI } from '../../../utils/messages.js'
 import { toolToAPISchema } from '../../../utils/api.js'
 import {
@@ -47,6 +64,8 @@ import {
   isOpenAIThinkingEnabled,
   resolveOpenAIMaxTokens,
   buildOpenAIRequestBody,
+  shouldUseOpenAIResponsesAPI,
+  resolveOpenAIPromptCacheKey,
 } from './requestBody.js'
 import { recordLLMObservation } from '../../../services/langfuse/tracing.js'
 import {
@@ -58,6 +77,8 @@ export {
   isOpenAIThinkingEnabled,
   resolveOpenAIMaxTokens,
   buildOpenAIRequestBody,
+  shouldUseOpenAIResponsesAPI,
+  resolveOpenAIPromptCacheKey,
 }
 import { getModelMaxOutputTokens } from '../../../utils/context.js'
 import type { Options } from '../claude.js'
@@ -151,12 +172,7 @@ function assembleFinalAssistantOutputs(params: {
   contentBlocks: Record<number, Record<string, unknown>>
   tools: Tools
   agentId: string | undefined
-  usage: {
-    input_tokens: number
-    output_tokens: number
-    cache_creation_input_tokens: number
-    cache_read_input_tokens: number
-  }
+  usage: OpenAIUsageCounters
   stopReason: string | null
   maxTokens: number
 }): (AssistantMessage | SystemAPIErrorMessage)[] {
@@ -351,62 +367,129 @@ export async function* queryModelOpenAI(
       options.maxOutputTokensOverride,
     )
 
+    // 11. Call OpenAI API with streaming.
+    // - ChatGPT subscription auth → Codex Responses (no max_output_tokens).
+    // - API-key + capable base + o*/gpt-5* (or OPENAI_USE_RESPONSES=1) →
+    //   official /v1/responses (with max_output_tokens).
+    // - API-key otherwise → Chat Completions (custom proxies stay here by default).
     const useChatGPTResponses = isChatGPTAuthEnabled()
-    // OpenAI's official OAuth and API-key routes share the same prompt-cache
-    // contract. Scope the key to the real conversation so resumed turns stay
-    // sticky while unrelated sessions do not share a routing bucket. Generic
-    // compatible endpoints intentionally receive no OpenAI-specific fields.
-    const sessionId = getSessionId()
-    const sessionPromptCacheKey = formatOpenAIPromptCacheKey(sessionId)
-    const promptCacheKey = useChatGPTResponses
-      ? sessionPromptCacheKey
-      : getOfficialOpenAIPromptCacheKey(process.env.OPENAI_BASE_URL, sessionId)
-    const useOfficialOpenAICache = promptCacheKey !== undefined
-
+    const useOfficialResponses =
+      !useChatGPTResponses && shouldUseOpenAIResponsesAPI(openaiModel)
+    const openaiRoute = useChatGPTResponses
+      ? 'chatgpt-responses'
+      : useOfficialResponses
+        ? 'official-responses'
+        : 'chat-completions'
+    const promptCacheKey =
+      resolveOpenAIPromptCacheKey() ?? getOpenAIPromptCacheKey()
     logForDebugging(
-      `[OpenAI] Calling model=${openaiModel}, messages=${openaiMessages.length}, tools=${openaiTools.length}, thinking=${enableThinking}${promptCacheKey ? `, prompt_cache_key=${promptCacheKey}` : ''}`,
+      `[OpenAI] route=${openaiRoute} model=${openaiModel} messages=${openaiMessages.length}, tools=${openaiTools.length}, thinking=${enableThinking}, maxTokens=${maxTokens}, prompt_cache_key=${promptCacheKey}`,
     )
-
-    // 11. Call OpenAI API with streaming. ChatGPT subscription auth uses the
-    // Codex Responses backend; API-key/OpenAI-compatible auth keeps the
-    // existing Chat Completions adapter.
+    // Transient 5xx/connection failures on stream creation (e.g. "503 Service
+    // temporarily unavailable") retry here — the OpenAI path bypasses
+    // withRetry.ts, so without this a single 503 fails the whole turn.
+    const transientRetryOpts = {
+      signal,
+      onRetry: ({ attempt, maxRetries, delayMs, error }: TransientRetryInfo) =>
+        logForDebugging(
+          `[OpenAI] Transient ${openaiRoute} error (attempt ${attempt}/${maxRetries}, retrying in ${delayMs}ms): ${formatOpenAIErrorMessage(error)}`,
+          { level: 'error' },
+        ),
+    }
+    // includeEncryptedReasoning defaults true (store:false multi-turn).
+    // ChatGPT/Codex path deliberately omits max_output_tokens.
     const adaptedStream = useChatGPTResponses
       ? adaptResponsesStreamToAnthropic(
-          await createChatGPTResponsesStream({
-            request: buildResponsesRequest({
+          logOpenAIRawStream(
+            await withTransientOpenAIRetry(
+              () =>
+                createChatGPTResponsesStream({
+                  request: buildResponsesRequest({
+                    model: openaiModel,
+                    messages: openaiMessages,
+                    tools: openaiTools,
+                    toolChoice: openaiToolChoice,
+                    reasoningEffort,
+                    promptCacheKey,
+                  }),
+                  signal,
+                  fetchOverride:
+                    options.fetchOverride as unknown as typeof fetch,
+                }),
+              transientRetryOpts,
+            ),
+            {
+              route: 'chatgpt-responses',
               model: openaiModel,
-              messages: openaiMessages,
-              tools: openaiTools,
-              toolChoice: openaiToolChoice,
-              reasoningEffort,
-              promptCacheKey: sessionPromptCacheKey,
-            }),
-            signal,
-            fetchOverride: options.fetchOverride as unknown as typeof fetch,
-          }),
-          openaiModel,
-        )
-      : adaptOpenAIStreamToAnthropic(
-          await getOpenAIClient({
-            maxRetries: 0,
-            fetchOverride: options.fetchOverride as unknown as typeof fetch,
-            source: options.querySource,
-          }).chat.completions.create(
-            buildOpenAIRequestBody({
-              model: openaiModel,
-              messages: openaiMessages,
-              tools: openaiTools,
-              toolChoice: openaiToolChoice,
-              enableThinking,
-              maxTokens,
-              temperatureOverride: options.temperatureOverride,
-              promptCacheKey,
-            }),
-            { signal },
+              source: options.querySource,
+            },
           ),
           openaiModel,
-          { includeCacheWriteTokens: useOfficialOpenAICache },
         )
+      : useOfficialResponses
+        ? adaptResponsesStreamToAnthropic(
+            logOpenAIRawStream(
+              await withTransientOpenAIRetry(
+                () =>
+                  createOfficialResponsesStream({
+                    request: buildResponsesRequest({
+                      model: openaiModel,
+                      messages: openaiMessages,
+                      tools: openaiTools,
+                      toolChoice: openaiToolChoice,
+                      reasoningEffort,
+                      maxOutputTokens: maxTokens,
+                      promptCacheKey,
+                    }),
+                    signal,
+                    fetchOverride:
+                      options.fetchOverride as unknown as typeof fetch,
+                    source: options.querySource,
+                  }),
+                transientRetryOpts,
+              ),
+              {
+                route: 'official-responses',
+                model: openaiModel,
+                source: options.querySource,
+              },
+            ),
+            openaiModel,
+          )
+        : adaptOpenAIStreamToAnthropic(
+            logOpenAIRawStream(
+              await withTransientOpenAIRetry(
+                () =>
+                  getOpenAIClient({
+                    maxRetries: 0,
+                    fetchOverride:
+                      options.fetchOverride as unknown as typeof fetch,
+                    source: options.querySource,
+                  }).chat.completions.create(
+                    buildOpenAIRequestBody({
+                      model: openaiModel,
+                      messages: openaiMessages,
+                      tools: openaiTools,
+                      toolChoice: openaiToolChoice,
+                      enableThinking,
+                      maxTokens,
+                      temperatureOverride: options.temperatureOverride,
+                      promptCacheKey,
+                      reasoningEffort:
+                        reasoningEffort === 'max' ? 'xhigh' : reasoningEffort,
+                    }),
+                    { signal },
+                  ),
+                transientRetryOpts,
+              ),
+              {
+                route: 'chat-completions',
+                model: openaiModel,
+                source: options.querySource,
+              },
+            ),
+            openaiModel,
+          )
 
     // 12. Convert OpenAI stream to Anthropic events, then process into
     //     AssistantMessage + StreamEvent (matching the Anthropic path behavior)
@@ -416,7 +499,7 @@ export async function* queryModelOpenAI(
     const collectedMessages: AssistantMessage[] = []
     let partialMessage: BetaMessage | null = null
     let stopReason: string | null = null
-    let usage = {
+    let usage: OpenAIUsageCounters = {
       input_tokens: 0,
       output_tokens: 0,
       cache_creation_input_tokens: 0,
@@ -568,14 +651,44 @@ export async function* queryModelOpenAI(
       }
     }
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error)
-    logForDebugging(`[OpenAI] Error: ${errorMessage}`, { level: 'error' })
+    // ESC / AbortSignal must not become "API Error: …" (Anthropic path rethrows).
+    if (signal.aborted || isOpenAIUserAbortError(error)) {
+      logForDebugging('[OpenAI] Aborted by user/signal', { level: 'info' })
+      if (error instanceof APIUserAbortError) throw error
+      throw new APIUserAbortError()
+    }
+    // Lift SDK/fetch errors into layered types (overflow / too-large / 429).
+    const layered =
+      isProviderContextOverflowError(error) ||
+      isProviderRequestTooLargeError(error) ||
+      isProviderRateLimitError(error)
+        ? error
+        : toProviderHttpError(error)
+    if (
+      layered &&
+      (isProviderContextOverflowError(layered) ||
+        isProviderRequestTooLargeError(layered) ||
+        isProviderRateLimitError(layered))
+    ) {
+      logForDebugging(
+        `[OpenAI] Layered error: ${formatOpenAIErrorMessage(layered)}`,
+        { level: 'error' },
+      )
+      yield getAssistantMessageFromError(layered, options.model)
+      return
+    }
+    const errorMessage = formatOpenAIErrorMessage(error)
+    // Full stack + cause chain in debug log; short stack also on user surface.
+    logForDebugging(
+      `[OpenAI] Error: ${errorMessage}\n${formatOpenAIErrorStack(error, 16)}`,
+      { level: 'error' },
+    )
     yield createAssistantAPIErrorMessage({
-      content: `API Error: ${errorMessage}`,
+      content: `API Error: ${formatOpenAIErrorWithStack(error, 8)}`,
       apiError: 'api_error',
       error: (error instanceof Error
         ? error
-        : new Error(String(error))) as unknown as SDKAssistantMessageError,
+        : new Error(errorMessage)) as unknown as SDKAssistantMessageError,
     })
   }
 }

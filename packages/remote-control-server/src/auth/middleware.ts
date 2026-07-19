@@ -1,4 +1,5 @@
 import type { Context, Next } from 'hono'
+import { WireErrorCode, wireError } from '@claude-code-best/wire-types'
 import { validateApiKey } from './api-key'
 import { verifyWorkerJwt } from './jwt'
 import { resolveToken } from './token'
@@ -84,9 +85,7 @@ export async function apiKeyAuth(c: Context, next: Next) {
   }
 
   return c.json(
-    {
-      error: { type: 'unauthorized', message: 'Invalid or missing auth token' },
-    },
+    wireError(WireErrorCode.UNAUTHORIZED, 'Invalid or missing auth token'),
     401,
   )
 }
@@ -103,7 +102,7 @@ export async function sessionIngressAuth(c: Context, next: Next) {
 
   if (!token) {
     return c.json(
-      { error: { type: 'unauthorized', message: 'Missing auth token' } },
+      wireError(WireErrorCode.UNAUTHORIZED, 'Missing auth token'),
       401,
     )
   }
@@ -120,12 +119,10 @@ export async function sessionIngressAuth(c: Context, next: Next) {
     const routeSessionId = c.req.param('id') || c.req.param('sessionId')
     if (routeSessionId && payload.session_id !== routeSessionId) {
       return c.json(
-        {
-          error: {
-            type: 'forbidden',
-            message: 'JWT session_id does not match target session',
-          },
-        },
+        wireError(
+          WireErrorCode.FORBIDDEN,
+          'JWT session_id does not match target session',
+        ),
         403,
       )
     }
@@ -135,7 +132,7 @@ export async function sessionIngressAuth(c: Context, next: Next) {
   }
 
   return c.json(
-    { error: { type: 'unauthorized', message: 'Invalid API key or JWT' } },
+    wireError(WireErrorCode.UNAUTHORIZED, 'Invalid API key or JWT'),
     401,
   )
 }
@@ -170,10 +167,7 @@ export async function uuidAuth(c: Context, next: Next) {
   // Fall back to UUID auth
   const uuid = getUuidFromRequest(c)
   if (!uuid) {
-    return c.json(
-      { error: { type: 'unauthorized', message: 'Missing UUID' } },
-      401,
-    )
+    return c.json(wireError(WireErrorCode.UNAUTHORIZED, 'Missing UUID'), 401)
   }
   c.set('uuid', uuid)
   await next()

@@ -59,6 +59,35 @@ export {
   type ConnectionErrorDetails,
 } from './errorUtils.js'
 
+// FinishReason normalization
+export {
+  type FinishReason,
+  type NormalizedFinishReason,
+  finishReasonToAnthropicStopReason,
+  normalizeOpenAIFinishReason,
+  normalizeAnthropicStopReason,
+  normalizeGeminiFinishReason,
+  normalizeResponsesFinishReason,
+} from './types/finishReason.js'
+
+// Layered provider errors
+export {
+  ProviderAPIError,
+  APIContextOverflowError,
+  APIRequestTooLargeError,
+  APIProviderRateLimitError,
+  classifyProviderHttpError,
+  getProviderRetryAfterMs,
+  isContextOverflowMessage,
+  isRequestTooLargeMessage,
+  isContextOverflowStatusError,
+  isRequestTooLargeStatusError,
+  isProviderContextOverflowError,
+  isProviderRequestTooLargeError,
+  isProviderRateLimitError,
+  parseRetryAfterMs,
+} from './types/providerErrors.js'
+
 // Shared OpenAI conversion utilities
 export { anthropicMessagesToOpenAI } from './shared/openaiConvertMessages.js'
 export type { ConvertMessagesOptions } from './shared/openaiConvertMessages.js'
@@ -66,8 +95,7 @@ export {
   anthropicToolsToOpenAI,
   anthropicToolChoiceToOpenAI,
 } from './shared/openaiConvertTools.js'
-export { adaptOpenAIStreamToAnthropic } from './shared/openaiStreamAdapter.js'
 export {
-  normalizeOpenAIUsage,
-  type AnthropicUsage,
-} from './shared/openaiUsage.js'
+  adaptOpenAIStreamToAnthropic,
+  assertValidToolArgumentsJson,
+} from './shared/openaiStreamAdapter.js'

@@ -366,6 +366,7 @@ export async function* handleOrphanedPermission(
     [assistantMessage],
     canUseTool,
     processUserInputContext,
+    processUserInputContext.options.tools,
   )) {
     if (update.message) {
       mutableMessages.push(update.message)

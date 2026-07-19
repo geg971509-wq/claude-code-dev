@@ -349,6 +349,7 @@ export class StreamingToolExecutor {
         tool.assistantMessage,
         this.canUseTool,
         { ...this.toolUseContext, abortController: toolAbortController },
+        this.toolDefinitions,
       )
 
       // Track if this specific tool has produced an error result.

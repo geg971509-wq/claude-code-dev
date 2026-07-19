@@ -16,7 +16,24 @@ import type {
   ChatCompletionCreateParamsStreaming,
 } from 'openai/resources/chat/completions/completions.mjs'
 import { getGrokClient } from './client.js'
-import { updateOpenAIUsage } from '../openai/openaiShared.js'
+import {
+  formatOpenAIErrorMessage,
+  formatOpenAIErrorStack,
+  formatOpenAIErrorWithStack,
+  isOpenAIUserAbortError,
+  toProviderHttpError,
+  type TransientRetryInfo,
+  updateOpenAIUsage,
+  withTransientOpenAIRetry,
+} from '../openai/openaiShared.js'
+import {
+  getAssistantMessageFromError,
+  isProviderContextOverflowError,
+  isProviderRateLimitError,
+  isProviderRequestTooLargeError,
+} from '../errors.js'
+// Use Anthropic's abort class so claude.ts `instanceof APIUserAbortError` matches.
+import { APIUserAbortError } from '@anthropic-ai/sdk'
 import {
   anthropicMessagesToOpenAI,
   anthropicToolsToOpenAI,
@@ -99,22 +116,40 @@ export async function* queryModelGrok(
       `[Grok] Calling model=${grokModel}, messages=${openaiMessages.length}, tools=${openaiTools.length}`,
     )
 
-    const stream = await client.chat.completions.create(
-      {
-        model: grokModel,
-        messages: openaiMessages,
-        ...(openaiTools.length > 0 && {
-          tools: openaiTools,
-          ...(openaiToolChoice && { tool_choice: openaiToolChoice }),
-        }),
-        stream: true,
-        stream_options: { include_usage: true },
-        ...(options.temperatureOverride !== undefined && {
-          temperature: options.temperatureOverride,
-        }),
-      } as ChatCompletionCreateParamsStreaming,
+    // Transient 5xx/connection failures retry here — the Grok path bypasses
+    // withRetry.ts (same as the OpenAI path).
+    const stream = await withTransientOpenAIRetry(
+      () =>
+        client.chat.completions.create(
+          {
+            model: grokModel,
+            messages: openaiMessages,
+            ...(openaiTools.length > 0 && {
+              tools: openaiTools,
+              ...(openaiToolChoice && { tool_choice: openaiToolChoice }),
+            }),
+            stream: true,
+            stream_options: { include_usage: true },
+            ...(options.temperatureOverride !== undefined && {
+              temperature: options.temperatureOverride,
+            }),
+          } as ChatCompletionCreateParamsStreaming,
+          {
+            signal,
+          },
+        ),
       {
         signal,
+        onRetry: ({
+          attempt,
+          maxRetries,
+          delayMs,
+          error,
+        }: TransientRetryInfo) =>
+          logForDebugging(
+            `[Grok] Transient error (attempt ${attempt}/${maxRetries}, retrying in ${delayMs}ms): ${formatOpenAIErrorMessage(error)}`,
+            { level: 'error' },
+          ),
       },
     )
 
@@ -264,14 +299,42 @@ export async function* queryModelGrok(
       tools: convertToolsToLangfuse(toolSchemas as unknown[]),
     })
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error)
-    logForDebugging(`[Grok] Error: ${errorMessage}`, { level: 'error' })
+    // Match OpenAI/Anthropic: user abort is not an API error surface.
+    if (signal.aborted || isOpenAIUserAbortError(error)) {
+      logForDebugging('[Grok] Aborted by user/signal', { level: 'info' })
+      if (error instanceof APIUserAbortError) throw error
+      throw new APIUserAbortError()
+    }
+    const layered =
+      isProviderContextOverflowError(error) ||
+      isProviderRequestTooLargeError(error) ||
+      isProviderRateLimitError(error)
+        ? error
+        : toProviderHttpError(error)
+    if (
+      layered &&
+      (isProviderContextOverflowError(layered) ||
+        isProviderRequestTooLargeError(layered) ||
+        isProviderRateLimitError(layered))
+    ) {
+      logForDebugging(
+        `[Grok] Layered error: ${formatOpenAIErrorMessage(layered)}`,
+        { level: 'error' },
+      )
+      yield getAssistantMessageFromError(layered, options.model)
+      return
+    }
+    const errorMessage = formatOpenAIErrorMessage(error)
+    logForDebugging(
+      `[Grok] Error: ${errorMessage}\n${formatOpenAIErrorStack(error, 16)}`,
+      { level: 'error' },
+    )
     yield createAssistantAPIErrorMessage({
-      content: `API Error: ${errorMessage}`,
+      content: `API Error: ${formatOpenAIErrorWithStack(error, 8)}`,
       apiError: 'api_error',
       error: (error instanceof Error
         ? error
-        : new Error(String(error))) as unknown as SDKAssistantMessageError,
+        : new Error(errorMessage)) as unknown as SDKAssistantMessageError,
     })
   }
 }

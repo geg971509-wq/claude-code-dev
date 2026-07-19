@@ -380,9 +380,12 @@ async function main() {
 
 main().catch(error => {
   const msg = error instanceof Error ? error.message : String(error)
-  console.error(`[postinstall] ripgrep download failed (non-fatal): ${msg}`)
+  // status + reason + next — keep exit 0 so npm/bun install never fails
   console.error(
-    `[postinstall] You can install ripgrep manually: https://github.com/BurntSushi/ripgrep#installation`,
+    `[postinstall] status: ripgrep vendor download failed (non-fatal)\n` +
+      `[postinstall] reason: ${msg}\n` +
+      `[postinstall] next: node scripts/postinstall.cjs  # retry; or set HTTPS_PROXY / RIPGREP_DOWNLOAD_BASE; or install system rg (brew/apt/pkg)\n` +
+      `[postinstall] docs: https://github.com/BurntSushi/ripgrep#installation`,
   )
   // Never exit with error code — postinstall must not break install
   process.exit(0)

@@ -66,7 +66,26 @@ export const ExecuteTool = buildTool({
   async call(input, context, canUseTool, parentMessage, onProgress) {
     const tools: Tools = context.options.tools ?? []
 
-    const targetTool = findToolByName(tools, input.tool_name)
+    const requestTool = findToolByName(tools, input.tool_name)
+    // Prefer live pool; refreshTools rebuilds object identity each call.
+    const currentTool = findToolByName(
+      context.options.refreshTools?.() ?? tools,
+      input.tool_name,
+    )
+    if (requestTool && !currentTool) {
+      return {
+        data: {
+          result: null,
+          tool_name: input.tool_name,
+        },
+        newMessages: [
+          createUserMessage({
+            content: `Stale tool call: ${input.tool_name}`,
+          }),
+        ],
+      }
+    }
+    const targetTool = currentTool ?? requestTool
     if (!targetTool) {
       return {
         data: {

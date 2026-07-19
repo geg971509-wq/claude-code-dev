@@ -1,6 +1,11 @@
 import { describe, expect, test, beforeEach, afterEach, mock } from 'bun:test'
 import {
   isOpenAIThinkingEnabled,
+  isOpenAIReasoningChatModel,
+  isOpenAIResponsesCapableBaseURL,
+  isAzureResponsesBaseURL,
+  shouldUseOpenAIResponsesAPI,
+  resolveOpenAIPromptCacheKey,
   buildOpenAIRequestBody,
 } from '../requestBody.js'
 
@@ -308,5 +313,170 @@ describe('buildOpenAIRequestBody — thinking params', () => {
     })
     expect(body.tools).toBeUndefined()
     expect(body.tool_choice).toBeUndefined()
+  })
+})
+
+describe('isOpenAIReasoningChatModel / shouldUseOpenAIResponsesAPI', () => {
+  const originalBase = process.env.OPENAI_BASE_URL
+  const originalUseResponses = process.env.OPENAI_USE_RESPONSES
+
+  afterEach(() => {
+    if (originalBase === undefined) delete process.env.OPENAI_BASE_URL
+    else process.env.OPENAI_BASE_URL = originalBase
+    if (originalUseResponses === undefined) {
+      delete process.env.OPENAI_USE_RESPONSES
+    } else {
+      process.env.OPENAI_USE_RESPONSES = originalUseResponses
+    }
+  })
+
+  test('matches o-series models', () => {
+    expect(isOpenAIReasoningChatModel('o1')).toBe(true)
+    expect(isOpenAIReasoningChatModel('o3')).toBe(true)
+    expect(isOpenAIReasoningChatModel('o4-mini')).toBe(true)
+    expect(isOpenAIReasoningChatModel('O3-MINI')).toBe(true)
+  })
+
+  test('matches gpt-5 reasoning models but not gpt-5-chat', () => {
+    expect(isOpenAIReasoningChatModel('gpt-5')).toBe(true)
+    expect(isOpenAIReasoningChatModel('gpt-5-mini')).toBe(true)
+    expect(isOpenAIReasoningChatModel('gpt-5-chat')).toBe(false)
+    expect(isOpenAIReasoningChatModel('gpt-5-chat-latest')).toBe(false)
+  })
+
+  test('rejects non-reasoning chat models', () => {
+    expect(isOpenAIReasoningChatModel('gpt-4o')).toBe(false)
+    expect(isOpenAIReasoningChatModel('deepseek-chat')).toBe(false)
+    expect(isOpenAIReasoningChatModel('openai')).toBe(false)
+  })
+
+  test('auto-routes reasoning models only on official OpenAI/Azure bases', () => {
+    delete process.env.OPENAI_USE_RESPONSES
+    delete process.env.OPENAI_BASE_URL
+    expect(shouldUseOpenAIResponsesAPI('o3')).toBe(true)
+    expect(shouldUseOpenAIResponsesAPI('gpt-5')).toBe(true)
+    expect(shouldUseOpenAIResponsesAPI('gpt-5-chat')).toBe(false)
+    expect(shouldUseOpenAIResponsesAPI('gpt-4o')).toBe(false)
+
+    process.env.OPENAI_BASE_URL = 'http://192.168.8.2:8080/v1'
+    expect(isOpenAIResponsesCapableBaseURL()).toBe(false)
+    expect(shouldUseOpenAIResponsesAPI('o3')).toBe(false)
+    expect(shouldUseOpenAIResponsesAPI('gpt-5')).toBe(false)
+
+    process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
+    expect(shouldUseOpenAIResponsesAPI('o3')).toBe(true)
+
+    process.env.OPENAI_BASE_URL =
+      'https://foo.openai.azure.com/openai/deployments/bar'
+    expect(shouldUseOpenAIResponsesAPI('gpt-5')).toBe(true)
+    expect(isAzureResponsesBaseURL()).toBe(true)
+
+    process.env.OPENAI_BASE_URL =
+      'https://myresource.openai.azure.com/openai/responses?api-version=2025-04-01-preview'
+    expect(isOpenAIResponsesCapableBaseURL()).toBe(true)
+    expect(isAzureResponsesBaseURL()).toBe(true)
+  })
+
+  test('OPENAI_USE_RESPONSES force on/off overrides auto', () => {
+    process.env.OPENAI_BASE_URL = 'http://192.168.8.2:8080/v1'
+    process.env.OPENAI_USE_RESPONSES = '1'
+    expect(shouldUseOpenAIResponsesAPI('gpt-4o')).toBe(true)
+
+    process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
+    process.env.OPENAI_USE_RESPONSES = '0'
+    expect(shouldUseOpenAIResponsesAPI('o3')).toBe(false)
+  })
+})
+
+describe('resolveOpenAIPromptCacheKey', () => {
+  const original = process.env.OPENAI_PROMPT_CACHE_KEY
+
+  afterEach(() => {
+    if (original === undefined) delete process.env.OPENAI_PROMPT_CACHE_KEY
+    else process.env.OPENAI_PROMPT_CACHE_KEY = original
+  })
+
+  test('returns undefined when unset', () => {
+    delete process.env.OPENAI_PROMPT_CACHE_KEY
+    expect(resolveOpenAIPromptCacheKey()).toBeUndefined()
+  })
+
+  test('returns trimmed key when set', () => {
+    process.env.OPENAI_PROMPT_CACHE_KEY = '  abc  '
+    expect(resolveOpenAIPromptCacheKey()).toBe('abc')
+  })
+})
+
+describe('buildOpenAIRequestBody — reasoning chat max tokens / effort', () => {
+  const baseParams = {
+    messages: [{ role: 'user', content: 'hello' }],
+    tools: [] as any[],
+    toolChoice: undefined as any,
+    enableThinking: false,
+    maxTokens: 1234,
+  }
+
+  test('o3 uses max_completion_tokens and omits max_tokens', () => {
+    const body = buildOpenAIRequestBody({ ...baseParams, model: 'o3' })
+    expect(body.max_completion_tokens).toBe(1234)
+    expect(body.max_tokens).toBeUndefined()
+  })
+
+  test('o1 uses max_completion_tokens', () => {
+    const body = buildOpenAIRequestBody({ ...baseParams, model: 'o1' })
+    expect(body.max_completion_tokens).toBe(1234)
+    expect(body.max_tokens).toBeUndefined()
+  })
+
+  test('gpt-5 uses max_completion_tokens', () => {
+    const body = buildOpenAIRequestBody({ ...baseParams, model: 'gpt-5' })
+    expect(body.max_completion_tokens).toBe(1234)
+    expect(body.max_tokens).toBeUndefined()
+  })
+
+  test('gpt-4o keeps max_tokens', () => {
+    const body = buildOpenAIRequestBody({ ...baseParams, model: 'gpt-4o' })
+    expect(body.max_tokens).toBe(1234)
+    expect(body.max_completion_tokens).toBeUndefined()
+  })
+
+  test('deepseek keeps max_tokens', () => {
+    const body = buildOpenAIRequestBody({
+      ...baseParams,
+      model: 'deepseek-chat',
+    })
+    expect(body.max_tokens).toBe(1234)
+    expect(body.max_completion_tokens).toBeUndefined()
+  })
+
+  test('gpt-5-chat keeps max_tokens', () => {
+    const body = buildOpenAIRequestBody({
+      ...baseParams,
+      model: 'gpt-5-chat',
+    })
+    expect(body.max_tokens).toBe(1234)
+    expect(body.max_completion_tokens).toBeUndefined()
+  })
+
+  test('sets reasoning_effort only for reasoning models when provided', () => {
+    const o3 = buildOpenAIRequestBody({
+      ...baseParams,
+      model: 'o3',
+      reasoningEffort: 'high',
+    })
+    expect(o3.reasoning_effort).toBe('high')
+
+    const gpt4o = buildOpenAIRequestBody({
+      ...baseParams,
+      model: 'gpt-4o',
+      reasoningEffort: 'high',
+    })
+    expect(gpt4o.reasoning_effort).toBeUndefined()
+
+    const noEffort = buildOpenAIRequestBody({
+      ...baseParams,
+      model: 'o3',
+    })
+    expect(noEffort.reasoning_effort).toBeUndefined()
   })
 })

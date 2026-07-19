@@ -63,6 +63,8 @@ describe('resolveBuiltinWithFallback', () => {
     expect(result.command).toBe(rgPath)
     expect(result.note).toContain('no ripgrep available')
     expect(result.note).toContain('testplatform')
+    expect(result.note).toContain('Next:')
+    expect(result.note).toContain('postinstall')
     writeFileSync(rgPath, '')
   })
 

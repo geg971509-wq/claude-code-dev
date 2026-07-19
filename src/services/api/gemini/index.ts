@@ -35,7 +35,12 @@ import {
   anthropicToolsToGemini,
   anthropicToolChoiceToGemini,
   GEMINI_THOUGHT_SIGNATURE_FIELD,
+  classifyProviderHttpError,
+  isProviderContextOverflowError,
+  isProviderRateLimitError,
+  isProviderRequestTooLargeError,
 } from '@ant/model-provider'
+import { getAssistantMessageFromError } from '../errors.js'
 
 export async function* queryModelGemini(
   messages: Message[],
@@ -226,6 +231,41 @@ export async function* queryModelGemini(
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
     logForDebugging(`[Gemini] Error: ${errorMessage}`, { level: 'error' })
+    // Lift HTTP-status-shaped Gemini/SDK errors into layered types.
+    let layered: unknown = error
+    if (
+      !(
+        isProviderContextOverflowError(error) ||
+        isProviderRequestTooLargeError(error) ||
+        isProviderRateLimitError(error)
+      ) &&
+      error &&
+      typeof error === 'object'
+    ) {
+      const statusCandidate =
+        (error as { status?: unknown }).status ??
+        (error as { statusCode?: unknown }).statusCode ??
+        (error as { code?: unknown }).code
+      const status =
+        typeof statusCandidate === 'number'
+          ? statusCandidate
+          : typeof statusCandidate === 'string' && /^\d+$/.test(statusCandidate)
+            ? Number(statusCandidate)
+            : undefined
+      if (status !== undefined) {
+        layered = classifyProviderHttpError(status, errorMessage, {
+          headers: (error as { headers?: unknown }).headers,
+        })
+      }
+    }
+    if (
+      isProviderContextOverflowError(layered) ||
+      isProviderRequestTooLargeError(layered) ||
+      isProviderRateLimitError(layered)
+    ) {
+      yield getAssistantMessageFromError(layered, options.model)
+      return
+    }
     yield createAssistantAPIErrorMessage({
       content: `API Error: ${errorMessage}`,
       apiError: 'api_error',

@@ -8,7 +8,8 @@
 // bun:bundle — compile-time macros
 // ============================================================================
 declare module 'bun:bundle' {
-  export function feature(name: string): boolean
+  import type { FeatureFlagName } from 'src/constants/featureFlags'
+  export function feature(name: FeatureFlagName): boolean
 }
 
 declare module 'bun:ffi' {

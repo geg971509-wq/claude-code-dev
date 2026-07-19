@@ -9,6 +9,10 @@
 import { readdir, readFile, writeFile, cp } from 'node:fs/promises'
 import { chmodSync } from 'node:fs'
 import { join } from 'node:path'
+import {
+  CLI_BUN_WRAPPER_SOURCE,
+  CLI_NODE_WRAPPER_SOURCE,
+} from './cli-entry-wrappers.ts'
 
 const outdir = 'dist'
 
@@ -68,12 +72,13 @@ async function postBuild() {
   await cp('src/utils/vendor/ripgrep', ripgrepDir, { recursive: true } as never)
   console.log(`Copied src/utils/vendor/ripgrep/ → ${ripgrepDir}/`)
 
-  // Step 3: Generate dual entry points
+  // Step 3: Generate dual entry points — wrapper sources shared with build.ts
+  // via scripts/cli-entry-wrappers.ts (single source of truth, no drift).
   const cliBun = join(outdir, 'cli-bun.js')
   const cliNode = join(outdir, 'cli-node.js')
 
-  await writeFile(cliBun, '#!/usr/bin/env bun\nimport "./cli.js"\n')
-  await writeFile(cliNode, '#!/usr/bin/env node\nimport "./cli.js"\n')
+  await writeFile(cliBun, CLI_BUN_WRAPPER_SOURCE)
+  await writeFile(cliNode, CLI_NODE_WRAPPER_SOURCE)
 
   chmodSync(cliBun, 0o755)
   chmodSync(cliNode, 0o755)

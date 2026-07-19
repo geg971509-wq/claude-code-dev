@@ -112,7 +112,8 @@ export function resolveBuiltinWithFallback(
     mode: 'builtin',
     command: builtinPath,
     args: [],
-    note: `no ripgrep available on ${p}; install ripgrep via apt/pkg/brew`,
+    // status + reason + next (same engineering view as OpenAI error helpers)
+    note: `no ripgrep available on ${p} (builtin missing, system not found). Next: node scripts/postinstall.cjs, or install ripgrep via apt/pkg/brew`,
   }
 }
 
@@ -435,7 +436,20 @@ export async function ripGrep(
       // These should be surfaced to the user rather than silently returning empty results
       const CRITICAL_ERROR_CODES = ['ENOENT', 'EACCES', 'EPERM']
       if (CRITICAL_ERROR_CODES.includes(error.code as string)) {
-        reject(error)
+        const note = getRipgrepConfig().note
+        // note already carries Next: when both builtin + system rg are missing
+        const detail = note
+          ? note
+          : 'Next: node scripts/postinstall.cjs, or install system ripgrep (brew/apt/pkg).'
+        const wrapped = new Error(
+          `rg unavailable (code=${String(error.code)}); ${detail}`,
+        ) as ExecFileException
+        wrapped.code = error.code
+        wrapped.errno = error.errno
+        wrapped.path = error.path
+        wrapped.syscall = error.syscall
+        wrapped.cause = error
+        reject(wrapped)
         return
       }
 

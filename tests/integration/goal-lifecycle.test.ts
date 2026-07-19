@@ -1,7 +1,7 @@
 /**
- * Integration test for the goal lifecycle.
- * Verifies set → work → complete flow, pause/resume, budget limiting,
- * blocked attempts, prompt generation, and audit rules consistency.
+ * Integration test for the goal lifecycle (closed-loop).
+ * Verifies set → work → complete, pause/resume, budget→blocked,
+ * usage→paused, blocked attempts, prompts, and format helpers.
  */
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 
@@ -38,7 +38,18 @@ import {
   buildGoalContextBlock,
 } from '../../src/services/goal/prompts'
 
+import type { GoalState } from '../../src/types/logs'
+
 const TEST_SESSION = 'test-integration-session'
+
+function mustSet(
+  objective: string,
+  options?: Parameters<typeof setGoal>[1],
+): GoalState {
+  const r = setGoal(objective, { sessionId: TEST_SESSION, ...options })
+  if (!r.ok) throw new Error(r.message)
+  return r.goal
+}
 
 beforeEach(() => {
   _clearAllGoalsForTesting()
@@ -46,9 +57,8 @@ beforeEach(() => {
 
 describe('Goal lifecycle: set → work → complete', () => {
   test('full happy path', () => {
-    const goal = setGoal('Implement feature X with tests', {
+    const goal = mustSet('Implement feature X with tests', {
       tokenBudget: 100_000,
-      sessionId: TEST_SESSION,
     })
     expect(goal.status).toBe('active')
     expect(goal.objective).toBe('Implement feature X with tests')
@@ -79,7 +89,7 @@ describe('Goal lifecycle: set → work → complete', () => {
 
 describe('Goal lifecycle: pause and resume', () => {
   test('pause accumulates active time, resume resets start', () => {
-    setGoal('Refactor module', { sessionId: TEST_SESSION })
+    mustSet('Refactor module')
 
     const paused = pauseGoal(TEST_SESSION)!
     expect(paused.status).toBe('paused')
@@ -92,44 +102,58 @@ describe('Goal lifecycle: pause and resume', () => {
   })
 
   test('pause on non-active goal is no-op', () => {
-    setGoal('Something', { sessionId: TEST_SESSION })
+    mustSet('Something')
     completeGoal(TEST_SESSION)
     expect(pauseGoal(TEST_SESSION)).toBeNull()
   })
 
-  test('resume on non-paused goal is no-op', () => {
-    setGoal('Something', { sessionId: TEST_SESSION })
+  test('resume on active goal is no-op', () => {
+    mustSet('Something')
     expect(resumeGoal(TEST_SESSION)).toBeNull()
+  })
+
+  test('resume works from blocked', () => {
+    mustSet('Something')
+    updateGoalTokens(100, TEST_SESSION) // no budget → stays active
+    // Force block via 3-strike
+    recordBlockedAttempt('stuck', TEST_SESSION)
+    recordBlockedAttempt('stuck', TEST_SESSION)
+    recordBlockedAttempt('stuck', TEST_SESSION)
+    expect(getGoal(TEST_SESSION)!.status).toBe('blocked')
+    const resumed = resumeGoal(TEST_SESSION)!
+    expect(resumed.status).toBe('active')
+    expect(resumed.terminalReason).toBeNull()
   })
 })
 
 describe('Goal lifecycle: budget limiting', () => {
-  test('exceeding budget transitions to budget_limited', () => {
-    setGoal('Big task', {
-      tokenBudget: 50_000,
-      sessionId: TEST_SESSION,
-    })
+  test('exceeding token budget transitions to blocked', () => {
+    mustSet('Big task', { tokenBudget: 50_000 })
 
     updateGoalTokens(30_000, TEST_SESSION)
     expect(getGoal(TEST_SESSION)!.status).toBe('active')
 
     updateGoalTokens(25_000, TEST_SESSION)
-    expect(getGoal(TEST_SESSION)!.status).toBe('budget_limited')
-    expect(getGoal(TEST_SESSION)!.tokensUsed).toBe(55_000)
+    const g = getGoal(TEST_SESSION)!
+    expect(g.status).toBe('blocked')
+    expect(g.tokensUsed).toBe(55_000)
+    expect(g.terminalReason).toContain('Token budget reached')
   })
 })
 
 describe('Goal lifecycle: usage limiting', () => {
-  test('markUsageLimited transitions active → usage_limited', () => {
-    setGoal('Rate limited task', { sessionId: TEST_SESSION })
+  test('markUsageLimited transitions active → paused', () => {
+    mustSet('Rate limited task')
     markUsageLimited(TEST_SESSION)
-    expect(getGoal(TEST_SESSION)!.status).toBe('usage_limited')
+    const g = getGoal(TEST_SESSION)!
+    expect(g.status).toBe('paused')
+    expect(g.terminalReason).toContain('usage/rate limit')
   })
 })
 
 describe('Goal lifecycle: blocked attempts', () => {
   test('3 consecutive same-reason attempts transition to blocked', () => {
-    setGoal('Need credentials', { sessionId: TEST_SESSION })
+    mustSet('Need credentials')
 
     const r1 = recordBlockedAttempt('missing API key', TEST_SESSION)!
     expect(r1.status).toBe('active')
@@ -145,7 +169,7 @@ describe('Goal lifecycle: blocked attempts', () => {
   })
 
   test('different reason resets counter', () => {
-    setGoal('Flaky thing', { sessionId: TEST_SESSION })
+    mustSet('Flaky thing')
 
     recordBlockedAttempt('error A', TEST_SESSION)
     recordBlockedAttempt('error A', TEST_SESSION)
@@ -155,7 +179,7 @@ describe('Goal lifecycle: blocked attempts', () => {
   })
 
   test('resume resets blocked attempts', () => {
-    setGoal('Was stuck', { sessionId: TEST_SESSION })
+    mustSet('Was stuck')
     recordBlockedAttempt('oops', TEST_SESSION)
     recordBlockedAttempt('oops', TEST_SESSION)
     pauseGoal(TEST_SESSION)
@@ -175,7 +199,7 @@ describe('Goal lifecycle: turn limits', () => {
   })
 
   test('incrementGoalTurns counts correctly', () => {
-    setGoal('Counting', { sessionId: TEST_SESSION })
+    mustSet('Counting')
     for (let i = 1; i <= 5; i++) {
       expect(incrementGoalTurns(TEST_SESSION)).toBe(i)
     }
@@ -185,10 +209,7 @@ describe('Goal lifecycle: turn limits', () => {
 
 describe('Goal prompt templates', () => {
   test('continuation prompt contains objective and audit rules', () => {
-    const goal = setGoal('Build dashboard', {
-      tokenBudget: 200_000,
-      sessionId: TEST_SESSION,
-    })
+    const goal = mustSet('Build dashboard', { tokenBudget: 200_000 })
     const prompt = buildContinuationPrompt(goal)
     expect(prompt).toContain('Build dashboard')
     expect(prompt).toContain('goal-steering')
@@ -199,12 +220,10 @@ describe('Goal prompt templates', () => {
   })
 
   test('budget limit prompt instructs stop', () => {
-    const goal = setGoal('Over budget', {
-      tokenBudget: 50_000,
-      sessionId: TEST_SESSION,
-    })
+    mustSet('Over budget', { tokenBudget: 50_000 })
     updateGoalTokens(60_000, TEST_SESSION)
     const updated = getGoal(TEST_SESSION)!
+    expect(updated.status).toBe('blocked')
     const prompt = buildBudgetLimitPrompt(updated)
     expect(prompt).toContain('budget_limit')
     expect(prompt).toContain('Stop all substantive work')
@@ -218,8 +237,8 @@ describe('Goal prompt templates', () => {
     expect(prompt).toContain('Old objective')
   })
 
-  test('goal context block is compact', () => {
-    const goal = setGoal('Short task', { sessionId: TEST_SESSION })
+  test('goal context block is compact for active goals', () => {
+    const goal = mustSet('Short task')
     const block = buildGoalContextBlock(goal)
     expect(block).toContain('<active-goal')
     expect(block).toContain('Short task')
@@ -231,13 +250,19 @@ describe('Goal prompt templates', () => {
 describe('Format helpers', () => {
   test('formatGoalStatusLabel returns human-readable labels', () => {
     expect(formatGoalStatusLabel('active')).toBe('Active')
-    expect(formatGoalStatusLabel('budget_limited')).toBe('Budget Limited')
+    expect(formatGoalStatusLabel('paused')).toBe('Paused')
+    expect(formatGoalStatusLabel('blocked')).toBe('Blocked')
     expect(formatGoalStatusLabel('complete')).toBe('Complete')
   })
 
   test('getActiveElapsedMs returns accumulated time for paused goals', () => {
-    const goal = setGoal('Timed', { sessionId: TEST_SESSION })
+    const goal = mustSet('Timed')
     const elapsed = getActiveElapsedMs(goal)
     expect(elapsed).toBeGreaterThanOrEqual(0)
+  })
+
+  test('formatGoalElapsed returns 0s for brand-new goals', () => {
+    const goal = mustSet('Timed')
+    expect(formatGoalElapsed(goal)).toBe('0s')
   })
 })

@@ -2,6 +2,10 @@ import { readdir, readFile, writeFile, cp } from 'fs/promises'
 import { join } from 'path'
 import { getMacroDefines } from './scripts/defines.ts'
 import { DEFAULT_BUILD_FEATURES } from './scripts/defines.ts'
+import {
+  CLI_BUN_WRAPPER_SOURCE,
+  CLI_NODE_WRAPPER_SOURCE,
+} from './scripts/cli-entry-wrappers.ts'
 
 const outdir = 'dist'
 
@@ -92,13 +96,15 @@ const ripgrepDir = join(outdir, 'vendor', 'ripgrep')
 await cp('src/utils/vendor/ripgrep', ripgrepDir, { recursive: true })
 console.log(`Copied src/utils/vendor/ripgrep/ → ${ripgrepDir}/`)
 
-// Step 5: Generate cli-bun and cli-node executable entry points
+// Step 5: Generate cli-bun and cli-node executable entry points.
+// Wrapper sources (runtime version gates) are shared with scripts/post-build.ts
+// via scripts/cli-entry-wrappers.ts — single source of truth, no drift.
 const cliBun = join(outdir, 'cli-bun.js')
 const cliNode = join(outdir, 'cli-node.js')
 
-await writeFile(cliBun, '#!/usr/bin/env bun\nimport "./cli.js"\n')
+await writeFile(cliBun, CLI_BUN_WRAPPER_SOURCE)
 
-await writeFile(cliNode, '#!/usr/bin/env node\nimport "./cli.js"\n')
+await writeFile(cliNode, CLI_NODE_WRAPPER_SOURCE)
 
 // Make both executable
 const { chmodSync } = await import('fs')

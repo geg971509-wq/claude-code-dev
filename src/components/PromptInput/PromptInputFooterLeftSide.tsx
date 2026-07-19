@@ -162,8 +162,6 @@ function GoalElapsedIndicator(): React.ReactNode {
       color = 'ansi:green';
       break;
     case 'paused':
-    case 'budget_limited':
-    case 'usage_limited':
       color = 'ansi:yellow';
       break;
     case 'blocked':

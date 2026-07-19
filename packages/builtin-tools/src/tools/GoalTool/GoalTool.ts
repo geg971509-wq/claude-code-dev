@@ -3,13 +3,22 @@ import { buildTool, type ToolDef } from 'src/Tool.js'
 import { jsonStringify } from 'src/utils/slowOperations.js'
 import { lazySchema } from 'src/utils/lazySchema.js'
 import {
+  clearGoal,
   completeGoal,
   formatGoalElapsed,
   formatGoalStatusLabel,
   getGoal,
+  markBlocked,
   recordBlockedAttempt,
 } from 'src/services/goal/goalState.js'
-import { persistCurrentGoal } from 'src/services/goal/goalStorage.js'
+import {
+  persistCurrentGoal,
+  persistGoalClear,
+} from 'src/services/goal/goalStorage.js'
+import {
+  buildBlockedOutcomePrompt,
+  buildCompletionOutcomePrompt,
+} from 'src/services/goal/prompts.js'
 import { GOAL_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, generatePrompt } from './prompt.js'
 
@@ -35,12 +44,18 @@ const inputSchema = lazySchema(() =>
       .enum(['complete', 'blocked'])
       .optional()
       .describe(
-        'Required for "update". Only "complete" or "blocked" are accepted.',
+        'Required for "update". Only "complete" or "blocked" are accepted. Natural language claims do not end the goal.',
       ),
     reason: z
       .string()
       .optional()
       .describe('Explanation for the status change. Required for "update".'),
+    immediate: z
+      .boolean()
+      .optional()
+      .describe(
+        'For blocked only: skip the 3-strike audit and block immediately (impossible/unsafe/contradictory objective).',
+      ),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -56,10 +71,13 @@ const outputSchema = lazySchema(() =>
         tokenBudget: z.number().nullable(),
         elapsed: z.string(),
         turnsExecuted: z.number(),
+        terminalReason: z.string().nullable().optional(),
       })
       .optional(),
     message: z.string().optional(),
     report: z.string().optional(),
+    /** Instruct the model to write a final user-facing summary this turn. */
+    outcomePrompt: z.string().optional(),
     error: z.string().optional(),
   }),
 )
@@ -78,22 +96,8 @@ function buildGoalSnapshot() {
     tokenBudget: goal.tokenBudget,
     elapsed: formatGoalElapsed(goal),
     turnsExecuted: goal.turnsExecuted,
+    terminalReason: goal.terminalReason,
   }
-}
-
-function buildCompletionReport(): string {
-  const goal = getGoal()
-  if (!goal) return ''
-  const budget =
-    goal.tokenBudget !== null
-      ? `Token usage: ${goal.tokensUsed} / ${goal.tokenBudget}`
-      : `Token usage: ${goal.tokensUsed}`
-  return [
-    'Goal achieved — usage report:',
-    `  ${budget}`,
-    `  Active time: ${formatGoalElapsed(goal)}`,
-    `  Continuation turns: ${goal.turnsExecuted}`,
-  ].join('\n')
 }
 
 export const GoalTool = buildTool({
@@ -142,6 +146,7 @@ export const GoalTool = buildTool({
     }
     if (output?.error) return `Goal error: ${output.error}`
     if (output.report) return output.report
+    if (output.outcomePrompt) return output.outcomePrompt
     if (output.goal) {
       return `Goal "${output.goal.objective}" — ${output.goal.status}`
     }
@@ -169,7 +174,6 @@ export const GoalTool = buildTool({
       return { data: { success: true, goal: snapshot } }
     }
 
-    // action === 'update'
     if (!input.status) {
       return {
         data: {
@@ -189,22 +193,69 @@ export const GoalTool = buildTool({
         },
       }
     }
+    if (goal.status !== 'active') {
+      return {
+        data: {
+          success: false,
+          error: `Goal is ${goal.status}; only an active goal can be updated by the model.`,
+        },
+      }
+    }
 
     if (input.status === 'complete') {
-      const report = buildCompletionReport()
-      completeGoal()
-      persistCurrentGoal()
+      const completed = completeGoal(undefined, input.reason)
+      if (!completed) {
+        return {
+          data: {
+            success: false,
+            error: 'Goal not completed: no active goal.',
+          },
+        }
+      }
+      // Transient complete: outcome prompt for this turn, then clear so
+      // the durable record does not keep a finished goal.
+      const outcomePrompt = buildCompletionOutcomePrompt(completed)
+      const report = [
+        'Goal achieved — usage report:',
+        `  Token usage: ${completed.tokensUsed}${completed.tokenBudget !== null ? ` / ${completed.tokenBudget}` : ''}`,
+        `  Active time: ${formatGoalElapsed(completed)}`,
+        `  Continuation turns: ${completed.turnsExecuted}`,
+      ].join('\n')
+      clearGoal()
+      persistGoalClear()
       return {
         data: {
           success: true,
-          goal: buildGoalSnapshot(),
           report,
+          outcomePrompt,
+          message: 'Goal marked complete and cleared.',
         },
       }
     }
 
     // status === 'blocked'
     const reason = input.reason ?? 'unspecified blocker'
+    if (input.immediate === true) {
+      const blocked = markBlocked(reason)
+      if (!blocked) {
+        return {
+          data: {
+            success: false,
+            error: 'Goal is not in a state that accepts blocked.',
+          },
+        }
+      }
+      persistCurrentGoal()
+      return {
+        data: {
+          success: true,
+          goal: buildGoalSnapshot(),
+          outcomePrompt: buildBlockedOutcomePrompt(blocked),
+          message: `Goal marked as blocked. Reason: ${reason}`,
+        },
+      }
+    }
+
     const result = recordBlockedAttempt(reason)
     if (!result) {
       return {
@@ -217,10 +268,14 @@ export const GoalTool = buildTool({
     persistCurrentGoal()
 
     if (result.status === 'blocked') {
+      const blocked = getGoal()
       return {
         data: {
           success: true,
           goal: buildGoalSnapshot(),
+          outcomePrompt: blocked
+            ? buildBlockedOutcomePrompt(blocked)
+            : undefined,
           message: `Goal marked as blocked after ${result.attempts} consecutive attempts. Reason: ${reason}`,
         },
       }
@@ -246,6 +301,7 @@ export const GoalTool = buildTool({
     const parts: string[] = []
     if (content.message) parts.push(content.message)
     if (content.report) parts.push(content.report)
+    if (content.outcomePrompt) parts.push(content.outcomePrompt)
     if (content.goal) parts.push(jsonStringify(content.goal))
     return {
       tool_use_id: toolUseID,

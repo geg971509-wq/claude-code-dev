@@ -68,10 +68,11 @@ mock.module('src/utils/messages.js', () => ({
 const { ExecuteTool } = await import('../ExecuteTool.js')
 const { EXECUTE_TOOL_NAME } = await import('../constants.js')
 
-function makeContext(tools: unknown[] = []) {
+function makeContext(tools: unknown[] = [], refreshTools?: () => unknown[]) {
   return {
     options: {
       tools,
+      refreshTools,
     },
     cwd: '/tmp',
     sessionId: 'test',
@@ -347,5 +348,69 @@ describe('ExecuteTool', () => {
       result: { result: 'ok' },
       tool_name: 'McpTool',
     })
+  })
+
+  test('rejects same-name tool replacement before permission or call', async () => {
+    let called = 0
+    let checkedPermissions = 0
+    const requestTool = makeMockTool('TestTool', 'request')
+    requestTool.call = async () => {
+      called++
+      return { data: 'request' }
+    }
+    requestTool.checkPermissions = async () => {
+      checkedPermissions++
+      return { behavior: 'allow' as const }
+    }
+    const currentTool = makeMockTool('TestTool', 'current')
+    currentTool.call = async () => {
+      called++
+      return { data: 'current' }
+    }
+    currentTool.checkPermissions = async () => {
+      checkedPermissions++
+      return { behavior: 'allow' as const }
+    }
+    const ctx = makeContext([requestTool], () => [currentTool])
+
+    const result = await ExecuteTool.call(
+      { tool_name: 'TestTool', params: {} },
+      ctx,
+      async () => ({ behavior: 'allow' }),
+      { type: 'assistant', content: [], uuid: 'msg1' } as never,
+      undefined,
+    )
+
+    // Same name with a rebuilt object is not stale — use the live tool.
+    expect(result.data).toEqual({
+      result: 'current',
+      tool_name: 'TestTool',
+    })
+    expect(called).toBe(1)
+    expect(checkedPermissions).toBe(1)
+  })
+
+  test('rejects removed deferred target before call', async () => {
+    let called = 0
+    const requestTool = makeMockTool('TestTool', 'request')
+    requestTool.call = async () => {
+      called++
+      return { data: 'request' }
+    }
+    const ctx = makeContext([requestTool], () => [])
+
+    const result = await ExecuteTool.call(
+      { tool_name: 'TestTool', params: {} },
+      ctx,
+      async () => ({ behavior: 'allow' }),
+      { type: 'assistant', content: [], uuid: 'msg1' } as never,
+      undefined,
+    )
+
+    expect(result.data).toEqual({ result: null, tool_name: 'TestTool' })
+    expect(String(result.newMessages?.[0]?.content)).toContain(
+      'Stale tool call: TestTool',
+    )
+    expect(called).toBe(0)
   })
 })

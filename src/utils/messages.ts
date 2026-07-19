@@ -4302,6 +4302,11 @@ You have exited auto mode. The user may now want to interact more directly. You 
         createUserMessage({ content: attachment.content, isMeta: true }),
       ])
     }
+    case 'goal_context': {
+      return wrapMessagesInSystemReminder([
+        createUserMessage({ content: attachment.content, isMeta: true }),
+      ])
+    }
     case 'mcp_resource': {
       // Format the resource content similar to how file attachments work
       const content = attachment.content

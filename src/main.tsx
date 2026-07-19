@@ -1170,6 +1170,7 @@ async function run(): Promise<CommanderCommand> {
       'Write debug logs to a specific file path (implicitly enables debug mode)',
       () => true,
     )
+    .option('--no-openai-raw-log', 'Disable raw OpenAI provider event logging for this process')
     .option('--verbose', 'Override verbose mode setting from config', () => true)
     .option(
       '-p, --print',

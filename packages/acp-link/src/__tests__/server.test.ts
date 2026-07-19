@@ -275,9 +275,9 @@ describe('permission mode resolution', () => {
         {
           type: 'error',
           payload: {
-            // Legacy error envelope now carries the JSON-RPC code as a string
-            // (audit §8.3). -32602 = invalid params.
+            // Legacy error envelope carries JSON-RPC code + wire type (audit §8.3).
             code: '-32602',
+            type: 'validation.failed',
             message: expect.stringContaining(
               'bypassPermissions requires local ACP_PERMISSION_MODE',
             ),
@@ -337,13 +337,17 @@ describe('JSON-RPC 2.0 routing (audit §8.1-8.5)', () => {
         method: 'session/nonexistent_method',
         params: {},
       })
-      // JSON-RPC clients receive a JSON-RPC error with the standard code.
+      // JSON-RPC clients receive a JSON-RPC error with the standard code + wire data.
       expect(sent).toContainEqual({
         jsonrpc: '2.0',
         id: 42,
         error: {
           code: -32601,
           message: 'Method not found: session/nonexistent_method',
+          data: {
+            code: 'request.malformed',
+            message: 'Method not found: session/nonexistent_method',
+          },
         },
       })
     } finally {

@@ -276,6 +276,52 @@ describe('adaptOpenAIStreamToAnthropic', () => {
     expect(msgDelta.delta.stop_reason).toBe('max_tokens')
   })
 
+  test('rejects invalid tool call JSON at finish', async () => {
+    await expect(
+      collectEvents([
+        makeChunk({
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'call_bad',
+                    function: { name: 'bash', arguments: '{bad' },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        }),
+        makeChunk({
+          choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+        }),
+      ]),
+    ).rejects.toThrow(/invalid JSON arguments/)
+  })
+
+  test('maps completion_tokens_details.reasoning_tokens', async () => {
+    const events = await collectEvents([
+      makeChunk({
+        choices: [{ index: 0, delta: { content: 'hi' }, finish_reason: null }],
+      }),
+      makeChunk({
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        usage: {
+          prompt_tokens: 10,
+          completion_tokens: 8,
+          total_tokens: 18,
+          completion_tokens_details: { reasoning_tokens: 4 },
+        },
+      }),
+    ])
+    const msgDelta = events.find(e => e.type === 'message_delta') as any
+    expect(msgDelta.usage.reasoning_tokens).toBe(4)
+  })
+
   test('handles mixed text and tool_calls', async () => {
     const events = await collectEvents([
       makeChunk({

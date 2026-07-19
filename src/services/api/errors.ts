@@ -49,9 +49,30 @@ import {
   type OverageDisabledReason,
 } from '../claudeAiLimits.js'
 import { shouldProcessRateLimits } from '../rateLimitMocking.js' // Used for /mock-limits command
+import {
+  APIContextOverflowError,
+  APIProviderRateLimitError,
+  APIRequestTooLargeError,
+  getProviderRetryAfterMs,
+  isContextOverflowMessage,
+  isProviderContextOverflowError,
+  isProviderRateLimitError,
+  isProviderRequestTooLargeError,
+  isRequestTooLargeMessage,
+} from '@ant/model-provider'
 import { extractConnectionErrorDetails, formatAPIError } from './errorUtils.js'
 
 export const API_ERROR_MESSAGE_PREFIX = 'API Error'
+
+export {
+  APIContextOverflowError,
+  APIProviderRateLimitError,
+  APIRequestTooLargeError,
+  getProviderRetryAfterMs,
+  isProviderContextOverflowError,
+  isProviderRateLimitError,
+  isProviderRequestTooLargeError,
+}
 
 export function startsWithApiErrorPrefix(text: string): boolean {
   return (
@@ -557,19 +578,18 @@ export function getAssistantMessageFromError(
     })
   }
 
-  // Handle prompt too long errors (Vertex returns 413, direct API returns 400)
-  // Use case-insensitive check since Vertex returns "Prompt is too long" (capitalized)
+  // Context overflow (typed layer OR string match). Vertex may use 413.
+  // Content stays generic (UI matches on exact string). Raw error with token
+  // counts goes into errorDetails — reactive compact parses the gap from there.
   if (
-    error instanceof Error &&
-    error.message.toLowerCase().includes('prompt is too long')
+    isProviderContextOverflowError(error) ||
+    (error instanceof Error && isContextOverflowMessage(error.message))
   ) {
-    // Content stays generic (UI matches on exact string). The raw error with
-    // token counts goes into errorDetails — reactive compact's retry loop
-    // parses the gap from there via getPromptTooLongTokenGap.
+    const details = error instanceof Error ? error.message : String(error ?? '')
     return createAssistantAPIErrorMessage({
       content: PROMPT_TOO_LONG_ERROR_MESSAGE,
       error: 'invalid_request',
-      errorDetails: error.message,
+      errorDetails: details,
     })
   }
 
@@ -654,12 +674,19 @@ export function getAssistantMessageFromError(
     })
   }
 
-  // Check for request too large errors (413 status)
-  // This typically happens when a large PDF + conversation context exceeds the 32MB API limit
-  if (error instanceof APIError && error.status === 413) {
+  // Request body too large (typed layer OR 413 with size wording / bare 413).
+  // Distinct from token overflow (handled above; Vertex 413 prompt-too-long).
+  if (
+    isProviderRequestTooLargeError(error) ||
+    (error instanceof APIError &&
+      error.status === 413 &&
+      (isRequestTooLargeMessage(error.message) ||
+        !isContextOverflowMessage(error.message)))
+  ) {
     return createAssistantAPIErrorMessage({
       content: getRequestTooLargeErrorMessage(),
       error: 'invalid_request',
+      errorDetails: error instanceof Error ? error.message : undefined,
     })
   }
 
@@ -997,8 +1024,19 @@ export function classifyAPIError(error: unknown): string {
   }
 
   // Rate limiting
-  if (error instanceof APIError && error.status === 429) {
+  if (
+    isProviderRateLimitError(error) ||
+    (error instanceof APIError && error.status === 429)
+  ) {
     return 'rate_limit'
+  }
+
+  // Typed context overflow / body-too-large (before string fallbacks)
+  if (isProviderContextOverflowError(error)) {
+    return 'prompt_too_long'
+  }
+  if (isProviderRequestTooLargeError(error)) {
+    return 'client_error'
   }
 
   // Server overload (529)

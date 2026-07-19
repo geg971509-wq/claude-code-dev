@@ -753,16 +753,13 @@ async function* queryLoop(
     // Set during streaming whenever a tool_use block arrives — the sole
     // loop-exit signal. If false after streaming, we're done (modulo stop-hook retry).
     const toolUseBlocks: ToolUseBlock[] = []
+    const requestTools = toolUseContext.options.tools
     let needsFollowUp = false
 
     queryCheckpoint('query_setup_start')
     const useStreamingToolExecution = config.gates.streamingToolExecution
     let streamingToolExecutor = useStreamingToolExecution
-      ? new StreamingToolExecutor(
-          toolUseContext.options.tools,
-          canUseTool,
-          toolUseContext,
-        )
+      ? new StreamingToolExecutor(requestTools, canUseTool, toolUseContext)
       : null
 
     const appState = toolUseContext.getAppState()
@@ -900,7 +897,7 @@ async function* queryLoop(
             messages: prependUserContext(messagesForQuery, userContext),
             systemPrompt: fullSystemPrompt,
             thinkingConfig: toolUseContext.options.thinkingConfig,
-            tools: toolUseContext.options.tools,
+            tools: requestTools,
             signal: toolUseContext.abortController.signal,
             options: {
               async getToolPermissionContext() {
@@ -974,7 +971,7 @@ async function* queryLoop(
               if (streamingToolExecutor) {
                 streamingToolExecutor.discard()
                 streamingToolExecutor = new StreamingToolExecutor(
-                  toolUseContext.options.tools,
+                  requestTools,
                   canUseTool,
                   toolUseContext,
                 )
@@ -1005,7 +1002,7 @@ async function* queryLoop(
                   block.input !== null
                 ) {
                   const tool = findToolByName(
-                    toolUseContext.options.tools,
+                    requestTools,
                     block.name as string,
                   )
                   if (tool?.backfillObservableInput) {
@@ -1112,7 +1109,7 @@ async function* queryLoop(
                   toolResults.push(
                     ...normalizeMessagesForAPI(
                       [result.message],
-                      toolUseContext.options.tools,
+                      requestTools,
                     ).filter(_ => _.type === 'user'),
                   )
                 }
@@ -1170,7 +1167,7 @@ async function* queryLoop(
             if (streamingToolExecutor) {
               streamingToolExecutor.discard()
               streamingToolExecutor = new StreamingToolExecutor(
-                toolUseContext.options.tools,
+                requestTools,
                 canUseTool,
                 toolUseContext,
               )
@@ -1668,7 +1665,13 @@ async function* queryLoop(
 
     const toolUpdates = streamingToolExecutor
       ? streamingToolExecutor.getRemainingResults()
-      : runTools(toolUseBlocks, assistantMessages, canUseTool, toolUseContext)
+      : runTools(
+          toolUseBlocks,
+          assistantMessages,
+          canUseTool,
+          toolUseContext,
+          requestTools,
+        )
 
     for await (const update of toolUpdates) {
       if (update.message) {
@@ -1682,10 +1685,9 @@ async function* queryLoop(
         }
 
         toolResults.push(
-          ...normalizeMessagesForAPI(
-            [update.message],
-            toolUseContext.options.tools,
-          ).filter(_ => _.type === 'user'),
+          ...normalizeMessagesForAPI([update.message], requestTools).filter(
+            _ => _.type === 'user',
+          ),
         )
       }
       if (update.newContext) {

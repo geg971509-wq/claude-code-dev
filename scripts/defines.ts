@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { FeatureFlagName } from '../src/constants/featureFlags.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const pkgPath = resolve(__dirname, '..', 'package.json')
@@ -98,4 +99,4 @@ export const DEFAULT_BUILD_FEATURES = [
   // Persistent thread goal command — auto-continuation, JSONL persistence,
   // strict completion/blocked audit. See src/services/goal.
   'GOAL',
-] as const
+] as const satisfies readonly FeatureFlagName[]

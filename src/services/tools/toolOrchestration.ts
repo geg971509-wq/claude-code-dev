@@ -1,6 +1,6 @@
 import type { ToolUseBlock } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
-import { findToolByName, type ToolUseContext } from '../../Tool.js'
+import { findToolByName, type ToolUseContext, type Tools } from '../../Tool.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { all } from '../../utils/generators.js'
 import { type MessageUpdateLazy, runToolUse } from './toolExecution.js'
@@ -22,6 +22,7 @@ export async function* runTools(
   assistantMessages: AssistantMessage[],
   canUseTool: CanUseToolFn,
   toolUseContext: ToolUseContext,
+  requestTools: Tools,
 ): AsyncGenerator<MessageUpdate, void> {
   // Wrap all tool calls in this turn under a single Langfuse turn span
   const turnSpan =
@@ -39,6 +40,7 @@ export async function* runTools(
   for (const { isConcurrencySafe, blocks } of partitionToolCalls(
     toolUseMessages,
     currentContext,
+    requestTools,
   )) {
     if (isConcurrencySafe) {
       const queuedContextModifiers: Record<
@@ -51,6 +53,7 @@ export async function* runTools(
         assistantMessages,
         canUseTool,
         currentContext,
+        requestTools,
       )) {
         if (update.contextModifier) {
           const { toolUseID, modifyContext } = update.contextModifier
@@ -81,6 +84,7 @@ export async function* runTools(
         assistantMessages,
         canUseTool,
         currentContext,
+        requestTools,
       )) {
         if (update.newContext) {
           currentContext = update.newContext
@@ -106,9 +110,10 @@ type Batch = { isConcurrencySafe: boolean; blocks: ToolUseBlock[] }
 function partitionToolCalls(
   toolUseMessages: ToolUseBlock[],
   toolUseContext: ToolUseContext,
+  requestTools: Tools,
 ): Batch[] {
   return toolUseMessages.reduce((acc: Batch[], toolUse) => {
-    const tool = findToolByName(toolUseContext.options.tools, toolUse.name)
+    const tool = findToolByName(requestTools, toolUse.name)
     const parsedInput = tool?.inputSchema.safeParse(toolUse.input)
     const isConcurrencySafe = parsedInput?.success
       ? (() => {
@@ -135,6 +140,7 @@ async function* runToolsSerially(
   assistantMessages: AssistantMessage[],
   canUseTool: CanUseToolFn,
   toolUseContext: ToolUseContext,
+  requestTools: Tools,
 ): AsyncGenerator<MessageUpdate, void> {
   let currentContext = toolUseContext
 
@@ -153,6 +159,7 @@ async function* runToolsSerially(
       )!,
       canUseTool,
       currentContext,
+      requestTools,
     )) {
       if (update.contextModifier) {
         currentContext = update.contextModifier.modifyContext(currentContext)
@@ -171,6 +178,7 @@ async function* runToolsConcurrently(
   assistantMessages: AssistantMessage[],
   canUseTool: CanUseToolFn,
   toolUseContext: ToolUseContext,
+  requestTools: Tools,
 ): AsyncGenerator<MessageUpdateLazy, void> {
   yield* all(
     toolUseMessages.map(async function* (toolUse) {
@@ -188,6 +196,7 @@ async function* runToolsConcurrently(
         )!,
         canUseTool,
         toolUseContext,
+        requestTools,
       )
       markToolUseAsComplete(toolUseContext, toolUse.id)
     }),

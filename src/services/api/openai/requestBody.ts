@@ -57,6 +57,103 @@ export function resolveOpenAIMaxTokens(
 }
 
 /**
+ * OpenAI Chat Completions reasoning models that reject `max_tokens` and
+ * require `max_completion_tokens` (o-series + GPT-5 reasoning, not gpt-5-chat).
+ */
+export function isOpenAIReasoningChatModel(model: string): boolean {
+  const m = model.toLowerCase()
+  if (/^o\d/.test(m)) return true
+  return m.includes('gpt-5') && !m.includes('gpt-5-chat')
+}
+
+/**
+ * Codex-aligned Azure Responses host markers (hostname only).
+ * Shared by routing capability and `store` default so the two cannot drift.
+ */
+function isAzureResponsesHostname(host: string): boolean {
+  return (
+    host.includes('openai.azure.') ||
+    host.includes('cognitiveservices.azure.') ||
+    host.includes('aoai.azure.') ||
+    host.endsWith('.azure-api.net') ||
+    host.endsWith('.azurefd.net')
+  )
+}
+
+/**
+ * Whether OPENAI_BASE_URL is an Azure Responses endpoint (`store: true` policy).
+ * Uses hostname markers; also accepts classic `*.windows.net` bases whose path
+ * contains `/openai` (Codex substring set).
+ */
+export function isAzureResponsesBaseURL(
+  baseURL: string | undefined = process.env.OPENAI_BASE_URL,
+): boolean {
+  if (!baseURL?.trim()) return false
+  try {
+    const u = new URL(baseURL)
+    const host = u.hostname.toLowerCase()
+    if (isAzureResponsesHostname(host)) return true
+    return (
+      host.endsWith('.windows.net') &&
+      u.pathname.toLowerCase().includes('/openai')
+    )
+  } catch {
+    // Malformed URL: keep previous substring fall-back for store policy only.
+    const u = baseURL.toLowerCase()
+    return (
+      u.includes('openai.azure.') ||
+      u.includes('cognitiveservices.azure.') ||
+      u.includes('aoai.azure.') ||
+      u.includes('azure-api.') ||
+      u.includes('azurefd.') ||
+      u.includes('windows.net/openai')
+    )
+  }
+}
+
+/**
+ * Hosts that actually speak OpenAI/Azure Responses (`/responses`).
+ * Custom OPENAI_BASE_URL proxies are usually Chat Completions only — do not
+ * auto-route them (Codex is provider-configured for Responses; we are not).
+ */
+export function isOpenAIResponsesCapableBaseURL(
+  baseURL: string | undefined = process.env.OPENAI_BASE_URL,
+): boolean {
+  if (!baseURL?.trim()) return true // SDK default: api.openai.com
+  try {
+    const u = new URL(baseURL)
+    const host = u.hostname.toLowerCase()
+    if (host === 'api.openai.com') return true
+    if (isAzureResponsesHostname(host)) return true
+    return (
+      host.endsWith('.windows.net') &&
+      u.pathname.toLowerCase().includes('/openai')
+    )
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether the API-key path should use `/v1/responses`.
+ *
+ * - OPENAI_USE_RESPONSES=0/false → never
+ * - OPENAI_USE_RESPONSES=1/true → always (proxy opts in)
+ * - else auto: o-series / gpt-5* only on official OpenAI/Azure bases
+ */
+export function shouldUseOpenAIResponsesAPI(model: string): boolean {
+  if (isEnvDefinedFalsy(process.env.OPENAI_USE_RESPONSES)) return false
+  if (isEnvTruthy(process.env.OPENAI_USE_RESPONSES)) return true
+  return isOpenAIReasoningChatModel(model) && isOpenAIResponsesCapableBaseURL()
+}
+
+/** Optional prompt cache key for Responses (omit when unset). */
+export function resolveOpenAIPromptCacheKey(): string | undefined {
+  const key = process.env.OPENAI_PROMPT_CACHE_KEY?.trim()
+  return key ? key : undefined
+}
+
+/**
  * Build the request body for OpenAI chat.completions.create().
  * Extracted for testability — the thinking mode params are injected here.
  *
@@ -77,12 +174,15 @@ export function buildOpenAIRequestBody(params: {
   temperatureOverride?: number
   /** Session-scoped routing key for official OpenAI requests. */
   promptCacheKey?: string
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
 }): ChatCompletionCreateParamsStreaming & {
   thinking?: { type: string }
   enable_thinking?: boolean
   chat_template_kwargs?: { thinking: boolean; enable_thinking: boolean }
   /** OpenAI prompt-cache routing key (not always in SDK types yet). */
   prompt_cache_key?: string
+  max_completion_tokens?: number
+  reasoning_effort?: 'low' | 'medium' | 'high' | 'xhigh'
 } {
   const {
     model,
@@ -93,12 +193,19 @@ export function buildOpenAIRequestBody(params: {
     maxTokens,
     temperatureOverride,
     promptCacheKey,
+    reasoningEffort,
   } = params
+  const isReasoningChat = isOpenAIReasoningChatModel(model)
   return {
     model,
     messages,
-    max_tokens: maxTokens,
-    ...(promptCacheKey && { prompt_cache_key: promptCacheKey }),
+    ...(isReasoningChat
+      ? { max_completion_tokens: maxTokens }
+      : { max_tokens: maxTokens }),
+    ...(isReasoningChat &&
+      reasoningEffort && {
+        reasoning_effort: reasoningEffort,
+      }),
     ...(tools.length > 0 && {
       tools,
       ...(toolChoice && { tool_choice: toolChoice }),

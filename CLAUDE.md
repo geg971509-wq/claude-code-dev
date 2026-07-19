@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) and other AI coding agents when working with code in this repository.
 
+> **单一事实源**：本文件是唯一正文，`AGENTS.md` 是指向本文件的 symlink（借鉴 kimi-code 模式）。只编辑 `CLAUDE.md`，不要把 `AGENTS.md` 替换为独立文件。
+
 ## Project Overview
 
 This is a **reverse-engineered / decompiled** version of Anthropic's official Claude Code CLI tool. The goal is to restore core functionality while trimming secondary capabilities. Many modules are stubbed or feature-flagged off. TypeScript strict mode is enforced — **`bun run precheck` 必须零错误通过**（包含 typecheck + lint fix + test）。
@@ -60,7 +62,10 @@ bun run health
 # Check unused exports
 bun run check:unused
 
-# Full check (typecheck + lint fix + test) — 任务完成后必须运行
+# Dependency boundary ratchet（packages → src 反向依赖只减不增）
+bun run check:boundaries
+
+# Full check (typecheck + lint fix + boundaries + test) — 任务完成后必须运行
 bun run precheck
 
 # Remote Control Server
@@ -83,7 +88,7 @@ bun run docs:dev
 - **为什么 Vite 必须代码分割**: Bun/JSC 会全量解析单个大 JS 文件的 bytecode 和 JIT，单文件 17MB 产物导致 RSS 暴涨至 ~1GB（Node/V8 懒解析仅需 ~220MB）。代码分割为 600+ 小 chunk 后 Bun 按需加载，`--version` RSS 从 966MB 降至 35MB，完整加载从 1GB+ 降至 ~500MB。
 - **Dev mode**: `scripts/dev.ts` 通过 Bun `-d` flag 注入 `MACRO.*` defines，运行 `src/entrypoints/cli.tsx`。默认启用全部 feature。
 - **Module system**: ESM (`"type": "module"`), TSX with `react-jsx` transform.
-- **Monorepo**: Bun workspaces — 17 个 workspace packages + 若干辅助目录 in `packages/` resolved via `workspace:*`。
+- **Monorepo**: Bun workspaces — 20 个 workspace packages（含 package.json，经 `workspace:*` 解析）+ 若干辅助目录 in `packages/`。
 - **Lint/Format**: Biome (`biome.json`)。覆盖 `src/`、`scripts/`、`packages/` 全项目（含 `packages/@ant/`）。`bun run lint` / `bun run lint:fix` / `bun run format` / `bun run check` / `bun run check:fix`。42 条规则因 decompiled 代码被关闭，仅保留 `recommended` 基线。
 - **Pre-commit**: husky + lint-staged。提交时自动对暂存文件执行 `biome check --fix`（TS/JS）和 `biome format --write`（JSON）。
 - **CI Lint**: `ci.yml` 在依赖安装后、类型检查前执行 `bunx biome ci .`，lint 或格式化不达标则 CI 失败。
@@ -179,6 +184,8 @@ bun run docs:dev
 | `packages/image-processor-napi/` | 图像处理（已恢复） |
 | `packages/modifiers-napi/` | 键盘修饰键检测（macOS FFI 实现） |
 | `packages/url-handler-napi/` | URL scheme 处理（环境变量 + CLI 参数读取） |
+| `packages/wire-types/` | RCS/ACP 稳定 wire 错误码表（`WireErrorCode` + `wireError` 封套），零依赖，被 acp-link 与 remote-control-server 共享 |
+| `packages/workflow-engine/` | 工作流引擎（WORKFLOW_SCRIPTS feature 的执行层） |
 | `packages/weixin/` | 微信集成（非 workspace 包） |
 
 辅助目录（无 package.json，非 workspace 包）: `langfuse-dashboard`（Langfuse 面板）、`shared-web-ui`（共享 Web UI 组件）、`highlight-code`（代码高亮）、`claude-pencil`（编辑器）、`vscode-ide-bridge`（VS Code 桥接）、`pokemon`（示例/测试）。
@@ -231,9 +238,9 @@ Feature flags control which functionality is enabled at runtime. 代码中统一
 
 **Dev mode 默认**: 全部启用（见 `scripts/dev.ts`）。
 
-**类型声明**: `src/types/internal-modules.d.ts` 中声明了 `bun:bundle` 模块的 `feature` 函数签名。
+**类型声明**: `src/constants/featureFlags.ts` 是全部 flag 名的注册表（`as const` 数组派生字面量联合类型 `FeatureFlagName`）。`src/types/internal-modules.d.ts` 中 `bun:bundle` 的 `feature(name: FeatureFlagName)` 签名引用该类型，拼错 flag 名会直接 tsc 报错。`DEFAULT_BUILD_FEATURES` 通过 `satisfies readonly FeatureFlagName[]` 校验必须是注册表子集。
 
-**新增功能的正确做法**: 保留 `import { feature } from 'bun:bundle'` + `feature('FLAG_NAME')` 的标准模式，在运行时通过环境变量或配置控制，不要绕过 feature flag 直接 import。
+**新增功能的正确做法**: 先在 `src/constants/featureFlags.ts` 注册 flag 名，再保留 `import { feature } from 'bun:bundle'` + `feature('FLAG_NAME')` 的标准模式，在运行时通过环境变量或配置控制，不要绕过 feature flag 直接 import。
 
 ### Multi-API 兼容层
 
@@ -245,6 +252,8 @@ Feature flags control which functionality is enabled at runtime. 代码中统一
 
 - **`src/services/api/openai/`** — client、消息/工具转换、流适配、模型映射
 - 关键环境变量：`CLAUDE_CODE_USE_OPENAI`、`OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`
+- **Responses API 路由**：o 系列 / gpt-5*（非 gpt-5-chat）在官方 OpenAI/Azure base 上自动走 `/v1/responses`；`OPENAI_USE_RESPONSES=1/0` 强制开/关；`OPENAI_PROMPT_CACHE_KEY` 可选 prompt cache key。ChatGPT 订阅认证走 Codex Responses 路径。
+- **Raw 流日志**：OpenAI 兼容路径默认将原始 provider 事件写入 `~/.claude/debug/<session>.openai.jsonl`（0600 权限，随 debug 日志一起清理），`--no-openai-raw-log` 可禁用。
 
 #### Gemini 兼容层
 
@@ -294,7 +303,7 @@ Feature flags control which functionality is enabled at runtime. 代码中统一
 
 - **框架**: `bun:test`（内置断言 + mock）
 - **单元测试**: 就近放置于 `src/**/__tests__/`，文件名 `<module>.test.ts`
-- **集成测试**: `tests/integration/` — 6 个文件（cli-arguments, context-build, message-pipeline, tool-chain, autonomy-lifecycle-user-flow, dependency-overrides）
+- **集成测试**: `tests/integration/` — 7 个文件（cli-arguments, context-build, message-pipeline, tool-chain, autonomy-lifecycle-user-flow, dependency-overrides, goal-lifecycle）
 - **共享 mock/fixture**: `tests/mocks/`（api-responses, file-system, fixtures/）
 - **命名**: `describe("functionName")` + `test("behavior description")`，英文
 - **包测试**: `packages/` 下各包也有独立测试（如 `color-diff-napi` 11 tests）
@@ -390,6 +399,7 @@ bun run precheck
 - **构建产物兼容 Node.js** — `build.ts` 会自动后处理 `import.meta.require`，产物可直接用 `node dist/cli.js` 运行。
 - **Biome 配置** — 42 条 lint 规则因 decompiled 代码被关闭，仅保留 `recommended` 基线。格式化覆盖全项目（`src/`、`scripts/`、`packages/`，含 `packages/@ant/`）。`.tsx` 文件用 120 行宽 + 强制分号；其他文件 80 行宽 + 按需分号。JSON 格式化已启用。`.editorconfig` 与 Biome 配置对齐（2-space 缩进）。修改任何代码后应运行 `bun run precheck` 确认无类型/lint/格式/测试问题，pre-commit hook 会自动拦截不合格提交。
 - **tsc 与 Biome 冲突处理** — 当 tsc 要求声明属性（赋值使用）但 biome 报 `noUnusedPrivateClassMembers`（只写不读）时，用 `// biome-ignore lint/correctness/noUnusedPrivateClassMembers: <原因>` 抑制 lint 警告，保留类型声明。`biome ci` 必须零 warnings。
+- **依赖边界棘轮** — `packages/` 内禁止新增 `from 'src/...'` 反向导入主应用（存量基线见 `scripts/boundaries-baseline.json`，只减不增）。共享逻辑应下沉到 workspace 包或通过参数/注入传入。解耦后运行 `bun scripts/check-boundaries.ts --update` 收紧基线并提交。
 - **`@ts-expect-error` 维护** — 只在下方代码确实有类型错误时保留 `@ts-expect-error`。如果类型系统已更新导致 directive 变为 unused（TS2578），直接移除注释。MACRO 替换产生的永假比较（如 `'production' === 'development'`）仍需保留 `@ts-expect-error`。
 - **Ink 框架在 `packages/@ant/ink/`** — 不是 `src/ink/`（该目录不存在）。Ink 相关的组件、hooks、keybindings 都在 packages 中。
 - **Provider 优先级** — `modelType` 参数 > 环境变量 > 默认 `firstParty`。新增 provider 需在 `src/utils/model/providers.ts` 注册。

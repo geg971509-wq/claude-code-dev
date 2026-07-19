@@ -298,7 +298,13 @@ export function addToTotalSessionCost(
       goalDbg(
         `[goal] cost: in=${usage.input_tokens ?? 0} out=${usage.output_tokens ?? 0} cache_r=${usage.cache_read_input_tokens ?? 0} cache_w=${usage.cache_creation_input_tokens ?? 0} delta=${totalDelta}`,
       )
-      updateGoalTokens(totalDelta)
+      const updated = updateGoalTokens(totalDelta)
+      // Persist on hard budget block so resume sees blocked, not stale active.
+      if (updated?.status === 'blocked') {
+        const { persistCurrentGoal } =
+          require('./services/goal/goalStorage.js') as typeof import('./services/goal/goalStorage.js')
+        persistCurrentGoal()
+      }
     }
   }
 

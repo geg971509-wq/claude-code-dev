@@ -11,26 +11,20 @@
  *   3. Query just finished (isLoading transitioned false)
  *   4. No active local-JSX UI (modal dialog)
  *   5. Not in plan mode
- *   6. turnsExecuted < MAX_GOAL_TURNS
+ *   6. Budgets not exhausted (token / turn / wall-clock)
  *   7. No user messages in the queue (user input always takes priority)
  *
- * When user messages are queued during a goal turn, the hook always
- * yields to let them process first. After the user messages are
- * handled, the next idle will fire the hook again to continue.
- * This ensures commands like `/goal pause` are never starved by
- * auto-continuation.
- *
- * The hook is intentionally simple: a single useEffect that fires
- * when `isLoading` flips to false. No timers, no intervals — the
- * idle→enqueue→process→query→idle cycle is self-sustaining.
+ * Budget hard-stops mark the goal blocked and enqueue one wrap-up prompt.
+ * Aborted turns do not auto-continue (caller should pause separately).
  */
 import { useLayoutEffect, useRef } from 'react'
 
 import { logForDebugging } from 'src/utils/debug.js'
 import {
-  markGoalMaxTurnsReached,
+  checkBudgets,
   getGoal,
   incrementGoalTurns,
+  markGoalMaxTurnsReached,
   MAX_GOAL_TURNS,
 } from 'src/services/goal/goalState.js'
 import { persistCurrentGoal } from 'src/services/goal/goalStorage.js'
@@ -61,6 +55,16 @@ export type UseGoalContinuationOpts = {
   }) => void
 }
 
+function isBudgetBlockReason(reason: string | null | undefined): boolean {
+  if (!reason) return false
+  return (
+    reason.includes('Token budget reached') ||
+    reason.includes('Turn budget reached') ||
+    reason.includes('Max continuation turns') ||
+    reason.includes('Wall-clock budget reached')
+  )
+}
+
 export function useGoalContinuation(opts: UseGoalContinuationOpts): void {
   const optsRef = useRef(opts)
   optsRef.current = opts
@@ -68,7 +72,7 @@ export function useGoalContinuation(opts: UseGoalContinuationOpts): void {
   // Track whether we already enqueued for the current idle window.
   // Reset to false every time isLoading becomes true (new turn starts).
   const enqueuedRef = useRef(false)
-  // Fire budget_limit prompt exactly once per budget transition.
+  // Fire budget wrap-up prompt exactly once per block transition.
   const budgetLimitFiredRef = useRef(false)
 
   useLayoutEffect(() => {
@@ -77,27 +81,19 @@ export function useGoalContinuation(opts: UseGoalContinuationOpts): void {
       return
     }
 
-    // Avoid stale-render races: queue processing can reserve QueryGuard in an
-    // earlier effect during the same commit. Read live state before deciding.
     if (opts.isQueryActiveNow?.()) {
       hookLog('skip: queryActiveNow=true')
       return
     }
 
-    // Codex parity: continuation only after normal completion.
-    // Aborted turns (Ctrl+C / Escape) must not trigger a new turn.
+    // Codex/kimi parity: continuation only after normal completion.
     if (opts.wasAborted) {
       hookLog('skip: wasAborted=true')
       return
     }
 
-    // Already enqueued for this idle window
     if (enqueuedRef.current) return
 
-    // User messages always take priority over auto-continuation.
-    // If the user typed something (e.g. `/goal pause`) while a turn was
-    // running, let their message process first. After it finishes, the
-    // next idle cycle will re-evaluate whether to continue.
     const liveQueueLength = getCommandQueueSnapshot().length
     if (liveQueueLength > 0) {
       hookLog('skip: yielding to queued user messages')
@@ -112,7 +108,7 @@ export function useGoalContinuation(opts: UseGoalContinuationOpts): void {
       return
     }
 
-    const goal = getGoal()
+    let goal = getGoal()
     if (!goal) {
       budgetLimitFiredRef.current = false
       return
@@ -121,14 +117,29 @@ export function useGoalContinuation(opts: UseGoalContinuationOpts): void {
       budgetLimitFiredRef.current = false
     }
 
-    // Budget-limited: inject one final steering prompt so the model
-    // knows to stop substantive work and summarise progress.
-    if (goal.status === 'budget_limited' && !budgetLimitFiredRef.current) {
+    // Hard budget check before enqueuing the next turn.
+    if (goal.status === 'active') {
+      const blocked = checkBudgets()
+      if (blocked) {
+        persistCurrentGoal()
+        goal = blocked
+        if (isBudgetBlockReason(blocked.terminalReason)) {
+          opts.onMaxTurnsReached?.()
+        }
+      }
+    }
+
+    // Budget/turn/wall blocked: one wrap-up prompt, then stop.
+    if (
+      goal.status === 'blocked' &&
+      isBudgetBlockReason(goal.terminalReason) &&
+      !budgetLimitFiredRef.current
+    ) {
       budgetLimitFiredRef.current = true
       enqueuedRef.current = true
       const prompt = buildBudgetLimitPrompt(goal)
       logForDebugging(
-        '[goal] hook: budget limit reached, injecting wrap-up prompt',
+        '[goal] hook: budget/turn limit reached, injecting wrap-up prompt',
       )
       enqueue({
         value: prompt,
@@ -141,31 +152,61 @@ export function useGoalContinuation(opts: UseGoalContinuationOpts): void {
       return
     }
 
-    // Only continue for active goals
     if (goal.status !== 'active') {
       hookLog(`skip: status="${goal.status}" (not active)`)
       return
     }
 
-    if (goal.turnsExecuted >= MAX_GOAL_TURNS) {
+    const cap = goal.turnBudget ?? MAX_GOAL_TURNS
+    if (goal.turnsExecuted >= cap) {
       const marked = markGoalMaxTurnsReached()
       if (marked) {
         persistCurrentGoal()
         opts.onMaxTurnsReached?.()
+        if (!budgetLimitFiredRef.current) {
+          budgetLimitFiredRef.current = true
+          enqueuedRef.current = true
+          enqueue({
+            value: buildBudgetLimitPrompt(marked),
+            mode: 'prompt',
+            priority: 'now',
+            isMeta: true,
+            origin: 'goal-budget-limit',
+            skipSlashCommands: true,
+          })
+        }
       }
-      logForDebugging(
-        `[goal] hook: MAX_GOAL_TURNS (${MAX_GOAL_TURNS}) reached, stopping`,
-      )
+      logForDebugging(`[goal] hook: turn cap (${cap}) reached, stopping`)
       return
     }
 
-    // All conditions met — enqueue a continuation turn
     enqueuedRef.current = true
 
     const turns = incrementGoalTurns()
+    // Re-check after increment (explicit turnBudget may trip now).
+    const afterTurn = checkBudgets()
+    if (afterTurn?.status === 'blocked') {
+      persistCurrentGoal()
+      if (
+        isBudgetBlockReason(afterTurn.terminalReason) &&
+        !budgetLimitFiredRef.current
+      ) {
+        budgetLimitFiredRef.current = true
+        enqueue({
+          value: buildBudgetLimitPrompt(afterTurn),
+          mode: 'prompt',
+          priority: 'now',
+          isMeta: true,
+          origin: 'goal-budget-limit',
+          skipSlashCommands: true,
+        })
+      }
+      opts.onMaxTurnsReached?.()
+      return
+    }
     persistCurrentGoal()
 
-    const prompt = buildContinuationPrompt(goal)
+    const prompt = buildContinuationPrompt(getGoal() ?? goal)
     logForDebugging(
       `[goal] hook: enqueuing turn ${turns} for "${goal.objective.slice(0, 60)}"`,
     )

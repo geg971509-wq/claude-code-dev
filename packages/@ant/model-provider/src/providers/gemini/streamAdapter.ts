@@ -1,5 +1,9 @@
 import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { randomUUID } from 'crypto'
+import {
+  finishReasonToAnthropicStopReason,
+  normalizeGeminiFinishReason,
+} from '../../types/finishReason.js'
 import type { GeminiPart, GeminiStreamChunk } from './types.js'
 
 export async function* adaptGeminiStreamToAnthropic(
@@ -231,18 +235,6 @@ function mapGeminiFinishReason(
   reason: string | undefined,
   sawToolUse: boolean,
 ): string {
-  switch (reason) {
-    case 'MAX_TOKENS':
-      return 'max_tokens'
-    case 'STOP':
-    case 'FINISH_REASON_UNSPECIFIED':
-    case 'SAFETY':
-    case 'RECITATION':
-    case 'BLOCKLIST':
-    case 'PROHIBITED_CONTENT':
-    case 'SPII':
-    case 'MALFORMED_FUNCTION_CALL':
-    default:
-      return sawToolUse ? 'tool_use' : 'end_turn'
-  }
+  const { finishReason } = normalizeGeminiFinishReason(reason)
+  return finishReasonToAnthropicStopReason(finishReason, sawToolUse)
 }

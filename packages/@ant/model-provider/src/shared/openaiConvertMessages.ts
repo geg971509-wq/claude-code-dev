@@ -188,6 +188,9 @@ function convertInternalAssistantMessage(
     ChatCompletionAssistantMessageParam['tool_calls']
   > = []
   const reasoningParts: string[] = []
+  // OpenAI Responses encrypted reasoning is stored in Anthropic thinking.signature
+  // (see responsesAdapter). Echo it so store:false multi-turn can replay.
+  let encryptedReasoning: string | undefined
 
   for (const block of content) {
     if (typeof block === 'string') {
@@ -211,22 +214,33 @@ function convertInternalAssistantMessage(
       // reasoning_content: "" when the model answers directly, and the
       // empty value must be echoed back in the next request — otherwise
       // DeepSeek returns 400 ("reasoning_content ... must be passed back").
-      const thinkingText = (block as unknown as Record<string, unknown>)
-        .thinking
+      const thinkingBlock = block as unknown as Record<string, unknown>
+      const thinkingText = thinkingBlock.thinking
       if (typeof thinkingText === 'string') {
         reasoningParts.push(thinkingText)
+      }
+      if (
+        typeof thinkingBlock.signature === 'string' &&
+        thinkingBlock.signature.length > 0
+      ) {
+        encryptedReasoning = thinkingBlock.signature
       }
     }
     // Skip redacted_thinking, server_tool_use, etc.
   }
 
-  const result: ChatCompletionAssistantMessageParam = {
+  const result: ChatCompletionAssistantMessageParam & {
+    reasoning_content?: string
+    encrypted_content?: string
+  } = {
     role: 'assistant',
     content: textParts.length > 0 ? textParts.join('\n') : null,
     ...(toolCalls.length > 0 && { tool_calls: toolCalls }),
     ...(reasoningParts.length > 0 && {
       reasoning_content: reasoningParts.join('\n'),
     }),
+    // Custom field consumed by convertMessagesToResponsesInput; ignored by Chat.
+    ...(encryptedReasoning ? { encrypted_content: encryptedReasoning } : {}),
   }
 
   return [result]

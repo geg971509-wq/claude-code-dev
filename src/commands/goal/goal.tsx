@@ -8,11 +8,10 @@
  * `/goal status`       -> alias of bare `/goal`
  * `/goal clear`        -> remove the active goal (persists tombstone)
  * `/goal pause`        -> pause auto-continuation
- * `/goal resume`       -> resume from paused state
- * `/goal continue`     -> reset turn counter after max-turns and continue
+ * `/goal resume`       -> resume from paused or blocked
+ * `/goal continue`     -> reset turn counter after turn-budget block and continue
  * `/goal complete`     -> mark complete (manual override; tools usually do this)
- * `/goal <objective>`  -> set a new goal; if one is already active and not
- *                         complete, a confirmation dialog appears first.
+ * `/goal <objective>`  -> set a new goal; if one already exists, confirm first
  */
 import * as React from 'react';
 
@@ -24,18 +23,18 @@ import {
   formatGoalElapsed,
   formatGoalStatusLabel,
   getGoal,
-  incrementGoalTurns,
+  MAX_GOAL_OBJECTIVE_LENGTH,
   MAX_GOAL_TURNS,
   pauseGoal,
   resumeGoal,
   setGoal,
 } from 'src/services/goal/goalState.js';
 import { persistCurrentGoal, persistGoalClear } from 'src/services/goal/goalStorage.js';
+import { buildObjectiveUpdatedPrompt } from 'src/services/goal/prompts.js';
 import type { LocalJSXCommandOnDone } from 'src/types/command.js';
 import { removeByFilter } from 'src/utils/messageQueueManager.js';
 import { GoalReplaceConfirmDialog } from './GoalReplaceConfirmDialog.js';
 
-const MAX_OBJECTIVE_CHARS = 4000;
 const MAX_DISPLAY_CHARS = 80;
 
 function truncateForDisplay(objective: string): string {
@@ -54,26 +53,40 @@ function formatGoalStatus(): string {
     return 'No active goal. Set one with `/goal <objective>`.';
   }
   const tokens = goal.tokenBudget !== null ? `${goal.tokensUsed} / ${goal.tokenBudget}` : `${goal.tokensUsed}`;
+  const turnCap = goal.turnBudget ?? MAX_GOAL_TURNS;
   const lines = [
     `Goal: ${goal.objective}`,
     `Status: ${formatGoalStatusLabel(goal.status)}`,
     `Time: ${formatGoalElapsed(goal)}`,
     `Tokens: ${tokens}`,
-    `Continuation turns: ${goal.turnsExecuted}`,
+    `Continuation turns: ${goal.turnsExecuted} / ${turnCap}`,
   ];
-
-  if (goal.status === 'max_turns') {
+  if (goal.wallClockBudgetMs !== null) {
+    lines.push(`Wall-clock budget: ${Math.round(goal.wallClockBudgetMs / 1000)}s`);
+  }
+  if (goal.terminalReason) {
+    lines.push(`Reason: ${goal.terminalReason}`);
+  }
+  if (
+    goal.status === 'blocked' &&
+    (goal.terminalReason?.includes('Max continuation turns') || goal.terminalReason?.includes('Turn budget reached'))
+  ) {
     lines.push(
-      `Hint: Max continuation turns reached (${MAX_GOAL_TURNS}). Run \`/goal continue\` to reset and continue.`,
+      `Hint: Turn budget reached. Run \`/goal continue\` to reset and continue, or \`/goal resume\` after adjusting work.`,
     );
+  }
+  if (goal.status === 'blocked' || goal.status === 'paused') {
+    lines.push('Hint: `/goal resume` re-activates the goal driver.');
   }
 
   return lines.join('\n');
 }
 
-function applySetGoal(objective: string): string {
-  setGoal(objective);
-  incrementGoalTurns();
+function applySetGoal(objective: string, replace: boolean): string {
+  const result = setGoal(objective, { replace });
+  if (!result.ok) {
+    return result.message;
+  }
   persistCurrentGoal();
   return 'Goal set.';
 }
@@ -105,7 +118,7 @@ export async function call(
   }
 
   if (lower === 'pause') {
-    const g = pauseGoal();
+    const g = pauseGoal(undefined, 'Paused by user');
     if (g) {
       persistCurrentGoal();
       drainGoalContinuationQueue();
@@ -117,17 +130,9 @@ export async function call(
   }
 
   if (lower === 'resume') {
-    const current = getGoal();
-    if (current?.status === 'max_turns') {
-      onDone(
-        `Goal reached max continuation turns (${MAX_GOAL_TURNS}). Run \`/goal continue\` to reset turn counter and continue.`,
-        { display: 'system' },
-      );
-      return null;
-    }
     const g = resumeGoal();
     if (g) persistCurrentGoal();
-    onDone(g ? 'Goal resumed.' : 'No paused goal to resume.', {
+    onDone(g ? 'Goal resumed.' : 'No paused/blocked goal to resume.', {
       display: 'system',
       shouldQuery: Boolean(g),
     });
@@ -139,8 +144,8 @@ export async function call(
     if (g) persistCurrentGoal();
     onDone(
       g
-        ? `Goal continuation counter reset (0/${MAX_GOAL_TURNS}). Continuing...`
-        : 'Current goal is not in max-turns state.',
+        ? `Goal continuation counter reset (0/${g.turnBudget ?? MAX_GOAL_TURNS}). Continuing...`
+        : 'Current goal is not blocked on a turn budget. Use `/goal resume` for other blocked/paused goals.',
       {
         display: 'system',
         shouldQuery: Boolean(g),
@@ -150,51 +155,54 @@ export async function call(
   }
 
   if (lower === 'complete') {
-    const g = completeGoal();
+    const g = completeGoal(undefined, 'Marked complete by user');
     if (g) {
-      persistCurrentGoal();
+      clearGoal();
+      persistGoalClear();
       drainGoalContinuationQueue();
     }
-    onDone(g ? 'Goal marked complete.' : 'No active goal to complete.', {
+    onDone(g ? 'Goal marked complete and cleared.' : 'No active goal to complete.', {
       display: 'system',
     });
     return null;
   }
 
-  if (trimmed.length > MAX_OBJECTIVE_CHARS) {
+  if (trimmed.length > MAX_GOAL_OBJECTIVE_LENGTH) {
     onDone(
-      `Goal objective is too long (${trimmed.length} chars; limit ${MAX_OBJECTIVE_CHARS}). Save the detailed instructions to a file and reference it from a shorter objective.`,
+      `Goal objective is too long (${trimmed.length} chars; limit ${MAX_GOAL_OBJECTIVE_LENGTH}). Save the detailed instructions to a file and reference it from a shorter objective.`,
       { display: 'system' },
     );
     return null;
   }
 
   const existing = getGoal();
-  const needsConfirmation = existing && existing.status !== 'complete';
+  // Any non-cleared goal (including complete, which should be rare) needs confirm.
+  const needsConfirmation = Boolean(existing);
 
   if (!needsConfirmation) {
-    const summary = applySetGoal(trimmed);
+    const summary = applySetGoal(trimmed, false);
     onDone(summary, {
       display: 'system',
       shouldQuery: true,
       displayArgs: truncateForDisplay(trimmed),
-      metaMessages: [`<goal-objective-updated>\n${trimmed}\n</goal-objective-updated>`],
+      metaMessages: [buildObjectiveUpdatedPrompt(trimmed)],
     });
     return null;
   }
 
   return (
     <GoalReplaceConfirmDialog
-      currentGoal={existing}
+      currentGoal={existing!}
       newObjective={trimmed}
       onConfirm={() => {
+        const previous = existing!.objective;
         drainGoalContinuationQueue();
-        const summary = applySetGoal(trimmed);
+        const summary = applySetGoal(trimmed, true);
         onDone(summary, {
           display: 'system',
           shouldQuery: true,
           displayArgs: truncateForDisplay(trimmed),
-          metaMessages: [`<goal-objective-updated>\n${trimmed}\n</goal-objective-updated>`],
+          metaMessages: [buildObjectiveUpdatedPrompt(trimmed, previous)],
         });
       }}
       onCancel={() => {

@@ -408,11 +408,9 @@ export async function cleanupOldDebugLogs(): Promise<CleanupResult> {
 
   for (const dirent of dirents) {
     // Preserve the 'latest' symlink
-    if (
-      !dirent.isFile() ||
-      !dirent.name.endsWith('.txt') ||
-      dirent.name === 'latest'
-    ) {
+    const isDebugLog =
+      dirent.name.endsWith('.txt') || dirent.name.endsWith('.openai.jsonl')
+    if (!dirent.isFile() || !isDebugLog || dirent.name === 'latest') {
       continue
     }
     try {

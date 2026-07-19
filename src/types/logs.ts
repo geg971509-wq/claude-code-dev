@@ -142,47 +142,43 @@ export type ModeEntry = {
 }
 
 /**
- * Lifecycle states for a persistent thread goal.
- * - active: agent should auto-continue toward the objective
- * - paused: user temporarily halted progress
- * - blocked: model reported the same blocker for >=3 consecutive turns
- * - budget_limited: tokensUsed >= tokenBudget (auto-transition)
- * - usage_limited: provider rate/usage limit triggered (auto-transition)
- * - max_turns: auto-continuation reached MAX_GOAL_TURNS safety cap
- * - complete: model audit confirmed objective achieved
+ * Lifecycle states for a persistent thread goal (kimi-aligned closed loop).
+ * - active: driver may auto-continue
+ * - paused: resumable stop (user / interrupt / provider error / post-resume demotion)
+ * - blocked: resumable system stop (model blocker / hard budget / max turns)
+ * - complete: transient success; announce then clear — not long-lived on disk
+ *
+ * Budget / usage / max-turns are NOT separate statuses: they become
+ * `blocked(+terminalReason)` or `paused(+terminalReason)`.
  */
-export type GoalStatus =
-  | 'active'
-  | 'paused'
-  | 'blocked'
-  | 'budget_limited'
-  | 'usage_limited'
-  | 'max_turns'
-  | 'complete'
+export type GoalStatus = 'active' | 'paused' | 'blocked' | 'complete'
 
 /**
  * Per-session goal state. Persisted to the JSONL transcript as a `goal`
  * entry on every mutation; last-wins on read.
  *
- * Timing fields handle pause correctly: `getActiveElapsedMs(state)`
- * = accumulatedActiveMs + (now - startTime if active, else 0).
+ * Timing: `getActiveElapsedMs(state)` =
+ * accumulatedActiveMs + (now - startTime if active, else 0).
  *
- * `turnsExecuted` is a defensive upper bound for the auto-continuation
- * loop so a runaway goal cannot spin indefinitely.
- *
- * `blockedAttempts` + `lastBlockReason` implement CODEX's "blocked
- * only after 3 consecutive same-reason attempts" audit rule.
+ * `blockedAttempts` + `lastBlockReason` implement the
+ * "blocked only after 3 consecutive same-reason attempts" audit.
  */
 export type GoalState = {
   objective: string
   status: GoalStatus
   tokenBudget: number | null
+  /** Optional hard turn budget (null = only MAX_GOAL_TURNS safety cap). */
+  turnBudget: number | null
+  /** Optional wall-clock budget in ms while status is active. */
+  wallClockBudgetMs: number | null
   tokensUsed: number
   startTime: number
   pausedAt: number | null
   accumulatedActiveMs: number
   blockedAttempts: number
   lastBlockReason: string | null
+  /** Why the goal stopped (paused/blocked) or completed. */
+  terminalReason: string | null
   createdAt: number
   updatedAt: number
   turnsExecuted: number

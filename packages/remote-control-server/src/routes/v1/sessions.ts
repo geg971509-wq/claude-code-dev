@@ -10,6 +10,7 @@ import {
 import { createWorkItem } from '../../services/work-dispatch'
 import { apiKeyAuth, acceptCliHeaders } from '../../auth/middleware'
 import { publishSessionEvent } from '../../services/transport'
+import { WireErrorCode, wireError } from '../../types/api'
 
 const app = new Hono()
 
@@ -44,10 +45,7 @@ app.get('/:id', acceptCliHeaders, apiKeyAuth, async c => {
     resolveExistingSessionId(c.req.param('id')!) ?? c.req.param('id')!
   const session = getSession(sessionId)
   if (!session) {
-    return c.json(
-      { error: { type: 'not_found', message: 'Session not found' } },
-      404,
-    )
+    return c.json(wireError(WireErrorCode.NOT_FOUND, 'Session not found'), 404)
   }
   return c.json(session, 200)
 })
@@ -58,10 +56,7 @@ app.patch('/:id', acceptCliHeaders, apiKeyAuth, async c => {
     resolveExistingSessionId(c.req.param('id')!) ?? c.req.param('id')!
   const existing = getSession(sessionId)
   if (!existing) {
-    return c.json(
-      { error: { type: 'not_found', message: 'Session not found' } },
-      404,
-    )
+    return c.json(wireError(WireErrorCode.NOT_FOUND, 'Session not found'), 404)
   }
   const body = await c.req.json()
   if (body.title) {
@@ -77,10 +72,7 @@ app.post('/:id/archive', acceptCliHeaders, apiKeyAuth, async c => {
     resolveExistingSessionId(c.req.param('id')!) ?? c.req.param('id')!
   const session = getSession(sessionId)
   if (!session) {
-    return c.json(
-      { error: { type: 'not_found', message: 'Session not found' } },
-      404,
-    )
+    return c.json(wireError(WireErrorCode.NOT_FOUND, 'Session not found'), 404)
   }
 
   try {
@@ -98,10 +90,7 @@ app.post('/:id/events', acceptCliHeaders, apiKeyAuth, async c => {
     resolveExistingSessionId(c.req.param('id')!) ?? c.req.param('id')!
   const session = getSession(sessionId)
   if (!session) {
-    return c.json(
-      { error: { type: 'not_found', message: 'Session not found' } },
-      404,
-    )
+    return c.json(wireError(WireErrorCode.NOT_FOUND, 'Session not found'), 404)
   }
   const body = await c.req.json()
 

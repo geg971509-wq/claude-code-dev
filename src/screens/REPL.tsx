@@ -3235,9 +3235,8 @@ export function REPL({
               proactiveModule?.setContextBlocked(false);
             }
           }
-          // Auto-pause active /goal when the turn failed due to connectivity.
-          // Continuing immediately after network failures usually burns turns
-          // without progress and can rapidly hit max-turn guards.
+          // Auto-pause active /goal on connectivity / rate-limit failures so the
+          // continuation loop does not burn turns without progress.
           if (
             feature('GOAL') &&
             newMessage.type === 'assistant' &&
@@ -3254,19 +3253,30 @@ export function REPL({
               lowerText.includes('enotfound') ||
               lowerText.includes('econnreset') ||
               lowerText.includes('etimedout');
+            const isRateLimitFailure =
+              newMessage.error === 'rate_limit' ||
+              lowerText.includes('rate limit') ||
+              lowerText.includes('usage limit') ||
+              lowerText.includes('overloaded');
 
-            if (isConnectivityFailure) {
-              const { getGoal, pauseGoal } =
+            if (isConnectivityFailure || isRateLimitFailure) {
+              const { getGoal, pauseGoal, markUsageLimited } =
                 require('../services/goal/goalState.js') as typeof import('../services/goal/goalState.js');
               const { persistCurrentGoal } =
                 require('../services/goal/goalStorage.js') as typeof import('../services/goal/goalStorage.js');
               const currentGoal = getGoal();
               if (currentGoal?.status === 'active') {
-                pauseGoal();
+                if (isRateLimitFailure && !isConnectivityFailure) {
+                  markUsageLimited();
+                } else {
+                  pauseGoal(undefined, 'Paused after connection error');
+                }
                 persistCurrentGoal();
                 addNotification({
-                  key: 'goal-auto-paused-connectivity-error',
-                  text: 'Detected connection error. Active goal was auto-paused. Run /goal resume after network recovers.',
+                  key: isRateLimitFailure ? 'goal-auto-paused-usage-limit' : 'goal-auto-paused-connectivity-error',
+                  text: isRateLimitFailure
+                    ? 'Rate/usage limit hit. Active goal was auto-paused. Run /goal resume when limits reset.'
+                    : 'Detected connection error. Active goal was auto-paused. Run /goal resume after network recovers.',
                   priority: 'immediate',
                 });
               }
@@ -5151,7 +5161,7 @@ export function REPL({
     onMaxTurnsReached: () => {
       addNotification({
         key: 'goal-max-turns-reached',
-        text: 'Goal reached max continuation turns (1). Run /goal continue to reset turn counter and continue.',
+        text: 'Goal hit a turn/token/wall-clock budget. Run /goal continue (turn cap) or /goal resume after adjusting budgets.',
         priority: 'immediate',
       });
     },

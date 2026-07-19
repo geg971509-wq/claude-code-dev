@@ -33,6 +33,10 @@ export function persistCurrentGoal(): void {
  * Hydrate the in-memory map from a `loadTranscriptFile` result. Called
  * by REPL.tsx after restoreSessionMetadata so `--resume` carries the
  * goal across process restarts.
+ *
+ * Side effect: active goals are demoted to paused inside
+ * `_setGoalFromPersistedState` so a restart cannot auto-continue.
+ * Returns the post-normalize in-memory state (or null if dropped).
  */
 export function hydrateGoalFromTranscript(
   goalsMap: Map<UUID, GoalState>,
@@ -42,7 +46,12 @@ export function hydrateGoalFromTranscript(
   const state = goalsMap.get(id)
   if (!state) return null
   _setGoalFromPersistedState(state, id)
-  return state
+  const hydrated = getGoal(id)
+  // Persist demotion so the next resume doesn't re-read a stale active.
+  if (hydrated && hydrated.status === 'paused') {
+    saveGoalOnDisk(id, hydrated)
+  }
+  return hydrated
 }
 
 /**

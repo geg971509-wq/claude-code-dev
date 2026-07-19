@@ -18,3 +18,14 @@ export { decodeClientWsMessage } from './server/payload-decode.js'
 export { resolveNewSessionPermissionMode } from './server/permission-mode.js'
 export { __testing } from './server/testing-internals.js'
 export { startServer } from './server/start-server.js'
+export {
+  WireErrorCode,
+  wireError,
+  toJsonRpcErrorData,
+  isWireErrorCode,
+  isWireErrorResponse,
+} from '@claude-code-best/wire-types'
+export type {
+  WireErrorBody,
+  WireErrorResponse,
+} from '@claude-code-best/wire-types'

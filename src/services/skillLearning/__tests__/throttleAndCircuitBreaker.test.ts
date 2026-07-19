@@ -297,7 +297,7 @@ describe('H7: circuit breaker', () => {
     resetCircuitBreaker()
 
     setSkillLearningConfigForTest({
-      llm: { failureThreshold: 3, circuitCooldownMs: 60_000 },
+      llm: { timeoutMs: 1, failureThreshold: 3, circuitCooldownMs: 60_000 },
     })
 
     const obs = makeObs(5)
@@ -330,7 +330,7 @@ describe('H7: circuit breaker', () => {
     resetCircuitBreaker()
 
     setSkillLearningConfigForTest({
-      llm: { failureThreshold: 1, circuitCooldownMs: 60_000 },
+      llm: { timeoutMs: 1, failureThreshold: 1, circuitCooldownMs: 60_000 },
     })
 
     const obs = makeObs(5)
@@ -359,6 +359,7 @@ describe('H7: circuit breaker', () => {
   test('resetCircuitBreaker resets state to closed', async () => {
     const { llmObserverBackend } = await import('../llmObserverBackend.js')
     resetCircuitBreaker()
+    setSkillLearningConfigForTest({ llm: { timeoutMs: 1 } })
 
     // After reset, the backend is in clean state. Calling it with observations
     // returns an array (either LLM result or heuristic fallback).

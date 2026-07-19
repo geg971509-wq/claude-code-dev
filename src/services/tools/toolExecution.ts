@@ -34,6 +34,7 @@ import {
   type ToolProgress,
   type ToolProgressData,
   type ToolUseContext,
+  type Tools,
 } from '../../Tool.js'
 import type { BashToolInput } from '@claude-code-best/builtin-tools/tools/BashTool/BashTool.js'
 import { startSpeculativeClassifierCheck } from '@claude-code-best/builtin-tools/tools/BashTool/bashPermissions.js'
@@ -368,10 +369,11 @@ export async function* runToolUse(
   assistantMessage: AssistantMessage,
   canUseTool: CanUseToolFn,
   toolUseContext: ToolUseContext,
+  requestTools: Tools = toolUseContext.options.tools,
 ): AsyncGenerator<MessageUpdateLazy, void> {
   const toolName = toolUse.name
-  // First try to find in the available tools (what the model sees)
-  let tool = findToolByName(toolUseContext.options.tools, toolName)
+  // First try to find in the request snapshot (what the model saw)
+  let tool = findToolByName(requestTools, toolName)
 
   // If not found, check if it's a deprecated tool being called by alias
   // (e.g., old transcripts calling "KillShell" which is now an alias for "TaskStop")
@@ -380,9 +382,41 @@ export async function* runToolUse(
     const fallbackTool = findToolByName(getAllBaseTools(), toolName)
     // Only use fallback if the tool was found via alias (deprecated name)
     if (fallbackTool && fallbackTool.aliases?.includes(toolName)) {
-      tool = fallbackTool
+      tool = findToolByName(requestTools, fallbackTool.name)
     }
   }
+
+  // Prefer the live pool. refreshTools() rebuilds arrays/objects each call, so
+  // never compare tool identity — only presence by name.
+  const currentTools =
+    toolUseContext.options.refreshTools?.() ?? toolUseContext.options.tools
+  const currentTool = findToolByName(currentTools, toolName)
+  if (currentTool) {
+    tool = currentTool
+  } else if (tool) {
+    // Present in the request snapshot, gone from the live registry (MCP disconnect,
+    // dynamic tool reload). Distinct from "unknown tool" below.
+    const detail = `Stale tool call: ${toolName} was in the request tool list but is no longer available`
+    logForDebugging(`[tools] ${detail} tool_use_id=${toolUse.id}`, {
+      level: 'warn',
+    })
+    yield {
+      message: createUserMessage({
+        content: [
+          {
+            type: 'tool_result',
+            content: `<tool_use_error>${detail}</tool_use_error>`,
+            is_error: true,
+            tool_use_id: toolUse.id,
+          },
+        ],
+        toolUseResult: detail,
+        sourceToolAssistantUUID: assistantMessage.uuid,
+      }),
+    }
+    return
+  }
+
   const messageId = assistantMessage.message.id as string
   const requestId = assistantMessage.requestId as string | undefined
   const mcpServerType = getMcpServerType(

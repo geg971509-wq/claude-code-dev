@@ -44,7 +44,10 @@ import {
   checkMockRateLimitError,
   isMockRateLimitError,
 } from '../rateLimitMocking.js'
-import { REPEATED_529_ERROR_MESSAGE } from './errors.js'
+import {
+  getProviderRetryAfterMs,
+  REPEATED_529_ERROR_MESSAGE,
+} from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
 
 const abortError = () => new APIUserAbortError()
@@ -798,6 +801,9 @@ const SHORT_RETRY_THRESHOLD_MS = 20 * 1000 // 20 seconds
 const MIN_COOLDOWN_MS = 10 * 60 * 1000 // 10 minutes
 
 function getRetryAfterMs(error: APIError): number | null {
+  // Prefer typed provider layer (OpenAI/Gemini gateways attach retryAfterMs).
+  const fromProvider = getProviderRetryAfterMs(error)
+  if (fromProvider !== null) return fromProvider
   const retryAfter = getRetryAfter(error)
   if (retryAfter) {
     const seconds = parseInt(retryAfter, 10)

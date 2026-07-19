@@ -616,6 +616,11 @@ export type Attachment =
       content: string
     }
   | {
+      /** Compact goal context for the current turn (active / paused / blocked). */
+      type: 'goal_context'
+      content: string
+    }
+  | {
       type: 'plan_file_reference'
       planFilePath: string
       planContent: string
@@ -971,6 +976,13 @@ export async function getAttachments(
     maybe('critical_system_reminder', () =>
       Promise.resolve(getCriticalSystemReminderAttachment(toolUseContext)),
     ),
+    ...(feature('GOAL')
+      ? [
+          maybe('goal_context', () =>
+            Promise.resolve(getGoalContextAttachment()),
+          ),
+        ]
+      : []),
     ...(feature('COMPACTION_REMINDERS')
       ? [
           maybe('compaction_reminder', () =>
@@ -1645,6 +1657,24 @@ function getCriticalSystemReminderAttachment(
     return []
   }
   return [{ type: 'critical_system_reminder', content: reminder }]
+}
+
+/**
+ * Inject the current goal into context once per turn (kimi-style).
+ * Active → full reminder; paused/blocked → light notes; complete/absent → none.
+ * Feature-gated at the call site so this is DCE-friendly when GOAL is off.
+ */
+function getGoalContextAttachment(): Attachment[] {
+  // Local require keeps goal modules out of non-GOAL bundles.
+  const { getGoal } =
+    require('../services/goal/goalState.js') as typeof import('../services/goal/goalState.js')
+  const { buildGoalContextBlock } =
+    require('../services/goal/prompts.js') as typeof import('../services/goal/prompts.js')
+  const goal = getGoal()
+  if (!goal) return []
+  const content = buildGoalContextBlock(goal)
+  if (!content) return []
+  return [{ type: 'goal_context', content }]
 }
 
 function getOutputStyleAttachment(): Attachment[] {

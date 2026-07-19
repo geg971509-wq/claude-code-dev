@@ -1,5 +1,14 @@
 /** API 请求/响应类型定义 */
 
+import type { WireErrorResponse } from '@claude-code-best/wire-types'
+
+export {
+  WireErrorCode,
+  wireError,
+  isWireErrorCode,
+  isWireErrorResponse,
+} from '@claude-code-best/wire-types'
+
 // Hono context variable types
 declare module 'hono' {
   interface ContextVariableMap {
@@ -139,12 +148,8 @@ export interface WebControlRequest {
 
 // --- Error ---
 
-export interface ErrorResponse {
-  error: {
-    type: string
-    message: string
-  }
-}
+/** RCS REST error envelope — shared wire table. */
+export type ErrorResponse = WireErrorResponse
 
 // --- Event ---
 

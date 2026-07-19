@@ -206,6 +206,7 @@
       },
       "dependencies": {
         "@agentclientprotocol/sdk": "^0.19.0",
+        "@claude-code-best/wire-types": "workspace:*",
         "@hono/node-server": "^2.0.0",
         "@hono/node-ws": "^1.0.5",
         "@stricli/auto-complete": "^1.2.4",
@@ -286,6 +287,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@ai-sdk/react": "^3.0.170",
+        "@claude-code-best/wire-types": "workspace:*",
         "@radix-ui/react-collapsible": "^1.1.12",
         "@radix-ui/react-dialog": "^1.1.15",
         "@radix-ui/react-dropdown-menu": "^2.1.16",
@@ -343,6 +345,10 @@
       "dependencies": {
         "qrcode": "^1.5.4",
       },
+    },
+    "packages/wire-types": {
+      "name": "@claude-code-best/wire-types",
+      "version": "0.1.0",
     },
     "packages/workflow-engine": {
       "name": "@claude-code-best/workflow-engine",
@@ -609,6 +615,8 @@
     "@claude-code-best/mcp-client": ["@claude-code-best/mcp-client@workspace:packages/mcp-client"],
 
     "@claude-code-best/weixin": ["@claude-code-best/weixin@workspace:packages/weixin"],
+
+    "@claude-code-best/wire-types": ["@claude-code-best/wire-types@workspace:packages/wire-types"],
 
     "@claude-code-best/workflow-engine": ["@claude-code-best/workflow-engine@workspace:packages/workflow-engine"],
 

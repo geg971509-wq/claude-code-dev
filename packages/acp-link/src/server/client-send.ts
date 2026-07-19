@@ -1,6 +1,31 @@
 import type { WSContext } from 'hono/ws'
+import {
+  WireErrorCode,
+  toJsonRpcErrorData,
+  type WireErrorBody,
+} from '@claude-code-best/wire-types'
 import { clients, getRcsUpstream } from './runtime-state.js'
-import type { ClientState } from './types.js'
+import {
+  JSONRPC_INVALID_PARAMS,
+  JSONRPC_INVALID_REQUEST,
+  JSONRPC_METHOD_NOT_FOUND,
+  JSONRPC_PARSE_ERROR,
+  type ClientState,
+} from './types.js'
+
+/** Map reserved JSON-RPC numeric codes → stable wire `error.data.code`. */
+export function wireTypeFromJsonRpcCode(code: number): string {
+  switch (code) {
+    case JSONRPC_INVALID_PARAMS:
+      return WireErrorCode.VALIDATION_FAILED
+    case JSONRPC_PARSE_ERROR:
+    case JSONRPC_INVALID_REQUEST:
+    case JSONRPC_METHOD_NOT_FOUND:
+      return WireErrorCode.REQUEST_MALFORMED
+    default:
+      return WireErrorCode.INTERNAL
+  }
+}
 
 // Maps legacy notification type strings to their JSON-RPC method names so
 // agent→client notifications are also emitted as JSON-RPC notifications for
@@ -65,6 +90,7 @@ export function sendJsonRpcRaw(ws: WSContext, message: object): void {
 
 /**
  * Send a JSON-RPC 2.0 error response with a reserved -32xxx code (audit §8.3).
+ * Application-level code lands in `error.data` via `@claude-code-best/wire-types`.
  * Also emits the legacy `{type: 'error', payload: {message}}` envelope for
  * backwards compatibility.
  */
@@ -74,15 +100,26 @@ export function sendJsonRpcError(
   id: string | number | null,
   code: number,
   message: string,
+  wire?: WireErrorBody,
 ): void {
+  const body: WireErrorBody = wire ?? {
+    type: wireTypeFromJsonRpcCode(code),
+    message,
+  }
+  const data = toJsonRpcErrorData(body)
   if (state?.jsonRpc) {
     sendJsonRpcRaw(ws, {
       jsonrpc: '2.0',
       id,
-      error: { code, message },
+      error: { code, message, data },
     })
   } else {
-    send(ws, 'error', { message, code: String(code) })
+    send(ws, 'error', {
+      message,
+      code: String(code),
+      type: body.type,
+      ...(body.details !== undefined ? { details: body.details } : {}),
+    })
   }
   // Error consumed the in-flight request, if any.
   if (state) state.pendingJsonRpc = null

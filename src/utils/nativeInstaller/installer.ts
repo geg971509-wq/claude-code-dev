@@ -912,7 +912,7 @@ export async function checkInstall(
       // Windows-specific PATH instructions
       const windowsBinPath = localBinDir.replace(/\//g, '\\')
       messages.push({
-        message: `Native installation exists but ${windowsBinPath} is not in your PATH. Add it by opening: System Properties → Environment Variables → Edit User PATH → New → Add the path above. Then restart your terminal.`,
+        message: `status: ${windowsBinPath} is not on PATH (native install present; claude will not resolve).\nNext: System Properties → Environment Variables → Edit User PATH → New → add the path above → restart the terminal.`,
         userActionRequired: true,
         type: 'path',
       })
@@ -926,7 +926,7 @@ export async function checkInstall(
         : 'your shell config file'
 
       messages.push({
-        message: `Native installation exists but ~/.local/bin is not in your PATH. Run:\n\necho 'export PATH="$HOME/.local/bin:$PATH"' >> ${displayPath} && source ${displayPath}`,
+        message: `status: ~/.local/bin is not on PATH (native install present; claude will not resolve).\nNext: echo 'export PATH="$HOME/.local/bin:$PATH"' >> ${displayPath} && source ${displayPath}`,
         userActionRequired: true,
         type: 'path',
       })

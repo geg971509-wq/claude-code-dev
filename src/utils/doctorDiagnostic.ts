@@ -409,8 +409,8 @@ async function detectConfigurationIssues(
           .split(posix.sep)
           .join(win32.sep)
         warnings.push({
-          issue: `Native installation exists but ${windowsLocalBinPath} is not in your PATH`,
-          fix: `Add it by opening: System Properties → Environment Variables → Edit User PATH → New → Add the path above. Then restart your terminal.`,
+          issue: `status: ${windowsLocalBinPath} is not on PATH (native install present; claude will not resolve)`,
+          fix: `Next: System Properties → Environment Variables → Edit User PATH → New → add the path above → restart the terminal.`,
         })
       } else {
         // Unix-style PATH instructions
@@ -423,8 +423,8 @@ async function detectConfigurationIssues(
 
         warnings.push({
           issue:
-            'Native installation exists but ~/.local/bin is not in your PATH',
-          fix: `Run: echo 'export PATH="$HOME/.local/bin:$PATH"' >> ${displayPath} then open a new terminal or run: source ${displayPath}`,
+            'status: ~/.local/bin is not on PATH (native install present; claude will not resolve)',
+          fix: `Next: echo 'export PATH="$HOME/.local/bin:$PATH"' >> ${displayPath} && source ${displayPath}`,
         })
       }
     }

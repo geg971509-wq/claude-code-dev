@@ -1,7 +1,31 @@
 import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { ChatCompletionChunk } from 'openai/resources/chat/completions/completions.mjs'
 import { randomUUID } from 'crypto'
-import { normalizeOpenAIUsage } from './openaiUsage.js'
+import {
+  finishReasonToAnthropicStopReason,
+  normalizeOpenAIFinishReason,
+} from '../types/finishReason.js'
+
+/**
+ * Finish-time tool arg validation. Streaming JSON may be incomplete until the
+ * last delta; parse once at the boundary so invalid tool calls fail the stream
+ * instead of reaching the tool executor with garbage input.
+ */
+export function assertValidToolArgumentsJson(
+  name: string,
+  args: string,
+  source: 'chat' | 'responses' = 'chat',
+): void {
+  const raw = args.trim() === '' ? '{}' : args
+  try {
+    JSON.parse(raw)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(
+      `OpenAI ${source} tool call "${name}" has invalid JSON arguments: ${detail}`,
+    )
+  }
+}
 
 /**
  * Adapt an OpenAI streaming response into Anthropic BetaRawMessageStreamEvent.
@@ -55,13 +79,14 @@ export async function* adaptOpenAIStreamToAnthropic(
   // Track text block state
   let textBlockOpen = false
 
-  // Track raw OpenAI usage across chunks. The normalized Anthropic fields are
-  // disjoint: ordinary input + cache reads + cache writes = total input.
+  // Track usage — all four Anthropic fields, populated from OpenAI usage fields:
+  // rawInputTokens tracks the raw prompt_tokens (OpenAI total, including cached).
+  // inputTokens is the derived Anthropic value (non-cached only = rawInputTokens - cachedReadTokens).
+  // reasoningTokens maps completion_tokens_details.reasoning_tokens (extension field).
   let rawInputTokens = 0
   let outputTokens = 0
-  let rawCacheReadTokens = 0
-  let rawCacheWriteTokens = 0
-  let usage = normalizeOpenAIUsage({ totalInputTokens: 0, outputTokens: 0 })
+  let cachedReadTokens = 0
+  let reasoningTokens = 0
 
   // Track all open content block indices (for cleanup)
   const openBlockIndices = new Set<number>()
@@ -78,31 +103,20 @@ export async function* adaptOpenAIStreamToAnthropic(
     if (chunk.usage) {
       rawInputTokens = chunk.usage.prompt_tokens ?? rawInputTokens
       outputTokens = chunk.usage.completion_tokens ?? outputTokens
-
-      const usageRecord = chunk.usage as unknown as Record<string, unknown>
-      const detailsValue = usageRecord.prompt_tokens_details
-      const details =
-        detailsValue && typeof detailsValue === 'object'
-          ? (detailsValue as Record<string, unknown>)
-          : undefined
-      if (typeof details?.cached_tokens === 'number') {
-        rawCacheReadTokens = details.cached_tokens
+      const rawCached = (
+        chunk.usage as { prompt_tokens_details?: { cached_tokens?: number } }
+      ).prompt_tokens_details?.cached_tokens
+      if (typeof rawCached === 'number') {
+        cachedReadTokens = rawCached
       }
-      if (
-        options?.includeCacheWriteTokens &&
-        typeof details?.cache_write_tokens === 'number'
-      ) {
-        rawCacheWriteTokens = details.cache_write_tokens
-      } else if (!options?.includeCacheWriteTokens) {
-        rawCacheWriteTokens = 0
+      const rawReasoning = (
+        chunk.usage as {
+          completion_tokens_details?: { reasoning_tokens?: number }
+        }
+      ).completion_tokens_details?.reasoning_tokens
+      if (typeof rawReasoning === 'number') {
+        reasoningTokens = rawReasoning
       }
-
-      usage = normalizeOpenAIUsage({
-        totalInputTokens: rawInputTokens,
-        outputTokens,
-        cacheReadTokens: rawCacheReadTokens,
-        cacheWriteTokens: rawCacheWriteTokens,
-      })
     }
 
     // Emit message_start on first chunk
@@ -292,6 +306,7 @@ export async function* adaptOpenAIStreamToAnthropic(
 
       for (const [, block] of toolBlocks) {
         if (openBlockIndices.has(block.contentIndex)) {
+          assertValidToolArgumentsJson(block.name, block.arguments)
           yield {
             type: 'content_block_stop',
             index: block.contentIndex,
@@ -315,20 +330,22 @@ export async function* adaptOpenAIStreamToAnthropic(
 
   // Emit message_delta + message_stop
   if (pendingFinishReason !== null) {
-    const stopReason =
-      pendingFinishReason === 'length'
-        ? 'max_tokens'
-        : pendingHasToolCalls
-          ? 'tool_use'
-          : mapFinishReason(pendingFinishReason)
+    const stopReason = mapFinishReason(pendingFinishReason, pendingHasToolCalls)
 
+    const inputTokens = Math.max(0, rawInputTokens - cachedReadTokens)
     yield {
       type: 'message_delta',
       delta: {
         stop_reason: stopReason,
         stop_sequence: null,
       },
-      usage,
+      usage: {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cache_read_input_tokens: cachedReadTokens,
+        cache_creation_input_tokens: 0,
+        ...(reasoningTokens > 0 ? { reasoning_tokens: reasoningTokens } : {}),
+      },
     } as BetaRawMessageStreamEvent
 
     yield {
@@ -338,19 +355,9 @@ export async function* adaptOpenAIStreamToAnthropic(
 }
 
 /**
- * Map OpenAI finish_reason to Anthropic stop_reason.
+ * Map OpenAI finish_reason to Anthropic stop_reason via shared FinishReason.
  */
-function mapFinishReason(reason: string): string {
-  switch (reason) {
-    case 'stop':
-      return 'end_turn'
-    case 'tool_calls':
-      return 'tool_use'
-    case 'length':
-      return 'max_tokens'
-    case 'content_filter':
-      return 'end_turn'
-    default:
-      return 'end_turn'
-  }
+function mapFinishReason(reason: string, hasToolCalls = false): string {
+  const { finishReason } = normalizeOpenAIFinishReason(reason)
+  return finishReasonToAnthropicStopReason(finishReason, hasToolCalls)
 }
