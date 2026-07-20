@@ -206,6 +206,7 @@ export function buildOpenAIRequestBody(params: {
       reasoningEffort && {
         reasoning_effort: reasoningEffort,
       }),
+    ...(promptCacheKey && { prompt_cache_key: promptCacheKey }),
     ...(tools.length > 0 && {
       tools,
       ...(toolChoice && { tool_choice: toolChoice }),

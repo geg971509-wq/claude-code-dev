@@ -228,6 +228,7 @@ export async function resumeAgentBackground({
   const wrapWithCwd = <T>(fn: () => T): T =>
     resumedWorktreePath ? runWithCwdOverride(resumedWorktreePath, fn) : fn()
 
+  const generation = {} // Track this agent generation
   void runWithAgentContext(asyncAgentContext, () =>
     wrapWithCwd(() =>
       runAsyncAgentLifecycle({
@@ -247,6 +248,7 @@ export async function resumeAgentBackground({
         description: uiDescription,
         toolUseContext,
         rootSetAppState,
+        generation,
         agentIdForCleanup: agentId,
         enableSummarization:
           isCoordinatorMode() ||

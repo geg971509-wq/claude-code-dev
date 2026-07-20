@@ -87,6 +87,7 @@ export async function* adaptOpenAIStreamToAnthropic(
   let rawInputTokens = 0
   let outputTokens = 0
   let cachedReadTokens = 0
+  let cacheWriteTokens = 0
   let reasoningTokens = 0
 
   // Track all open content block indices (for cleanup)
@@ -110,6 +111,17 @@ export async function* adaptOpenAIStreamToAnthropic(
       if (typeof rawCached === 'number') {
         cachedReadTokens = rawCached
       }
+      // Only track cache write tokens when explicitly requested (e.g., official OpenAI API)
+      if (options?.includeCacheWriteTokens) {
+        const rawCacheWrite = (
+          chunk.usage as {
+            prompt_tokens_details?: { cache_write_tokens?: number }
+          }
+        ).prompt_tokens_details?.cache_write_tokens
+        if (typeof rawCacheWrite === 'number') {
+          cacheWriteTokens = rawCacheWrite
+        }
+      }
       const rawReasoning = (
         chunk.usage as {
           completion_tokens_details?: { reasoning_tokens?: number }
@@ -124,6 +136,24 @@ export async function* adaptOpenAIStreamToAnthropic(
     if (!started) {
       started = true
 
+      // Compute current usage for message_start (may be non-zero if first chunk has usage)
+      const currentCacheRead = Math.min(
+        Math.max(0, cachedReadTokens),
+        Math.max(0, rawInputTokens),
+      )
+      const currentRemainingAfterRead = Math.max(
+        0,
+        rawInputTokens - currentCacheRead,
+      )
+      const currentCacheCreation = Math.min(
+        Math.max(0, cacheWriteTokens),
+        currentRemainingAfterRead,
+      )
+      const currentInputTokens = Math.max(
+        0,
+        currentRemainingAfterRead - currentCacheCreation,
+      )
+
       yield {
         type: 'message_start',
         message: {
@@ -135,8 +165,10 @@ export async function* adaptOpenAIStreamToAnthropic(
           stop_reason: null,
           stop_sequence: null,
           usage: {
-            ...usage,
-            output_tokens: 0,
+            input_tokens: currentInputTokens,
+            output_tokens: outputTokens,
+            cache_creation_input_tokens: currentCacheCreation,
+            cache_read_input_tokens: currentCacheRead,
           },
         },
       } as unknown as BetaRawMessageStreamEvent
@@ -367,7 +399,20 @@ export async function* adaptOpenAIStreamToAnthropic(
   if (pendingFinishReason !== null) {
     const stopReason = mapFinishReason(pendingFinishReason, pendingHasToolCalls)
 
-    const inputTokens = Math.max(0, rawInputTokens - cachedReadTokens)
+    // Compute Anthropic-style disjoint token fields from OpenAI usage.
+    // OpenAI reports: prompt_tokens (total), cached_tokens (read), cache_write_tokens (write).
+    // Anthropic wants: input_tokens (non-cached), cache_read, cache_creation (disjoint, sum to total).
+    const cacheRead = Math.min(
+      Math.max(0, cachedReadTokens),
+      Math.max(0, rawInputTokens),
+    )
+    const remainingAfterRead = Math.max(0, rawInputTokens - cacheRead)
+    const cacheCreation = Math.min(
+      Math.max(0, cacheWriteTokens),
+      remainingAfterRead,
+    )
+    const inputTokens = Math.max(0, remainingAfterRead - cacheCreation)
+
     yield {
       type: 'message_delta',
       delta: {
@@ -377,8 +422,8 @@ export async function* adaptOpenAIStreamToAnthropic(
       usage: {
         input_tokens: inputTokens,
         output_tokens: outputTokens,
-        cache_read_input_tokens: cachedReadTokens,
-        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: cacheRead,
+        cache_creation_input_tokens: cacheCreation,
         ...(reasoningTokens > 0 ? { reasoning_tokens: reasoningTokens } : {}),
       },
     } as BetaRawMessageStreamEvent

@@ -104,3 +104,7 @@ export {
   adaptOpenAIStreamToAnthropic,
   assertValidToolArgumentsJson,
 } from './shared/openaiStreamAdapter.js'
+export {
+  normalizeOpenAIUsage,
+  type AnthropicUsage,
+} from './shared/openaiUsage.js'

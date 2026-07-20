@@ -870,6 +870,7 @@ export const AgentTool = buildTool({
       // invocation time — when this `void` fires — and survives every await
       // inside. No capture/restore needed; the detached closure sees the
       // parent turn's workload automatically, isolated from its finally.
+      const generation = {}; // Track this agent generation
       void runWithAgentContext(asyncAgentContext, () =>
         wrapWithCwd(() =>
           runAsyncAgentLifecycle({
@@ -889,6 +890,7 @@ export const AgentTool = buildTool({
             description,
             toolUseContext,
             rootSetAppState,
+            generation,
             agentIdForCleanup: asyncAgentId,
             enableSummarization: isCoordinator || isForkSubagentEnabled() || getSdkAgentProgressSummariesEnabled(),
             getWorktreeResult: cleanupWorktreeIfNeeded,

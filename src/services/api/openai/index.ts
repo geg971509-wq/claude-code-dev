@@ -21,7 +21,7 @@ import {
   formatOpenAIErrorMessage,
   formatOpenAIErrorStack,
   formatOpenAIErrorWithStack,
-  getOpenAIPromptCacheKey,
+  formatOpenAIPromptCacheKey,
   getOpenAIRequestMaxRetries,
   getOpenAIRetryDelayMs,
   getOpenAIStreamMaxRetries,
@@ -423,7 +423,8 @@ export async function* queryModelOpenAI(
         ? 'official-responses'
         : 'chat-completions'
     const promptCacheKey =
-      resolveOpenAIPromptCacheKey() ?? getOpenAIPromptCacheKey()
+      resolveOpenAIPromptCacheKey() ??
+      formatOpenAIPromptCacheKey(getSessionId())
     logForDebugging(
       `[OpenAI] route=${openaiRoute} model=${openaiModel} messages=${openaiMessages.length}, tools=${openaiTools.length}, thinking=${enableThinking}, maxTokens=${maxTokens}, prompt_cache_key=${promptCacheKey}`,
     )
@@ -608,6 +609,7 @@ export async function* queryModelOpenAI(
             ? adaptOpenAIStreamToAnthropic(
                 rawStream as AsyncIterable<ChatCompletionChunk>,
                 openaiModel,
+                { includeCacheWriteTokens: !!promptCacheKey },
               )
             : adaptResponsesStreamToAnthropic(rawStream, openaiModel)
 

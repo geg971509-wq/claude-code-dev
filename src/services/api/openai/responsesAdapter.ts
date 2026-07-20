@@ -9,7 +9,6 @@ import { getValidChatGPTAuth } from './chatgptAuth.js'
 import { getOpenAIClient } from './client.js'
 import {
   assertValidToolArgumentsJson,
-  getOpenAIPromptCacheKey,
   throwHttpStatusError,
 } from './openaiShared.js'
 import { isAzureResponsesBaseURL } from './requestBody.js'
@@ -312,7 +311,7 @@ export function buildResponsesRequest(params: {
     parallel_tool_calls: true,
     // Same OAuth session → same key so OpenAI can sticky-route to a cache node.
     // Must not hash the full message list (would change every turn).
-    prompt_cache_key: params.promptCacheKey,
+    prompt_cache_key: params.promptCacheKey ?? '',
   }
 }
 
