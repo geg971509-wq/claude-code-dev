@@ -21,6 +21,9 @@ mock.module('src/utils/task/diskOutput.js', () => ({
   getTaskOutputPath: (id: string) => `/tmp/output/${id}`,
   initTaskOutputAsSymlink: async () => {},
   getTaskOutputDelta: async () => null,
+  writeTerminalTaskRecord: async () => {},
+  readTerminalTaskRecord: async () => null,
+  deleteTerminalTaskRecord: async () => {},
 }))
 
 // Capture enqueuePendingNotification calls for verification
@@ -35,6 +38,8 @@ mock.module('src/bootstrap/state.js', () => ({
   getSdkAgentProgressSummariesEnabled: () => false,
   getSessionId: () => 'test-session-001',
   getProjectRoot: () => '/test/project',
+  getCwdState: () => '/test/project',
+  getOriginalCwd: () => '/test/project',
   getIsNonInteractiveSession: () => false,
   addSlowOperation: noop,
 }))
@@ -104,6 +109,9 @@ const {
   registerAsyncAgent,
   updateAgentProgress,
   isLocalAgentTask,
+  bindAgentGeneration,
+  isAgentGenerationCurrent,
+  getAgentTaskGeneration,
 } = await import('../LocalAgentTask.js')
 
 // ─── Helpers ───
@@ -519,5 +527,92 @@ describe('updateAgentProgress', () => {
 
     const task = getState().tasks['test-agent-001']
     expect(task.progress.toolUseCount).toBeUndefined()
+  })
+})
+
+describe('agent generation gating', () => {
+  test('getAgentTaskGeneration returns the registered task generation', () => {
+    const generation = {}
+    const { setAppState } = createSetAppState({
+      tasks: { 'test-agent-001': makeRunningTask({ generation }) },
+    })
+
+    expect(getAgentTaskGeneration(setAppState as any, 'test-agent-001')).toBe(
+      generation,
+    )
+  })
+
+  test('getAgentTaskGeneration returns undefined for missing task', () => {
+    const { setAppState } = createSetAppState()
+    expect(
+      getAgentTaskGeneration(setAppState as any, 'test-agent-001'),
+    ).toBeUndefined()
+  })
+
+  test('updates pass when bound to the task own generation', () => {
+    const generation = {}
+    const { setAppState, getState } = createSetAppState({
+      tasks: { 'test-agent-001': makeRunningTask({ generation }) },
+    })
+
+    const gated = bindAgentGeneration(
+      setAppState as any,
+      'test-agent-001',
+      generation,
+    )
+    gated(prev => ({
+      ...prev,
+      tasks: {
+        ...prev.tasks,
+        'test-agent-001': {
+          ...prev.tasks['test-agent-001'],
+          description: 'updated',
+        },
+      },
+    }))
+
+    expect(getState().tasks['test-agent-001'].description).toBe('updated')
+    expect(
+      isAgentGenerationCurrent(
+        setAppState as any,
+        'test-agent-001',
+        generation,
+      ),
+    ).toBe(true)
+  })
+
+  // Regression: a freshly-created generation object (the af48505f bug) never
+  // matches task.generation, so every gated update must be dropped and the
+  // staleness check must report false.
+  test('updates are dropped for a foreign generation object', () => {
+    const { setAppState, getState } = createSetAppState({
+      tasks: { 'test-agent-001': makeRunningTask({ generation: {} }) },
+    })
+    const foreignGeneration = {}
+
+    const gated = bindAgentGeneration(
+      setAppState as any,
+      'test-agent-001',
+      foreignGeneration,
+    )
+    gated(prev => ({
+      ...prev,
+      tasks: {
+        ...prev.tasks,
+        'test-agent-001': {
+          ...prev.tasks['test-agent-001'],
+          description: 'updated',
+        },
+      },
+    }))
+
+    expect(getState().tasks['test-agent-001'].description).toBe('Test agent')
+    expect(
+      isAgentGenerationCurrent(
+        setAppState as any,
+        'test-agent-001',
+        foreignGeneration,
+      ),
+    ).toBe(false)
   })
 })

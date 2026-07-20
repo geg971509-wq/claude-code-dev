@@ -6,6 +6,7 @@ import {
   normalizeOpenAIFinishReason,
 } from '../types/finishReason.js'
 import { ProviderStreamError } from '../types/providerErrors.js'
+import { normalizeOpenAIUsage } from './openaiUsage.js'
 
 /**
  * Finish-time tool arg validation. Streaming JSON may be incomplete until the
@@ -137,22 +138,12 @@ export async function* adaptOpenAIStreamToAnthropic(
       started = true
 
       // Compute current usage for message_start (may be non-zero if first chunk has usage)
-      const currentCacheRead = Math.min(
-        Math.max(0, cachedReadTokens),
-        Math.max(0, rawInputTokens),
-      )
-      const currentRemainingAfterRead = Math.max(
-        0,
-        rawInputTokens - currentCacheRead,
-      )
-      const currentCacheCreation = Math.min(
-        Math.max(0, cacheWriteTokens),
-        currentRemainingAfterRead,
-      )
-      const currentInputTokens = Math.max(
-        0,
-        currentRemainingAfterRead - currentCacheCreation,
-      )
+      const startUsage = normalizeOpenAIUsage({
+        totalInputTokens: rawInputTokens,
+        outputTokens,
+        cacheReadTokens: cachedReadTokens,
+        cacheWriteTokens,
+      })
 
       yield {
         type: 'message_start',
@@ -164,12 +155,7 @@ export async function* adaptOpenAIStreamToAnthropic(
           model,
           stop_reason: null,
           stop_sequence: null,
-          usage: {
-            input_tokens: currentInputTokens,
-            output_tokens: outputTokens,
-            cache_creation_input_tokens: currentCacheCreation,
-            cache_read_input_tokens: currentCacheRead,
-          },
+          usage: startUsage,
         },
       } as unknown as BetaRawMessageStreamEvent
     }
@@ -402,16 +388,12 @@ export async function* adaptOpenAIStreamToAnthropic(
     // Compute Anthropic-style disjoint token fields from OpenAI usage.
     // OpenAI reports: prompt_tokens (total), cached_tokens (read), cache_write_tokens (write).
     // Anthropic wants: input_tokens (non-cached), cache_read, cache_creation (disjoint, sum to total).
-    const cacheRead = Math.min(
-      Math.max(0, cachedReadTokens),
-      Math.max(0, rawInputTokens),
-    )
-    const remainingAfterRead = Math.max(0, rawInputTokens - cacheRead)
-    const cacheCreation = Math.min(
-      Math.max(0, cacheWriteTokens),
-      remainingAfterRead,
-    )
-    const inputTokens = Math.max(0, remainingAfterRead - cacheCreation)
+    const finalUsage = normalizeOpenAIUsage({
+      totalInputTokens: rawInputTokens,
+      outputTokens,
+      cacheReadTokens: cachedReadTokens,
+      cacheWriteTokens,
+    })
 
     yield {
       type: 'message_delta',
@@ -420,10 +402,7 @@ export async function* adaptOpenAIStreamToAnthropic(
         stop_sequence: null,
       },
       usage: {
-        input_tokens: inputTokens,
-        output_tokens: outputTokens,
-        cache_read_input_tokens: cacheRead,
-        cache_creation_input_tokens: cacheCreation,
+        ...finalUsage,
         ...(reasoningTokens > 0 ? { reasoning_tokens: reasoningTokens } : {}),
       },
     } as BetaRawMessageStreamEvent

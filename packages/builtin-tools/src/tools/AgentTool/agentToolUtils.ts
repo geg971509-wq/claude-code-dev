@@ -28,6 +28,7 @@ import {
   createProgressTracker,
   enqueueAgentNotification,
   failAgentTask as failAsyncAgent,
+  getAgentTaskGeneration,
   getProgressUpdate,
   getTokenCountFromTracker,
   isAgentGenerationCurrent,
@@ -527,7 +528,6 @@ export async function runAsyncAgentLifecycle({
   description,
   toolUseContext,
   rootSetAppState,
-  generation,
   agentIdForCleanup,
   enableSummarization,
   getWorktreeResult,
@@ -541,7 +541,6 @@ export async function runAsyncAgentLifecycle({
   description: string
   toolUseContext: ToolUseContext
   rootSetAppState: SetAppState
-  generation: object
   agentIdForCleanup: string
   enableSummarization: boolean
   getWorktreeResult: () => Promise<{
@@ -551,6 +550,12 @@ export async function runAsyncAgentLifecycle({
 }): Promise<void> {
   let stopSummarization: (() => void) | undefined
   const agentMessages: MessageType[] = []
+  // Captured from the registered task at lifecycle start, NOT accepted as a
+  // parameter — callers passing a freshly-created object here (instead of
+  // task.generation) would silently disable every generation-gated update.
+  // The task is always registered before this runs; the fallback only
+  // satisfies the type on the unreachable missing-task path.
+  const generation = getAgentTaskGeneration(rootSetAppState, taskId) ?? {}
   const generationSetAppState = bindAgentGeneration(
     rootSetAppState,
     taskId,

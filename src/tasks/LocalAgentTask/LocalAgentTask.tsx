@@ -186,14 +186,29 @@ function isCurrentAgentGeneration(task: LocalAgentTaskState, generation?: object
   return generation === undefined || task.generation === generation;
 }
 
-export function isAgentGenerationCurrent(setAppState: SetAppState, taskId: string, generation: object): boolean {
-  let current = false;
+/**
+ * Read the registered task's generation object. Returns undefined when the
+ * task is missing or not a local_agent task.
+ *
+ * NOTE: this (and isAgentGenerationCurrent below) reads state via a no-op
+ * updater passed to setAppState — it depends on the store invoking updaters
+ * synchronously. If the store ever becomes batched/async, replace this with a
+ * proper snapshot getter; otherwise the read silently goes stale and
+ * generation-gated updates get dropped without any error.
+ */
+export function getAgentTaskGeneration(setAppState: SetAppState, taskId: string): object | undefined {
+  let generation: object | undefined;
   setAppState(prev => {
     const task = prev.tasks[taskId];
-    current = isLocalAgentTask(task) && task.generation === generation;
+    generation = isLocalAgentTask(task) ? task.generation : undefined;
     return prev;
   });
-  return current;
+  return generation;
+}
+
+export function isAgentGenerationCurrent(setAppState: SetAppState, taskId: string, generation: object): boolean {
+  const current = getAgentTaskGeneration(setAppState, taskId);
+  return current !== undefined && current === generation;
 }
 
 export function bindAgentGeneration(setAppState: SetAppState, taskId: string, generation: object): SetAppState {

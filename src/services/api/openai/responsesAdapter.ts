@@ -37,8 +37,8 @@ type ResponsesRequest = {
   parallel_tool_calls?: boolean
   include?: string[]
   max_output_tokens?: number
-  /** Sticky cache routing key — stable for the CCB session. */
-  prompt_cache_key: string
+  /** Sticky cache routing key — stable for the CCB session. Omitted when unset. */
+  prompt_cache_key?: string
 }
 
 // isAzureResponsesBaseURL lives in requestBody.ts (shared with routing).
@@ -311,7 +311,7 @@ export function buildResponsesRequest(params: {
     parallel_tool_calls: true,
     // Same OAuth session → same key so OpenAI can sticky-route to a cache node.
     // Must not hash the full message list (would change every turn).
-    prompt_cache_key: params.promptCacheKey ?? '',
+    ...(params.promptCacheKey && { prompt_cache_key: params.promptCacheKey }),
   }
 }
 

@@ -50,7 +50,11 @@ mock.module('src/services/analytics/index.js', () => ({
   logEvent: () => {},
 }));
 mock.module('src/services/analytics/growthbook.js', () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: () => null,
+  // Return the caller's default (not a constant): mock.module is
+  // process-global, and a constant like null leaks into unrelated consumers
+  // (e.g. advisor.ts's getAdvisorConfig, which passes {} and would crash on
+  // null). Callers that need a falsy config pass null/false as their default.
+  getFeatureValue_CACHED_MAY_BE_STALE: (_key: string, defaultValue: unknown) => defaultValue,
 }));
 
 // Mock auth utilities

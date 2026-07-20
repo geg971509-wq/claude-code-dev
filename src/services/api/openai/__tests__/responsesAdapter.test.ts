@@ -290,6 +290,19 @@ describe('buildResponsesRequest protocol fields', () => {
     expect(request.prompt_cache_key).toBe('session-abc')
   })
 
+  test('omits prompt_cache_key entirely when promptCacheKey is not provided', () => {
+    const request = buildResponsesRequest({
+      model: 'gpt-5',
+      messages: [{ role: 'user', content: 'hello' }],
+      tools: [],
+      toolChoice: undefined,
+    }) as Record<string, unknown>
+
+    // An empty-string key would bucket all key-less sessions into one shared
+    // sticky-route node — the field must be absent, not blank.
+    expect('prompt_cache_key' in request).toBe(false)
+  })
+
   test('replays encrypted reasoning from prior assistant message', () => {
     const request = buildResponsesRequest({
       model: 'gpt-5',
