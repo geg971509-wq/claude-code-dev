@@ -14,10 +14,59 @@ export type OpenAIRawStreamRoute =
   | 'chatgpt-responses'
   | 'official-responses'
 
-type RawStreamContext = {
+export type RawStreamContext = {
   route: OpenAIRawStreamRoute
   model: string
   source?: string
+  streamId?: string
+  requestAttempt?: number
+  streamAttempt?: number
+  status?: string
+  requestId?: string
+}
+
+export type RawStreamLifecycleContext = RawStreamContext &
+  (
+    | {
+        lifecycle: 'retry'
+        phase: 'request' | 'stream'
+        attempt: number
+        maxRetries: number
+        delayMs: number
+        error: unknown
+      }
+    | {
+        lifecycle: 'error'
+        phase: 'request' | 'stream'
+        eventCount?: number
+        error: unknown
+      }
+  )
+
+type RawStreamMetadata = {
+  sessionId: string
+  streamId: string
+  route: OpenAIRawStreamRoute
+  protocol: 'chat-completions' | 'responses'
+  model: string
+  source: string | null
+  requestAttempt: number | null
+  streamAttempt: number | null
+  status: string | null
+  requestId: string | null
+}
+
+type SafeErrorDiagnostics = {
+  name?: string
+  message?: string
+  status?: number
+  statusCode?: number
+  requestId?: string
+  code?: string | number
+  type?: string
+  param?: string
+  bodyPreview?: string
+  incompleteReason?: string
 }
 
 type TestOverrides = {
@@ -135,6 +184,153 @@ function logRawEvent(
   }
 }
 
+function truncateString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value.slice(0, 500) : undefined
+}
+
+function safeErrorDiagnostics(error: unknown): SafeErrorDiagnostics {
+  try {
+    if (typeof error === 'string') return { message: error.slice(0, 500) }
+    if (error == null || typeof error !== 'object') return {}
+
+    const details = error as Record<string, unknown>
+    const providerError =
+      details.error != null && typeof details.error === 'object'
+        ? (details.error as Record<string, unknown>)
+        : undefined
+    const incompleteDetails =
+      details.incomplete_details != null &&
+      typeof details.incomplete_details === 'object'
+        ? (details.incomplete_details as Record<string, unknown>)
+        : undefined
+    const providerIncompleteDetails =
+      providerError?.incomplete_details != null &&
+      typeof providerError.incomplete_details === 'object'
+        ? (providerError.incomplete_details as Record<string, unknown>)
+        : undefined
+    const diagnostics: SafeErrorDiagnostics = {}
+    const name = truncateString(details.name)
+    const message = truncateString(details.message ?? providerError?.message)
+    const requestId = truncateString(
+      details.requestId ??
+        details.request_id ??
+        providerError?.requestId ??
+        providerError?.request_id,
+    )
+    const code = details.code ?? providerError?.code
+    const type = truncateString(details.type ?? providerError?.type)
+    const param = truncateString(details.param ?? providerError?.param)
+    const bodyPreview = truncateString(
+      details.bodyPreview ?? providerError?.bodyPreview,
+    )
+    const incompleteReason = truncateString(
+      details.incompleteReason ??
+        incompleteDetails?.reason ??
+        providerError?.incompleteReason ??
+        providerIncompleteDetails?.reason,
+    )
+
+    if (name !== undefined) diagnostics.name = name
+    if (message !== undefined) diagnostics.message = message
+    if (typeof details.status === 'number') diagnostics.status = details.status
+    if (typeof details.statusCode === 'number') {
+      diagnostics.statusCode = details.statusCode
+    }
+    if (requestId !== undefined) diagnostics.requestId = requestId
+    if (typeof code === 'string') diagnostics.code = code.slice(0, 500)
+    else if (typeof code === 'number') diagnostics.code = code
+    if (type !== undefined) diagnostics.type = type
+    if (param !== undefined) diagnostics.param = param
+    if (bodyPreview !== undefined) diagnostics.bodyPreview = bodyPreview
+    if (incompleteReason !== undefined) {
+      diagnostics.incompleteReason = incompleteReason
+    }
+    return diagnostics
+  } catch {
+    return {}
+  }
+}
+
+function createMetadata(context: RawStreamContext): RawStreamMetadata {
+  return {
+    sessionId: getSessionId(),
+    streamId: context.streamId ?? randomUUID(),
+    route: context.route,
+    protocol:
+      context.route === 'chat-completions' ? 'chat-completions' : 'responses',
+    model: context.model,
+    source: context.source ?? null,
+    requestAttempt: context.requestAttempt ?? null,
+    streamAttempt: context.streamAttempt ?? null,
+    status: context.status ?? null,
+    requestId: context.requestId ?? null,
+  }
+}
+
+function observeCompletionStatus(event: unknown): string | undefined {
+  try {
+    if (event == null || typeof event !== 'object') return undefined
+    const rawEvent = event as Record<string, unknown>
+    const response =
+      rawEvent.response != null && typeof rawEvent.response === 'object'
+        ? (rawEvent.response as Record<string, unknown>)
+        : undefined
+    if (typeof response?.status === 'string') return response.status
+    if (Array.isArray(rawEvent.choices)) {
+      for (const choice of rawEvent.choices) {
+        if (choice == null || typeof choice !== 'object') continue
+        const finishReason = (choice as Record<string, unknown>).finish_reason
+        if (typeof finishReason === 'string') return finishReason
+      }
+    }
+    if (rawEvent.type === 'response.completed') return 'completed'
+    if (rawEvent.type === 'response.incomplete') return 'incomplete'
+    if (rawEvent.type === 'response.failed') return 'failed'
+    return undefined
+  } catch {
+    return undefined
+  }
+}
+
+export function logOpenAIRawLifecycle(
+  context: RawStreamLifecycleContext,
+): void {
+  try {
+    if (!isOpenAIRawStreamLoggingEnabled()) return
+    const logPath = getOpenAIRawStreamLogPath()
+    const writerEntry = acquireWriter(logPath)
+    try {
+      const { lifecycle, ...metadataContext } = context
+      const metadata = createMetadata(metadataContext)
+      if (lifecycle === 'retry') {
+        logRawEvent(writerEntry.writer, {
+          timestamp: new Date().toISOString(),
+          ...metadata,
+          lifecycle,
+          phase: context.phase,
+          attempt: context.attempt,
+          maxRetries: context.maxRetries,
+          delayMs: context.delayMs,
+          error: safeErrorDiagnostics(context.error),
+        })
+      } else {
+        logRawEvent(writerEntry.writer, {
+          timestamp: new Date().toISOString(),
+          ...metadata,
+          lifecycle,
+          phase: context.phase,
+          eventCount: context.eventCount ?? 0,
+          error: safeErrorDiagnostics(context.error),
+        })
+      }
+    } finally {
+      releaseWriter(logPath, writerEntry)
+    }
+  } catch {
+    // Lifecycle diagnostics must never alter request or retry behavior.
+  }
+}
+
 export async function* logOpenAIRawStream<T>(
   stream: AsyncIterable<T>,
   context: RawStreamContext,
@@ -144,32 +340,60 @@ export async function* logOpenAIRawStream<T>(
     return
   }
 
-  const sessionId = getSessionId()
-  const logPath = getOpenAIRawStreamLogPath()
-  const writerEntry = acquireWriter(logPath)
-  const streamId = randomUUID()
-  const protocol =
-    context.route === 'chat-completions' ? 'chat-completions' : 'responses'
-  let sequence = 0
+  let logPath: string
+  let writerEntry: WriterEntry
+  let metadata: RawStreamMetadata
+  try {
+    logPath = getOpenAIRawStreamLogPath()
+    metadata = createMetadata(context)
+    writerEntry = acquireWriter(logPath)
+  } catch {
+    yield* stream
+    return
+  }
+
+  let eventCount = 0
+  let completionStatus = metadata.status ?? undefined
+  logRawEvent(writerEntry.writer, {
+    timestamp: new Date().toISOString(),
+    ...metadata,
+    lifecycle: 'start',
+  })
 
   try {
-    for await (const event of stream) {
+    try {
+      for await (const event of stream) {
+        logRawEvent(writerEntry.writer, {
+          timestamp: new Date().toISOString(),
+          ...metadata,
+          lifecycle: 'event',
+          sequence: eventCount,
+          event,
+        })
+        eventCount++
+        completionStatus = observeCompletionStatus(event) ?? completionStatus
+        yield event
+        if (eventCount % 50 === 0) {
+          await new Promise<void>(resolve => setImmediate(resolve))
+        }
+      }
       logRawEvent(writerEntry.writer, {
         timestamp: new Date().toISOString(),
-        sessionId,
-        streamId,
-        route: context.route,
-        protocol,
-        model: context.model,
-        source: context.source ?? null,
-        sequence,
-        event,
+        ...metadata,
+        lifecycle: 'complete',
+        eventCount,
+        status: completionStatus ?? null,
       })
-      sequence++
-      yield event
-      if (sequence % 50 === 0) {
-        await new Promise<void>(resolve => setImmediate(resolve))
-      }
+    } catch (error) {
+      logRawEvent(writerEntry.writer, {
+        timestamp: new Date().toISOString(),
+        ...metadata,
+        lifecycle: 'error',
+        eventCount,
+        status: completionStatus ?? null,
+        error: safeErrorDiagnostics(error),
+      })
+      throw error
     }
   } finally {
     releaseWriter(logPath, writerEntry)

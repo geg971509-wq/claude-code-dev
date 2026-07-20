@@ -53,6 +53,7 @@ import {
   APIContextOverflowError,
   APIProviderRateLimitError,
   APIRequestTooLargeError,
+  getProviderErrorStatus,
   getProviderRetryAfterMs,
   isContextOverflowMessage,
   isProviderContextOverflowError,
@@ -1202,23 +1203,15 @@ export function classifyAPIError(error: unknown): string {
 }
 
 export function categorizeRetryableAPIError(
-  error: APIError,
+  error: Error,
 ): SDKAssistantMessageError {
-  if (
-    error.status === 529 ||
-    error.message?.includes('"type":"overloaded_error"')
-  ) {
+  const status = getProviderErrorStatus(error)
+  if (status === 529 || error.message?.includes('"type":"overloaded_error"')) {
     return 'rate_limit'
   }
-  if (error.status === 429) {
-    return 'rate_limit'
-  }
-  if (error.status === 401 || error.status === 403) {
-    return 'authentication_failed'
-  }
-  if (error.status !== undefined && error.status >= 408) {
-    return 'server_error'
-  }
+  if (status === 429) return 'rate_limit'
+  if (status === 401 || status === 403) return 'authentication_failed'
+  if (status !== undefined && status >= 408) return 'server_error'
   return 'unknown'
 }
 

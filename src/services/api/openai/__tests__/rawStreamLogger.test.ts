@@ -1,13 +1,21 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'fs'
-import { join } from 'path'
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'fs'
 import { tmpdir } from 'os'
+import { join } from 'path'
 import {
   _flushOpenAIRawStreamLogForTesting,
   _resetOpenAIRawStreamLoggerForTesting,
   _setOpenAIRawStreamLoggerForTesting,
   getOpenAIRawStreamLogPath,
   isOpenAIRawStreamLoggingEnabled,
+  logOpenAIRawLifecycle,
   logOpenAIRawStream,
 } from '../rawStreamLogger.js'
 
@@ -61,75 +69,134 @@ describe('isOpenAIRawStreamLoggingEnabled', () => {
 })
 
 describe('logOpenAIRawStream', () => {
-  test('logs response events and chat chunks without changing their identity', async () => {
+  test('logs ordered lifecycle rows, raw events, and completion state', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openai-raw-log-'))
     const path = join(root, 'events.openai.jsonl')
     _setOpenAIRawStreamLoggerForTesting({ enabled: true, path })
 
-    const responseEvent = {
+    const deltaEvent = {
       type: 'response.output_text.delta',
       delta: '**Plan [N]**\n下一步',
       nested: { quote: '"quoted"', unicode: '中文' },
     }
-    const chatChunk = {
-      id: 'chatcmpl-test',
-      choices: [{ delta: { content: 'done' } }],
-      usage: { prompt_tokens: 3 },
+    const completedEvent = {
+      type: 'response.completed',
+      response: { status: 'completed' },
     }
+    const output: RawEvent[] = []
 
-    const responseOutput: RawEvent[] = []
-    for await (const event of logOpenAIRawStream(fromEvents([responseEvent]), {
-      route: 'official-responses',
-      model: 'gpt-5',
-      source: 'repl_main_thread',
-    })) {
-      responseOutput.push(event)
-    }
-    const chatOutput: RawEvent[] = []
-    for await (const event of logOpenAIRawStream(fromEvents([chatChunk]), {
-      route: 'chat-completions',
-      model: 'deepseek-chat',
-    })) {
-      chatOutput.push(event)
+    for await (const event of logOpenAIRawStream(
+      fromEvents([deltaEvent, completedEvent]),
+      {
+        route: 'official-responses',
+        model: 'gpt-5',
+        source: 'repl_main_thread',
+        streamId: 'stream-fixed',
+        requestAttempt: 2,
+        streamAttempt: 1,
+        requestId: 'req-fixed',
+      },
+    )) {
+      output.push(event)
     }
     _flushOpenAIRawStreamLogForTesting()
 
-    expect(responseOutput[0]).toBe(responseEvent)
-    expect(chatOutput[0]).toBe(chatChunk)
-    expect(existsSync(path)).toBe(true)
-
+    expect(output[0]).toBe(deltaEvent)
+    expect(output[1]).toBe(completedEvent)
     const rows = readRows(path)
-    expect(rows).toHaveLength(2)
+    expect(rows.map(row => row.lifecycle)).toEqual([
+      'start',
+      'event',
+      'event',
+      'complete',
+    ])
     expect(rows[0]).toMatchObject({
       protocol: 'responses',
       route: 'official-responses',
       model: 'gpt-5',
       source: 'repl_main_thread',
-      sequence: 0,
-      event: responseEvent,
+      streamId: 'stream-fixed',
+      requestAttempt: 2,
+      streamAttempt: 1,
+      requestId: 'req-fixed',
+      status: null,
     })
-    expect(rows[1]).toMatchObject({
-      protocol: 'chat-completions',
-      route: 'chat-completions',
-      model: 'deepseek-chat',
-      sequence: 0,
-      event: chatChunk,
-    })
-    expect(Object.keys(rows[0]!).sort()).toEqual([
+    expect(rows[1]).toMatchObject({ sequence: 0, event: deltaEvent })
+    expect(rows[2]).toMatchObject({ sequence: 1, event: completedEvent })
+    expect(rows[3]).toMatchObject({ eventCount: 2, status: 'completed' })
+    expect(Object.keys(rows[1]!).sort()).toEqual([
       'event',
+      'lifecycle',
       'model',
       'protocol',
+      'requestAttempt',
+      'requestId',
       'route',
       'sequence',
       'sessionId',
       'source',
+      'status',
+      'streamAttempt',
       'streamId',
       'timestamp',
     ])
-    expect(rows[0]!.streamId).not.toBe(rows[1]!.streamId)
-    expect(readFileSync(path, 'utf8').split('\n').filter(Boolean)).toHaveLength(
-      2,
-    )
+
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  test('logs start and error for a first-event failure and preserves its identity', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openai-raw-log-'))
+    const path = join(root, 'events.openai.jsonl')
+    _setOpenAIRawStreamLoggerForTesting({ enabled: true, path })
+
+    const upstreamError = Object.assign(new Error('upstream failure'), {
+      status: 503,
+      requestId: 'req-error',
+      code: 'server_error',
+      type: 'api_error',
+      param: 'model',
+      incompleteReason: 'server_error',
+    })
+    const failingStream: AsyncIterable<RawEvent> = {
+      [Symbol.asyncIterator]() {
+        return {
+          async next() {
+            throw upstreamError
+          },
+        }
+      },
+    }
+
+    let caught: unknown
+    try {
+      for await (const _event of logOpenAIRawStream(failingStream, {
+        route: 'official-responses',
+        model: 'gpt-5',
+      })) {
+        // consume the stream
+      }
+    } catch (error) {
+      caught = error
+    }
+    _flushOpenAIRawStreamLogForTesting()
+
+    expect(caught).toBe(upstreamError)
+    const rows = readRows(path)
+    expect(rows.map(row => row.lifecycle)).toEqual(['start', 'error'])
+    expect(rows[1]).toMatchObject({
+      eventCount: 0,
+      status: null,
+      error: {
+        name: 'Error',
+        message: 'upstream failure',
+        status: 503,
+        requestId: 'req-error',
+        code: 'server_error',
+        type: 'api_error',
+        param: 'model',
+        incompleteReason: 'server_error',
+      },
+    })
 
     rmSync(root, { recursive: true, force: true })
   })
@@ -162,11 +229,48 @@ describe('logOpenAIRawStream', () => {
     await wrapped.return?.()
     _flushOpenAIRawStreamLogForTesting()
 
-    expect(readRows(firstPath).map(row => row.event)).toEqual([
-      { type: 'first' },
-      { type: 'second' },
-    ])
+    expect(
+      readRows(firstPath)
+        .filter(row => row.lifecycle === 'event')
+        .map(row => row.event),
+    ).toEqual([{ type: 'first' }, { type: 'second' }])
     expect(existsSync(secondPath)).toBe(false)
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  test('shares a writer between overlapping streams', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openai-raw-log-'))
+    const path = join(root, 'events.openai.jsonl')
+    _setOpenAIRawStreamLoggerForTesting({ enabled: true, path })
+
+    const first = logOpenAIRawStream(fromEvents([{ type: 'first' }]), {
+      route: 'official-responses',
+      model: 'gpt-5',
+      streamId: 'first-stream',
+    })
+    const second = logOpenAIRawStream(fromEvents([{ type: 'second' }]), {
+      route: 'chat-completions',
+      model: 'deepseek-chat',
+      streamId: 'second-stream',
+    })
+
+    await first.next()
+    await second.next()
+    await first.next()
+    await second.next()
+    _flushOpenAIRawStreamLogForTesting()
+
+    const rows = readRows(path)
+    expect(rows.filter(row => row.lifecycle === 'complete')).toHaveLength(2)
+    expect(
+      rows
+        .filter(row => row.lifecycle === 'event')
+        .map(row => [row.streamId, row.protocol]),
+    ).toEqual([
+      ['first-stream', 'responses'],
+      ['second-stream', 'chat-completions'],
+    ])
+
     rmSync(root, { recursive: true, force: true })
   })
 
@@ -209,13 +313,23 @@ describe('logOpenAIRawStream', () => {
     })) {
       output.push(value)
     }
+    logOpenAIRawLifecycle({
+      lifecycle: 'retry',
+      route: 'official-responses',
+      model: 'gpt-5',
+      phase: 'request',
+      attempt: 1,
+      maxRetries: 5,
+      delayMs: 500,
+      error: new Error('hidden'),
+    })
 
     expect(output[0]).toBe(event)
     expect(existsSync(path)).toBe(false)
     rmSync(root, { recursive: true, force: true })
   })
 
-  test('continues when an event cannot be serialized', async () => {
+  test('continues when a raw event cannot be serialized', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openai-raw-log-'))
     const path = join(root, 'events.openai.jsonl')
     _setOpenAIRawStreamLoggerForTesting({ enabled: true, path })
@@ -229,16 +343,20 @@ describe('logOpenAIRawStream', () => {
     })) {
       output.push(value)
     }
+    _flushOpenAIRawStreamLogForTesting()
 
     expect(output[0]).toBe(event)
-    expect(existsSync(path)).toBe(false)
+    expect(readRows(path).map(row => row.lifecycle)).toEqual([
+      'start',
+      'complete',
+    ])
     rmSync(root, { recursive: true, force: true })
   })
 
-  test('preserves upstream errors and iterator cleanup when logging fails', async () => {
+  test('preserves iterator cleanup when logging fails', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openai-raw-log-'))
     const blocker = join(root, 'not-a-directory')
-    require('fs').writeFileSync(blocker, 'blocker')
+    writeFileSync(blocker, 'blocker')
     _setOpenAIRawStreamLoggerForTesting({
       enabled: true,
       path: join(blocker, 'events.openai.jsonl'),
@@ -247,11 +365,8 @@ describe('logOpenAIRawStream', () => {
     let returned = false
     const stream: AsyncIterable<RawEvent> = {
       [Symbol.asyncIterator]() {
-        let yielded = false
         return {
           async next() {
-            if (yielded) throw new Error('upstream failure')
-            yielded = true
             return { done: false, value: { type: 'first' } }
           },
           async return() {
@@ -270,21 +385,91 @@ describe('logOpenAIRawStream', () => {
     await wrapped.return?.()
     expect(returned).toBe(true)
 
-    const failingStream: AsyncIterable<RawEvent> = {
-      async *[Symbol.asyncIterator]() {
-        yield { type: 'before-error' }
-        throw new Error('upstream failure')
+    rmSync(root, { recursive: true, force: true })
+  })
+})
+
+describe('logOpenAIRawLifecycle', () => {
+  test('logs bounded allowlisted retry diagnostics without sensitive fields', () => {
+    const root = mkdtempSync(join(tmpdir(), 'openai-raw-log-'))
+    const path = join(root, 'events.openai.jsonl')
+    _setOpenAIRawStreamLoggerForTesting({ enabled: true, path })
+
+    logOpenAIRawLifecycle({
+      lifecycle: 'retry',
+      route: 'official-responses',
+      model: 'gpt-5',
+      source: 'repl_main_thread',
+      streamId: 'stream-retry',
+      requestAttempt: 3,
+      streamAttempt: 1,
+      requestId: 'req-context',
+      phase: 'request',
+      attempt: 3,
+      maxRetries: 5,
+      delayMs: 2000,
+      error: {
+        statusCode: 502,
+        request_id: 'req-error',
+        authorization: 'Bearer secret-token',
+        cookie: 'secret-cookie',
+        headers: {
+          authorization: 'Bearer nested-secret',
+          cookie: 'nested-cookie',
+          'set-cookie': 'nested-set-cookie',
+        },
+        body: 'secret-body',
+        request: { payload: 'secret-payload' },
+        error: {
+          message: 'x'.repeat(700),
+          code: 'server_error',
+          type: 'api_error',
+          param: 'model',
+          incomplete_details: { reason: 'server_error' },
+        },
       },
-    }
-    const consume = async () => {
-      for await (const _event of logOpenAIRawStream(failingStream, {
-        route: 'official-responses',
-        model: 'gpt-5',
-      })) {
-        // consume the stream
-      }
-    }
-    await expect(consume()).rejects.toThrow('upstream failure')
+    })
+    _flushOpenAIRawStreamLogForTesting()
+
+    const rows = readRows(path)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      lifecycle: 'retry',
+      phase: 'request',
+      attempt: 3,
+      maxRetries: 5,
+      delayMs: 2000,
+      streamId: 'stream-retry',
+      requestAttempt: 3,
+      streamAttempt: 1,
+      requestId: 'req-context',
+      error: {
+        statusCode: 502,
+        requestId: 'req-error',
+        code: 'server_error',
+        type: 'api_error',
+        param: 'model',
+        incompleteReason: 'server_error',
+      },
+    })
+    const diagnostics = rows[0]!.error as RawEvent
+    expect((diagnostics.message as string).length).toBe(500)
+    expect(Object.keys(diagnostics).sort()).toEqual([
+      'code',
+      'incompleteReason',
+      'message',
+      'param',
+      'requestId',
+      'statusCode',
+      'type',
+    ])
+    const serialized = JSON.stringify(rows[0])
+    expect(serialized).not.toContain('secret-token')
+    expect(serialized).not.toContain('secret-cookie')
+    expect(serialized).not.toContain('nested-secret')
+    expect(serialized).not.toContain('nested-set-cookie')
+    expect(serialized).not.toContain('secret-body')
+    expect(serialized).not.toContain('secret-payload')
 
     rmSync(root, { recursive: true, force: true })
   })

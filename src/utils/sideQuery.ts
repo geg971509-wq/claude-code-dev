@@ -582,15 +582,20 @@ async function sideQueryViaChatGPTResponses(
     promptCacheKey: formatOpenAIPromptCacheKey(getSessionId()),
   })
 
-  const rawStream = await createChatGPTResponsesStream({
+  const attempt = await createChatGPTResponsesStream({
     request,
     signal: opts.signal ?? new AbortController().signal,
   })
-  const adapted = adaptResponsesStreamToAnthropic(rawStream, openaiModel)
-  const betaMessage = await collectAnthropicStreamToBetaMessage(
-    adapted,
-    openaiModel,
-  )
+  let betaMessage: BetaMessage
+  try {
+    const adapted = adaptResponsesStreamToAnthropic(attempt.stream, openaiModel)
+    betaMessage = await collectAnthropicStreamToBetaMessage(
+      adapted,
+      openaiModel,
+    )
+  } finally {
+    attempt.cleanup()
+  }
 
   const now = Date.now()
   const lastCompletion = getLastApiCompletionTimestamp()

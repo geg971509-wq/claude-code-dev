@@ -19,7 +19,7 @@ import { semanticBoolean } from 'src/utils/semanticBoolean.js';
 import { sleep } from 'src/utils/sleep.js';
 import { jsonParse } from 'src/utils/slowOperations.js';
 import { countCharInString } from 'src/utils/stringUtils.js';
-import { getTaskOutput } from 'src/utils/task/diskOutput.js';
+import { getTaskOutput, readTerminalTaskRecord, type TerminalTaskRecord } from 'src/utils/task/diskOutput.js';
 import { updateTaskState } from 'src/utils/task/framework.js';
 import { formatTaskOutput } from 'src/utils/task/outputFormatting.js';
 import type { ThemeName } from 'src/utils/theme.js';
@@ -53,7 +53,7 @@ type TaskOutput = {
 };
 
 type TaskOutputToolOutput = {
-  retrieval_status: 'success' | 'timeout' | 'not_ready';
+  retrieval_status: 'success' | 'timeout' | 'not_ready' | 'not_found';
   task: TaskOutput | null;
 };
 
@@ -122,39 +122,59 @@ async function getTaskOutputData(task: TaskState): Promise<TaskOutput> {
   return baseOutput;
 }
 
+async function getPersistedTaskOutput(taskId: string): Promise<TaskOutput | null> {
+  const record = await readTerminalTaskRecord(taskId);
+  if (!record) return null;
+  return taskOutputFromRecord(record, await getTaskOutput(taskId));
+}
+
+function taskOutputFromRecord(record: TerminalTaskRecord, diskOutput: string): TaskOutput {
+  const output = record.result || diskOutput;
+  return {
+    task_id: record.id,
+    task_type: record.type,
+    status: record.status,
+    description: record.description,
+    output,
+    exitCode: record.exitCode,
+    error: record.error,
+    prompt: record.prompt,
+    result: record.result || output,
+  };
+}
+
+type WaitResult = { type: 'task'; task: TaskState } | { type: 'persisted'; task: TaskOutput } | { type: 'not_found' };
+
 // Wait for task to complete
 async function waitForTaskCompletion(
   taskId: string,
   getAppState: () => { tasks?: Record<string, TaskState> },
   timeoutMs: number,
   abortController?: AbortController,
-): Promise<TaskState | null> {
+): Promise<WaitResult> {
   const startTime = Date.now();
 
   while (Date.now() - startTime < timeoutMs) {
-    // Check abort signal
     if (abortController?.signal.aborted) {
       throw new AbortError();
     }
 
-    const state = getAppState();
-    const task = state.tasks?.[taskId] as TaskState | undefined;
-
+    const task = getAppState().tasks?.[taskId] as TaskState | undefined;
     if (!task) {
-      return null;
+      const persisted = await getPersistedTaskOutput(taskId);
+      return persisted ? { type: 'persisted', task: persisted } : { type: 'not_found' };
     }
-
     if (task.status !== 'running' && task.status !== 'pending') {
-      return task;
+      return { type: 'task', task };
     }
 
-    // Wait before polling again
     await sleep(100);
   }
 
-  // Timeout - return current state
-  const finalState = getAppState();
-  return (finalState.tasks?.[taskId] as TaskState) ?? null;
+  const task = getAppState().tasks?.[taskId] as TaskState | undefined;
+  if (task) return { type: 'task', task };
+  const persisted = await getPersistedTaskOutput(taskId);
+  return persisted ? { type: 'persisted', task: persisted } : { type: 'not_found' };
 }
 
 export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool({
@@ -204,7 +224,7 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
 - Works with all task types: background shells, async agents, and remote sessions`;
   },
 
-  async validateInput({ task_id }, { getAppState }) {
+  async validateInput({ task_id }) {
     if (!task_id) {
       return {
         result: false,
@@ -213,34 +233,24 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
       };
     }
 
-    const appState = getAppState();
-    const task = appState.tasks?.[task_id] as TaskState | undefined;
-
-    if (!task) {
-      return {
-        result: false,
-        message: `No task found with ID: ${task_id}`,
-        errorCode: 2,
-      };
-    }
-
     return { result: true };
   },
 
   async call(input: TaskOutputToolInput, toolUseContext, _canUseTool, _parentMessage, onProgress) {
     const { task_id, block, timeout } = input;
-
-    const appState = toolUseContext.getAppState();
-    const task = appState.tasks?.[task_id] as TaskState | undefined;
+    const task = toolUseContext.getAppState().tasks?.[task_id] as TaskState | undefined;
 
     if (!task) {
-      throw new Error(`No task found with ID: ${task_id}`);
+      const persisted = await getPersistedTaskOutput(task_id);
+      return {
+        data: persisted
+          ? { retrieval_status: 'success' as const, task: persisted }
+          : { retrieval_status: 'not_found' as const, task: null },
+      };
     }
 
     if (!block) {
-      // Non-blocking: return current state
       if (task.status !== 'running' && task.status !== 'pending') {
-        // Mark as notified
         updateTaskState(task_id, toolUseContext.setAppState, t => ({
           ...t,
           notified: true,
@@ -260,53 +270,48 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
       };
     }
 
-    // Blocking: wait for completion
-    if (onProgress) {
-      onProgress({
-        toolUseID: `task-output-waiting-${Date.now()}`,
-        data: {
-          type: 'waiting_for_task',
-          taskDescription: task.description,
-          taskType: task.type,
-        },
-      });
-    }
+    onProgress?.({
+      toolUseID: `task-output-waiting-${Date.now()}`,
+      data: {
+        type: 'waiting_for_task',
+        taskDescription: task.description,
+        taskType: task.type,
+      },
+    });
 
-    const completedTask = await waitForTaskCompletion(
+    const result = await waitForTaskCompletion(
       task_id,
       toolUseContext.getAppState,
       timeout,
       toolUseContext.abortController,
     );
-
-    if (!completedTask) {
+    if (result.type === 'not_found') {
+      return {
+        data: { retrieval_status: 'not_found' as const, task: null },
+      };
+    }
+    if (result.type === 'persisted') {
+      return {
+        data: { retrieval_status: 'success' as const, task: result.task },
+      };
+    }
+    if (result.task.status === 'running' || result.task.status === 'pending') {
       return {
         data: {
           retrieval_status: 'timeout' as const,
-          task: null,
+          task: await getTaskOutputData(result.task),
         },
       };
     }
 
-    if (completedTask.status === 'running' || completedTask.status === 'pending') {
-      return {
-        data: {
-          retrieval_status: 'timeout' as const,
-          task: await getTaskOutputData(completedTask),
-        },
-      };
-    }
-
-    // Mark as notified
     updateTaskState(task_id, toolUseContext.setAppState, t => ({
       ...t,
       notified: true,
     }));
-
     return {
       data: {
         retrieval_status: 'success' as const,
-        task: await getTaskOutputData(completedTask),
+        task: await getTaskOutputData(result.task),
       },
     };
   },

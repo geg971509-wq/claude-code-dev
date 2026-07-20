@@ -1,24 +1,23 @@
 /**
  * Tests for queryModelOpenAI in index.ts.
  *
- * Focused on the two bugs fixed:
- *  1. stop_reason was always null in the assembled AssistantMessage because
- *     partialMessage (from message_start) has stop_reason: null, and the
- *     stop_reason captured from message_delta was never applied.
- *  2. partialMessage was not reset to null after message_stop, so the safety
- *     fallback at the end of the loop would yield a second identical
- *     AssistantMessage (causing doubled content in the next API request).
+ * Focused on final-message assembly, strict terminal handling, and retry
+ * boundaries. A normal AssistantMessage is emitted only after message_stop;
+ * abrupt EOF must surface an API error instead of partial success.
  *
  * Strategy: mock getOpenAIClient + adaptOpenAIStreamToAnthropic so we can
  * feed pre-built Anthropic events directly into queryModelOpenAI and inspect
  * what it emits — without any real HTTP calls.
  */
-import { describe, expect, test, mock, beforeEach, afterEach } from 'bun:test'
+import { describe, expect, test, mock, beforeEach } from 'bun:test'
+import { APIUserAbortError } from '@anthropic-ai/sdk'
 import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type {
   AssistantMessage,
   StreamEvent,
 } from '../../../../types/message.js'
+import * as realModelProvider from '../../../../../packages/@ant/model-provider/src/index.js'
+import * as realSearchExtraTools from '../../../../utils/searchExtraTools.js'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -99,6 +98,17 @@ function makeThinkingDelta(
   } as any
 }
 
+function makeSignatureDelta(
+  index: number,
+  signature: string,
+): BetaRawMessageStreamEvent {
+  return {
+    type: 'content_block_delta',
+    index,
+    delta: { type: 'signature_delta', signature },
+  } as any
+}
+
 /** Build a content_block_stop event */
 function makeContentBlockStop(index: number): BetaRawMessageStreamEvent {
   return { type: 'content_block_stop', index } as any
@@ -121,18 +131,32 @@ function makeMessageStop(): BetaRawMessageStreamEvent {
   return { type: 'message_stop' } as any
 }
 
+type AttemptPlan = {
+  events?: BetaRawMessageStreamEvent[]
+  handshakeError?: unknown
+  streamError?: unknown
+  requestId?: string
+}
+
 /** Async generator from a fixed array of events */
-async function* eventStream(events: BetaRawMessageStreamEvent[]) {
+async function* eventStream(
+  events: BetaRawMessageStreamEvent[],
+  error?: unknown,
+) {
   for (const e of events) yield e
+  if (error !== undefined) throw error
 }
 
 /** Collect all outputs from queryModelOpenAI into typed buckets */
 async function runQueryModel(
   events: BetaRawMessageStreamEvent[],
   envOverrides: Record<string, string | undefined> = {},
+  attempts: AttemptPlan[] = [{ events }],
+  signal: AbortSignal = new AbortController().signal,
 ) {
-  // Wire events into the mocked stream adapter
-  _nextEvents = events
+  _attemptPlans = attempts
+  _activeAttempt = null
+  _createCalls = 0
   // Save + apply env overrides
   const saved: Record<string, string | undefined> = {}
   for (const [k, v] of Object.entries(envOverrides)) {
@@ -169,7 +193,7 @@ async function runQueryModel(
       [],
       { type: 'text', text: '' } as any,
       [],
-      new AbortController().signal,
+      signal,
       minimalOptions,
     )) {
       if (item.type === 'assistant') {
@@ -196,15 +220,31 @@ async function runQueryModel(
 // We mock at module level. Bun's mock.module replaces the module for the
 // entire file, so we configure the stream per-test via a shared variable.
 let _nextEvents: BetaRawMessageStreamEvent[] = []
+let _attemptPlans: AttemptPlan[] = []
+let _activeAttempt: AttemptPlan | null = null
+let _createCalls = 0
 let _searchExtraToolsEnabled = false
 
 /** Captured arguments from the last chat.completions.create() call */
 let _lastCreateArgs: Record<string, any> | null = null
 
+beforeEach(() => {
+  _nextEvents = []
+  _attemptPlans = []
+  _activeAttempt = null
+  _createCalls = 0
+  _lastCreateArgs = null
+  _searchExtraToolsEnabled = false
+})
+
 mock.module('@ant/model-provider', () => ({
+  ...realModelProvider,
   resolveOpenAIModel: (m: string) => m,
   adaptOpenAIStreamToAnthropic: (_stream: any, _model: string) =>
-    eventStream(_nextEvents),
+    eventStream(
+      _activeAttempt?.events ?? _nextEvents,
+      _activeAttempt?.streamError,
+    ),
   anthropicMessagesToOpenAI: (messages: any[]) =>
     messages.map(msg => ({
       role: msg.message?.role ?? 'user',
@@ -268,9 +308,31 @@ mock.module('../client.js', () => ({
   getOpenAIClient: () => ({
     chat: {
       completions: {
-        create: async (args: Record<string, any>) => {
+        create: (args: Record<string, any>) => {
           _lastCreateArgs = args
-          return { [Symbol.asyncIterator]: async function* () {} }
+          const plan = _attemptPlans[_createCalls++] ?? { events: _nextEvents }
+          const data = {
+            controller: new AbortController(),
+            [Symbol.asyncIterator]: async function* () {},
+          }
+          return {
+            withResponse: async () => {
+              if (plan.handshakeError !== undefined) {
+                throw plan.handshakeError
+              }
+              _activeAttempt = plan
+              const requestId = plan.requestId ?? 'req_test'
+              return {
+                data,
+                response: {
+                  status: 200,
+                  headers: new Headers({ 'x-request-id': requestId }),
+                  body: null,
+                },
+                request_id: requestId,
+              }
+            },
+          }
         },
       },
     },
@@ -313,32 +375,12 @@ mock.module('../../../../utils/context.js', () => ({
   getMaxThinkingTokensForModel: () => 0,
 }))
 
-mock.module('../../../../utils/messages.js', () => ({
-  normalizeMessagesForAPI: (msgs: any) => msgs,
-  normalizeContentFromAPI: (blocks: any[]) => blocks,
-  createUserMessage: (opts: any) => ({
-    type: 'user',
-    message: { role: 'user', content: opts.content },
-    uuid: 'user-uuid',
-    timestamp: new Date().toISOString(),
-    isMeta: opts.isMeta,
-  }),
-  createAssistantAPIErrorMessage: (opts: any) => ({
-    type: 'assistant',
-    message: {
-      content: [{ type: 'text', text: opts.content }],
-      apiError: opts.apiError,
-    },
-    uuid: 'error-uuid',
-    timestamp: new Date().toISOString(),
-  }),
-}))
-
 mock.module('../../../../utils/api.js', () => ({
   toolToAPISchema: async (t: any) => t,
 }))
 
 mock.module('../../../../utils/searchExtraTools.js', () => ({
+  ...realSearchExtraTools,
   isSearchExtraToolsEnabled: async () => _searchExtraToolsEnabled,
   extractDiscoveredToolNames: () => new Set(),
   isDeferredToolsDeltaEnabled: () => false,
@@ -369,15 +411,15 @@ mock.module('../../../../utils/modelCost.js', () => ({
   getModelPricingString: () => undefined,
 }))
 
-mock.module('src/services/langfuse/tracing.ts', () => ({
+mock.module('../../../../services/langfuse/tracing.js', () => ({
   createTrace: () => null,
-  recordLLMObservation: () => {},
-  recordToolObservation: () => {},
-  createToolBatchSpan: () => null,
-  endToolBatchSpan: () => {},
   createSubagentTrace: () => null,
   createChildSpan: () => null,
+  recordLLMObservation: () => {},
+  recordToolObservation: () => {},
   endTrace: () => {},
+  createToolBatchSpan: () => null,
+  endToolBatchSpan: () => {},
 }))
 
 mock.module('../../../../services/langfuse/convert.js', () => ({
@@ -448,32 +490,27 @@ describe('queryModelOpenAI — stop_reason propagation', () => {
 
     const { assistantMessages } = await runQueryModel(_nextEvents)
 
-    // Two assistant-typed items: the content message + the max_output_tokens error signal.
-    // The error signal is emitted as a synthetic assistant message by createAssistantAPIErrorMessage.
     expect(assistantMessages).toHaveLength(2)
     const contentMsg = assistantMessages[0]!
     expect(contentMsg.message.stop_reason).toBe('max_tokens')
-    // Second item is the error signal (has apiError set)
-    const errorMsg = assistantMessages[1]!.message as any
-    expect(errorMsg.apiError).toBe('max_output_tokens')
+    expect(assistantMessages[1]!.apiError).toBe('max_output_tokens')
   })
 
-  test('stop_reason is null when no message_delta was received (safety fallback path)', async () => {
-    // Stream ends without message_stop — triggers the safety fallback branch.
-    // stop_reason stays null since no message_delta was ever seen.
+  test('does not assemble partial content when message_stop is missing', async () => {
     _nextEvents = [
       makeMessageStart(),
       makeContentBlockStart(0, 'text'),
       makeTextDelta(0, 'partial'),
       makeContentBlockStop(0),
-      // No message_delta / message_stop
     ]
 
     const { assistantMessages } = await runQueryModel(_nextEvents)
 
-    // Safety fallback should yield the partial content
     expect(assistantMessages).toHaveLength(1)
-    expect(assistantMessages[0]!.message.stop_reason).toBeNull()
+    expect(assistantMessages[0]!.isApiErrorMessage).toBe(true)
+    expect(assistantMessages[0]!.message.content).not.toContainEqual(
+      expect.objectContaining({ text: 'partial' }),
+    )
   })
 })
 
@@ -540,7 +577,7 @@ describe('queryModelOpenAI — usage accumulation', () => {
   })
 })
 
-describe('queryModelOpenAI — no duplicate AssistantMessage (partialMessage reset)', () => {
+describe('queryModelOpenAI — terminal message assembly', () => {
   test('yields exactly one AssistantMessage per message_stop when content is present', async () => {
     _nextEvents = [
       makeMessageStart(),
@@ -553,9 +590,6 @@ describe('queryModelOpenAI — no duplicate AssistantMessage (partialMessage res
 
     const { assistantMessages } = await runQueryModel(_nextEvents)
 
-    // Before the fix, partialMessage was not reset to null, so the safety
-    // fallback at the end of the loop would yield a second message with the
-    // same message.id — causing mergeAssistantMessages to concatenate content.
     expect(assistantMessages).toHaveLength(1)
   })
 
@@ -577,18 +611,20 @@ describe('queryModelOpenAI — no duplicate AssistantMessage (partialMessage res
     expect(assistantMessages).toHaveLength(1)
   })
 
-  test('safety fallback path still yields message when stream ends without message_stop', async () => {
-    // Simulates a stream that cuts off without the normal termination sequence.
+  test('surfaces an API error when content is followed by abrupt EOF', async () => {
     _nextEvents = [
       makeMessageStart(),
       makeContentBlockStart(0, 'text'),
       makeTextDelta(0, 'abrupt end'),
-      // No content_block_stop, no message_delta, no message_stop
     ]
 
     const { assistantMessages } = await runQueryModel(_nextEvents)
 
     expect(assistantMessages).toHaveLength(1)
+    expect(assistantMessages[0]!.isApiErrorMessage).toBe(true)
+    expect(assistantMessages[0]!.message.content).not.toContainEqual(
+      expect.objectContaining({ text: 'abrupt end' }),
+    )
   })
 })
 
@@ -612,6 +648,192 @@ describe('queryModelOpenAI — stream_events forwarded', () => {
     expect(eventTypes).toContain('content_block_stop')
     expect(eventTypes).toContain('message_delta')
     expect(eventTypes).toContain('message_stop')
+  })
+})
+
+describe('queryModelOpenAI — retry boundaries', () => {
+  const transientRequestError = () =>
+    new realModelProvider.ProviderAPIError(
+      503,
+      'temporarily unavailable',
+      null,
+      1,
+    )
+  const transientStreamError = () =>
+    new realModelProvider.ProviderStreamError('stream disconnected', {
+      kind: 'provider',
+      retryable: true,
+      terminal: false,
+      retryAfterMs: 1,
+    })
+  const completedEvents = (text: string) => [
+    makeMessageStart(),
+    makeContentBlockStart(0, 'text'),
+    makeTextDelta(0, text),
+    makeContentBlockStop(0),
+    makeMessageDelta('end_turn', 5),
+    makeMessageStop(),
+  ]
+
+  test('retries a transient handshake failure and emits api_retry metadata', async () => {
+    const { assistantMessages, otherOutputs } = await runQueryModel(
+      [],
+      { OPENAI_REQUEST_MAX_RETRIES: '1' },
+      [
+        { handshakeError: transientRequestError() },
+        { events: completedEvents('recovered'), requestId: 'req_recovered' },
+      ],
+    )
+
+    expect(_createCalls).toBe(2)
+    expect(assistantMessages).toHaveLength(1)
+    expect(assistantMessages[0]!.requestId).toBe('req_recovered')
+    expect(otherOutputs).toHaveLength(1)
+    expect(otherOutputs[0]).toMatchObject({
+      type: 'system',
+      subtype: 'api_error',
+      retryAttempt: 1,
+      maxRetries: 1,
+      retryInMs: 1,
+    })
+  })
+
+  test('retries a pre-semantic stream failure without leaking its prelude', async () => {
+    const { assistantMessages, streamEvents, otherOutputs } =
+      await runQueryModel([], { OPENAI_STREAM_MAX_RETRIES: '1' }, [
+        {
+          events: [makeMessageStart(), makeContentBlockStart(0, 'text')],
+          streamError: transientStreamError(),
+        },
+        { events: completedEvents('recovered') },
+      ])
+
+    expect(_createCalls).toBe(2)
+    expect(assistantMessages).toHaveLength(1)
+    expect(
+      streamEvents.filter(e => (e as any).event.type === 'message_start'),
+    ).toHaveLength(1)
+    expect(otherOutputs[0]).toMatchObject({
+      type: 'system',
+      subtype: 'api_error',
+      retryAttempt: 1,
+      maxRetries: 1,
+    })
+  })
+
+  test('keeps request and stream retry budgets independent', async () => {
+    const { assistantMessages, otherOutputs } = await runQueryModel(
+      [],
+      {
+        OPENAI_REQUEST_MAX_RETRIES: '1',
+        OPENAI_STREAM_MAX_RETRIES: '1',
+      },
+      [
+        { handshakeError: transientRequestError() },
+        {
+          events: [makeMessageStart()],
+          streamError: transientStreamError(),
+        },
+        { events: completedEvents('recovered') },
+      ],
+    )
+
+    expect(_createCalls).toBe(3)
+    expect(assistantMessages).toHaveLength(1)
+    expect(otherOutputs.map(output => output.retryAttempt)).toEqual([1, 1])
+  })
+
+  const committedFailures: Array<{
+    name: string
+    events: BetaRawMessageStreamEvent[]
+  }> = [
+    {
+      name: 'text',
+      events: [
+        makeMessageStart(),
+        makeContentBlockStart(0, 'text'),
+        makeTextDelta(0, 'visible'),
+      ],
+    },
+    {
+      name: 'thinking',
+      events: [
+        makeMessageStart(),
+        makeContentBlockStart(0, 'thinking'),
+        makeThinkingDelta(0, 'visible'),
+      ],
+    },
+    {
+      name: 'signature',
+      events: [
+        makeMessageStart(),
+        makeContentBlockStart(0, 'thinking'),
+        makeSignatureDelta(0, 'signature'),
+      ],
+    },
+    {
+      name: 'tool identity',
+      events: [makeMessageStart(), makeContentBlockStart(0, 'tool_use')],
+    },
+    {
+      name: 'tool arguments',
+      events: [
+        makeMessageStart(),
+        makeContentBlockStart(0, 'tool_use', { id: '', name: '' }),
+        makeInputJsonDelta(0, '{"cmd":"ls"}'),
+      ],
+    },
+  ]
+
+  for (const scenario of committedFailures) {
+    test(`does not retry after ${scenario.name} becomes visible`, async () => {
+      const { assistantMessages, otherOutputs } = await runQueryModel(
+        [],
+        { OPENAI_STREAM_MAX_RETRIES: '1' },
+        [
+          {
+            events: scenario.events,
+            streamError: transientStreamError(),
+          },
+          { events: completedEvents('must not replay') },
+        ],
+      )
+
+      expect(_createCalls).toBe(1)
+      expect(otherOutputs).toHaveLength(0)
+      expect(assistantMessages).toHaveLength(1)
+      expect(assistantMessages[0]!.isApiErrorMessage).toBe(true)
+    })
+  }
+
+  test('propagates the successful request ID to the final assistant message', async () => {
+    const { assistantMessages } = await runQueryModel(
+      completedEvents('ok'),
+      {},
+      [{ events: completedEvents('ok'), requestId: 'req_final' }],
+    )
+
+    expect(assistantMessages).toHaveLength(1)
+    expect(assistantMessages[0]!.requestId).toBe('req_final')
+  })
+
+  test('does not retry user cancellation', async () => {
+    const abort = Object.assign(new Error('request was aborted'), {
+      name: 'AbortError',
+    })
+
+    let rejection: unknown
+    try {
+      await runQueryModel([], { OPENAI_REQUEST_MAX_RETRIES: '1' }, [
+        { handshakeError: abort },
+        { events: completedEvents('must not retry') },
+      ])
+    } catch (error) {
+      rejection = error
+    }
+
+    expect(rejection).toBeInstanceOf(APIUserAbortError)
+    expect(_createCalls).toBe(1)
   })
 })
 

@@ -57,7 +57,7 @@ export function CoordinatorTaskPanel(): React.ReactNode {
         const now = Date.now();
         for (const t of Object.values(tasksRef.current)) {
           if (isPanelAgentTask(t) && (t.evictAfter ?? Infinity) <= now) {
-            evictTerminalTask(t.id, setAppState);
+            void evictTerminalTask(t.id, setAppState);
           }
         }
         setTick((prev: number) => prev + 1);

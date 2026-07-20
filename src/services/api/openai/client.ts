@@ -12,7 +12,7 @@ import { getProxyFetchOptions } from 'src/utils/proxy.js'
  * OPENAI_PROJECT_ID: Optional. Project ID.
  */
 
-let cachedClient: OpenAI | null = null
+const cachedClients = new Map<number, OpenAI>()
 
 /**
  * Wrap a fetch so that every response's rate-limit headers are fed into the
@@ -41,7 +41,13 @@ export function getOpenAIClient(options?: {
   fetchOverride?: typeof fetch
   source?: string
 }): OpenAI {
-  if (cachedClient) return cachedClient
+  const maxRetries = options?.maxRetries ?? 0
+  const useCache = !options?.fetchOverride
+
+  if (useCache) {
+    const cachedClient = cachedClients.get(maxRetries)
+    if (cachedClient) return cachedClient
+  }
 
   const apiKey = process.env.OPENAI_API_KEY || ''
   const baseURL = process.env.OPENAI_BASE_URL
@@ -52,7 +58,7 @@ export function getOpenAIClient(options?: {
   const client = new OpenAI({
     apiKey,
     ...(baseURL && { baseURL }),
-    maxRetries: options?.maxRetries ?? 0,
+    maxRetries,
     timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
     dangerouslyAllowBrowser: true,
     ...(process.env.OPENAI_ORG_ID && {
@@ -65,14 +71,14 @@ export function getOpenAIClient(options?: {
     fetch: wrappedFetch,
   })
 
-  if (!options?.fetchOverride) {
-    cachedClient = client
+  if (useCache) {
+    cachedClients.set(maxRetries, client)
   }
 
   return client
 }
 
-/** Clear the cached client (useful when env vars change). */
+/** Clear cached clients (useful when env vars change). */
 export function clearOpenAIClientCache(): void {
-  cachedClient = null
+  cachedClients.clear()
 }

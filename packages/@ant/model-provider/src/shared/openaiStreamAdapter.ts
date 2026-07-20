@@ -5,6 +5,7 @@ import {
   finishReasonToAnthropicStopReason,
   normalizeOpenAIFinishReason,
 } from '../types/finishReason.js'
+import { ProviderStreamError } from '../types/providerErrors.js'
 
 /**
  * Finish-time tool arg validation. Streaming JSON may be incomplete until the
@@ -285,7 +286,28 @@ export async function* adaptOpenAIStreamToAnthropic(
     }
 
     // Handle finish
-    if (choice?.finish_reason) {
+    if (
+      typeof choice?.finish_reason === 'string' &&
+      choice.finish_reason.trim() !== ''
+    ) {
+      const finishReason = choice.finish_reason.trim()
+      if (
+        finishReason !== 'stop' &&
+        finishReason !== 'tool_calls' &&
+        finishReason !== 'function_call' &&
+        finishReason !== 'length' &&
+        finishReason !== 'content_filter'
+      ) {
+        throw new ProviderStreamError(
+          `OpenAI stream returned invalid finish_reason: ${finishReason}`,
+          {
+            kind: 'protocol',
+            retryable: false,
+            terminal: false,
+            completionState: 'invalid',
+          },
+        )
+      }
       if (thinkingBlockOpen) {
         yield {
           type: 'content_block_stop',
@@ -315,9 +337,22 @@ export async function* adaptOpenAIStreamToAnthropic(
         }
       }
 
-      pendingFinishReason = choice.finish_reason
+      pendingFinishReason = finishReason
       pendingHasToolCalls = toolBlocks.size > 0
     }
+  }
+
+  if (pendingFinishReason === null) {
+    throw new ProviderStreamError(
+      'OpenAI stream ended before a valid finish_reason was received',
+      {
+        kind: 'premature_eof',
+        retryable: true,
+        terminal: false,
+        completionState: 'incomplete',
+        incompleteReason: 'missing_finish_reason',
+      },
+    )
   }
 
   // Safety: close any remaining open blocks

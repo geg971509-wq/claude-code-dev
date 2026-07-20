@@ -92,7 +92,6 @@ type HookAttachmentWithName = Exclude<
   HookPermissionDecisionAttachment
 >
 
-import type { APIError } from '@anthropic-ai/sdk'
 import type {
   BetaContentBlock,
   BetaMessage,
@@ -5025,7 +5024,7 @@ export function createMicrocompactBoundaryMessage(
 }
 
 export function createSystemAPIErrorMessage(
-  error: APIError,
+  error: Error,
   retryInMs: number,
   retryAttempt: number,
   maxRetries: number,

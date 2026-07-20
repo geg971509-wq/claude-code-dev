@@ -1,28 +1,119 @@
 /**
- * Layered provider HTTP errors.
+ * Layered provider errors.
  *
  * Distinguishes token-context overflow (recoverable via compaction) from
  * request-body size rejections (need media shrink/drop), and surfaces
  * provider rate limits with optional `retryAfterMs`.
  */
 
+export type ProviderStreamErrorKind =
+  | 'provider'
+  | 'protocol'
+  | 'premature_eof'
+  | 'idle_timeout'
+  | 'incomplete'
+
+export interface ProviderStreamErrorOptions {
+  kind: ProviderStreamErrorKind
+  retryable: boolean
+  terminal?: boolean | null
+  completionState?: string | null
+  requestId?: string | null
+  code?: string | null
+  type?: string | null
+  param?: string | null
+  incompleteReason?: string | null
+  retryAfterMs?: number | null
+  status?: number
+  statusCode?: number
+  cause?: unknown
+}
+
+/** Provider-neutral failure raised while consuming a streaming response. */
+export class ProviderStreamError extends Error {
+  readonly kind: ProviderStreamErrorKind
+  readonly retryable: boolean
+  readonly terminal: boolean | null
+  readonly completionState: string | null
+  readonly requestId: string | null
+  readonly code: string | null
+  readonly type: string | null
+  readonly param: string | null
+  readonly incompleteReason: string | null
+  readonly retryAfterMs: number | null
+  readonly status: number | undefined
+  readonly statusCode: number | undefined
+
+  constructor(message: string, options: ProviderStreamErrorOptions) {
+    super(
+      message,
+      options.cause === undefined ? undefined : { cause: options.cause },
+    )
+    this.name = 'ProviderStreamError'
+    this.kind = options.kind
+    this.retryable = options.retryable
+    this.terminal = options.terminal ?? null
+    this.completionState = options.completionState ?? null
+    this.requestId = options.requestId ?? null
+    this.code = options.code ?? null
+    this.type = options.type ?? null
+    this.param = options.param ?? null
+    this.incompleteReason = options.incompleteReason ?? null
+    this.retryAfterMs = options.retryAfterMs ?? null
+    this.status = options.status ?? options.statusCode
+    this.statusCode = this.status
+  }
+}
+
+/** Read an HTTP status from provider errors without relying on SDK classes. */
+export function getProviderErrorStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object') return undefined
+
+  for (const key of ['status', 'statusCode'] as const) {
+    const value = (error as Record<string, unknown>)[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+  }
+
+  return undefined
+}
+
+export interface ProviderAPIErrorDiagnostics {
+  code?: string | null
+  type?: string | null
+  param?: string | null
+  bodyPreview?: string | null
+}
+
+function boundedDiagnostic(value: string | null | undefined): string | null {
+  return value == null ? null : value.slice(0, 500)
+}
+
 export class ProviderAPIError extends Error {
   readonly statusCode: number
   readonly requestId: string | null
   /** Server `Retry-After` directive in milliseconds, when present. */
   readonly retryAfterMs: number | null
+  readonly code: string | null
+  readonly type: string | null
+  readonly param: string | null
+  readonly bodyPreview: string | null
 
   constructor(
     statusCode: number,
     message: string,
     requestId?: string | null,
     retryAfterMs?: number | null,
+    diagnostics?: ProviderAPIErrorDiagnostics,
   ) {
     super(message)
     this.name = 'ProviderAPIError'
     this.statusCode = statusCode
     this.requestId = requestId ?? null
     this.retryAfterMs = retryAfterMs ?? null
+    this.code = boundedDiagnostic(diagnostics?.code)
+    this.type = boundedDiagnostic(diagnostics?.type)
+    this.param = boundedDiagnostic(diagnostics?.param)
+    this.bodyPreview = boundedDiagnostic(diagnostics?.bodyPreview)
   }
 }
 
@@ -33,8 +124,9 @@ export class APIContextOverflowError extends ProviderAPIError {
     message: string,
     requestId?: string | null,
     retryAfterMs?: number | null,
+    diagnostics?: ProviderAPIErrorDiagnostics,
   ) {
-    super(statusCode, message, requestId, retryAfterMs)
+    super(statusCode, message, requestId, retryAfterMs, diagnostics)
     this.name = 'APIContextOverflowError'
   }
 }
@@ -49,8 +141,9 @@ export class APIRequestTooLargeError extends ProviderAPIError {
     message: string,
     requestId?: string | null,
     retryAfterMs?: number | null,
+    diagnostics?: ProviderAPIErrorDiagnostics,
   ) {
-    super(statusCode, message, requestId, retryAfterMs)
+    super(statusCode, message, requestId, retryAfterMs, diagnostics)
     this.name = 'APIRequestTooLargeError'
   }
 }
@@ -61,8 +154,9 @@ export class APIProviderRateLimitError extends ProviderAPIError {
     message: string,
     requestId?: string | null,
     retryAfterMs?: number | null,
+    diagnostics?: ProviderAPIErrorDiagnostics,
   ) {
-    super(429, message, requestId, retryAfterMs)
+    super(429, message, requestId, retryAfterMs, diagnostics)
     this.name = 'APIProviderRateLimitError'
   }
 }
@@ -157,7 +251,7 @@ function readHeader(headers: unknown, name: string): string | null {
 export function classifyProviderHttpError(
   statusCode: number,
   message: string,
-  options?: {
+  options?: ProviderAPIErrorDiagnostics & {
     requestId?: string | null
     retryAfterMs?: number | null
     headers?: unknown
@@ -171,8 +265,20 @@ export function classifyProviderHttpError(
     readHeader(options?.headers, 'x-request-id') ??
     readHeader(options?.headers, 'request-id')
 
+  const diagnostics: ProviderAPIErrorDiagnostics = {
+    code: options?.code,
+    type: options?.type,
+    param: options?.param,
+    bodyPreview: options?.bodyPreview,
+  }
+
   if (statusCode === 429) {
-    return new APIProviderRateLimitError(message, requestId, retryAfterMs)
+    return new APIProviderRateLimitError(
+      message,
+      requestId,
+      retryAfterMs,
+      diagnostics,
+    )
   }
   // Context overflow first: Vertex returns prompt-too-long as 413.
   if (isContextOverflowStatusError(statusCode, message)) {
@@ -181,6 +287,7 @@ export function classifyProviderHttpError(
       message,
       requestId,
       retryAfterMs,
+      diagnostics,
     )
   }
   if (isRequestTooLargeStatusError(statusCode, message)) {
@@ -189,9 +296,16 @@ export function classifyProviderHttpError(
       message,
       requestId,
       retryAfterMs,
+      diagnostics,
     )
   }
-  return new ProviderAPIError(statusCode, message, requestId, retryAfterMs)
+  return new ProviderAPIError(
+    statusCode,
+    message,
+    requestId,
+    retryAfterMs,
+    diagnostics,
+  )
 }
 
 /** True when the error carries a server-directed retry delay. */

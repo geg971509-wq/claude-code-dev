@@ -40,7 +40,7 @@ import type { AppState } from './state/AppState.js'
 import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
 import type { AgentDefinition } from '@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/SyntheticOutputTool/SyntheticOutputTool.js'
-import type { APIError } from '@anthropic-ai/sdk'
+import { getProviderErrorStatus } from '@ant/model-provider'
 import type { Message, SystemCompactBoundaryMessage } from './types/message.js'
 import type { OrphanedPermission } from './types/textInputTypes.js'
 import { createAbortController } from './utils/abortController.js'
@@ -985,7 +985,7 @@ export class QueryEngine {
               retryAttempt: number
               maxRetries: number
               retryInMs: number
-              error: APIError
+              error: Error
             }
             yield {
               type: 'system',
@@ -993,7 +993,7 @@ export class QueryEngine {
               attempt: apiErrorMsg.retryAttempt,
               max_retries: apiErrorMsg.maxRetries,
               retry_delay_ms: apiErrorMsg.retryInMs,
-              error_status: apiErrorMsg.error.status ?? null,
+              error_status: getProviderErrorStatus(apiErrorMsg.error) ?? null,
               error: categorizeRetryableAPIError(apiErrorMsg.error),
               session_id: getSessionId(),
               uuid: msg.uuid,

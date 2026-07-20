@@ -13,10 +13,22 @@ describe('classifyProviderHttpError', () => {
   test('429 → rate limit with retryAfterMs from headers', () => {
     const err = classifyProviderHttpError(429, 'Too many requests', {
       headers: { 'retry-after': '12' },
+      requestId: 'req_123',
+      code: 'rate_limit_exceeded',
+      type: 'rate_limit_error',
+      param: 'model',
+      bodyPreview: 'provider response',
     })
     expect(err).toBeInstanceOf(APIProviderRateLimitError)
     expect(err.statusCode).toBe(429)
     expect(err.retryAfterMs).toBe(12_000)
+    expect(err.requestId).toBe('req_123')
+    expect(err).toMatchObject({
+      code: 'rate_limit_exceeded',
+      type: 'rate_limit_error',
+      param: 'model',
+      bodyPreview: 'provider response',
+    })
   })
 
   test('400 prompt-too-long → context overflow', () => {

@@ -3,6 +3,7 @@ import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta
 import {
   finishReasonToAnthropicStopReason,
   normalizeResponsesFinishReason,
+  ProviderStreamError,
 } from '@ant/model-provider'
 import { getValidChatGPTAuth } from './chatgptAuth.js'
 import { getOpenAIClient } from './client.js'
@@ -53,6 +54,39 @@ type AnthropicUsage = {
 }
 
 const ENCRYPTED_REASONING_INCLUDE = 'reasoning.encrypted_content'
+
+export type OpenAIStreamAttempt = {
+  stream: AsyncIterable<Record<string, unknown>>
+  status: number
+  requestId: string | null
+  retryAfterMs: number | null
+  cleanup: () => void
+}
+
+function readResponseHeader(response: Response, name: string): string | null {
+  return response.headers.get(name)
+}
+
+function responseRequestId(
+  response: Response,
+  sdkRequestId?: string | null,
+): string | null {
+  return (
+    sdkRequestId ??
+    readResponseHeader(response, 'x-request-id') ??
+    readResponseHeader(response, 'request-id')
+  )
+}
+
+function responseRetryAfterMs(response: Response): number | null {
+  const value = readResponseHeader(response, 'retry-after')
+  if (!value) return null
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000
+  const dateMs = Date.parse(value)
+  if (!Number.isFinite(dateMs)) return null
+  return Math.max(0, dateMs - Date.now())
+}
 
 function textFromContent(content: unknown): string {
   if (typeof content === 'string') return content
@@ -309,17 +343,26 @@ function parseSseDataFrame(frame: string): Record<string, unknown> | undefined {
   try {
     parsed = JSON.parse(data)
   } catch (error) {
-    // Surface a greppable, truncated payload — raw SyntaxError is useless mid-stream.
     const detail = error instanceof Error ? error.message : String(error)
     const preview = data.length > 160 ? `${data.slice(0, 160)}…` : data
-    throw new Error(
+    throw new ProviderStreamError(
       `Responses SSE JSON parse failed: ${detail}; data=${JSON.stringify(preview)}`,
+      {
+        kind: 'protocol',
+        retryable: true,
+        terminal: false,
+        cause: error,
+      },
     )
   }
   if (parsed && typeof parsed === 'object') {
     return parsed as Record<string, unknown>
   }
-  return undefined
+  throw new ProviderStreamError('Responses SSE data was not a JSON object', {
+    kind: 'protocol',
+    retryable: true,
+    terminal: false,
+  })
 }
 
 /** Exported for focused framing tests (LF / CRLF / trailing frame). */
@@ -327,7 +370,11 @@ export async function* parseSSE(
   response: Response,
 ): AsyncGenerator<Record<string, unknown>, void> {
   if (!response.body) {
-    throw new Error('Responses stream did not include a body')
+    throw new ProviderStreamError('Responses stream did not include a body', {
+      kind: 'protocol',
+      retryable: true,
+      terminal: false,
+    })
   }
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
@@ -429,25 +476,76 @@ function mapStopReason(
   return finishReasonToAnthropicStopReason(finishReason, hasFunctionCall)
 }
 
-function formatResponsesError(
+type ResponsesErrorDetails = {
+  message: string
+  code: string | null
+  type: string | null
+  param: string | null
+}
+
+function responsesErrorDetails(
   event: Record<string, unknown>,
   fallback: string,
-): string {
-  const nested = (event.response as Record<string, unknown> | undefined)
-    ?.error as Record<string, unknown> | undefined
+): ResponsesErrorDetails {
+  const response = event.response as Record<string, unknown> | undefined
+  const nested = response?.error as Record<string, unknown> | undefined
   const topError = event.error as Record<string, unknown> | undefined
   const message =
     (typeof event.message === 'string' && event.message) ||
     (typeof topError?.message === 'string' && topError.message) ||
     (typeof nested?.message === 'string' && nested.message) ||
-    undefined
+    fallback
   const code =
     (typeof event.code === 'string' && event.code) ||
     (typeof topError?.code === 'string' && topError.code) ||
     (typeof nested?.code === 'string' && nested.code) ||
-    undefined
-  if (message && code) return `${code}: ${message}`
-  return message || code || fallback
+    null
+  const type =
+    (typeof topError?.type === 'string' && topError.type) ||
+    (typeof nested?.type === 'string' && nested.type) ||
+    (typeof event.type === 'string' && event.type) ||
+    null
+  const param =
+    (typeof topError?.param === 'string' && topError.param) ||
+    (typeof nested?.param === 'string' && nested.param) ||
+    null
+  return {
+    message: code ? `${code}: ${message}` : message,
+    code,
+    type,
+    param,
+  }
+}
+
+function isNonRetryableResponsesError(details: ResponsesErrorDetails): boolean {
+  const haystack =
+    `${details.code ?? ''} ${details.type ?? ''} ${details.message}`.toLowerCase()
+  return /invalid|authentication|unauthorized|forbidden|context|quota|billing|policy|safety|permission|request_too_large/.test(
+    haystack,
+  )
+}
+
+function createResponsesProviderError(
+  event: Record<string, unknown>,
+  fallback: string,
+): ProviderStreamError {
+  const details = responsesErrorDetails(event, fallback)
+  const response = event.response as Record<string, unknown> | undefined
+  const requestId =
+    (typeof response?.id === 'string' && response.id) ||
+    (typeof event.request_id === 'string' && event.request_id) ||
+    null
+  return new ProviderStreamError(details.message, {
+    kind: 'provider',
+    retryable: !isNonRetryableResponsesError(details),
+    terminal: true,
+    completionState:
+      typeof response?.status === 'string' ? response.status : 'failed',
+    requestId,
+    code: details.code,
+    type: details.type,
+    param: details.param,
+  })
 }
 
 type ToolBlockState = {
@@ -467,8 +565,6 @@ export async function* adaptResponsesStreamToAnthropic(
   const toolBlocksByOutputIndex = new Map<number, ToolBlockState>()
   const toolBlocksByItemId = new Map<string, ToolBlockState>()
   let started = false
-  // Codex: require response.completed / response.incomplete before treating EOF as success.
-  let sawTerminalEvent = false
   let currentContentIndex = -1
   let textBlockOpen = false
   let thinkingBlockOpen = false
@@ -540,8 +636,25 @@ export async function* adaptResponsesStreamToAnthropic(
   }
 
   for await (const event of stream) {
-    for await (const startedEvent of ensureStarted()) yield startedEvent
     const type = event.type
+    if (event.error != null && typeof event.error === 'object') {
+      throw createResponsesProviderError(event, 'OpenAI Responses stream error')
+    }
+    if (typeof type !== 'string' || type.length === 0) {
+      throw new ProviderStreamError(
+        'OpenAI Responses stream event did not include a valid type',
+        {
+          kind: 'protocol',
+          retryable: false,
+          terminal: false,
+          completionState: 'invalid',
+        },
+      )
+    }
+    if (type === 'error' || type === 'response.error') {
+      throw createResponsesProviderError(event, 'OpenAI Responses stream error')
+    }
+    for await (const startedEvent of ensureStarted()) yield startedEvent
 
     if (type === 'response.output_text.delta') {
       if (!textBlockOpen) {
@@ -794,21 +907,66 @@ export async function* adaptResponsesStreamToAnthropic(
       continue
     }
 
-    // Official SSE uses top-level `error`; some proxies use `response.error`.
     if (type === 'error' || type === 'response.error') {
-      throw new Error(
-        formatResponsesError(event, 'OpenAI Responses stream error'),
-      )
+      throw createResponsesProviderError(event, 'OpenAI Responses stream error')
     }
 
     if (type === 'response.failed') {
-      throw new Error(
-        formatResponsesError(event, 'OpenAI Responses response failed'),
+      throw createResponsesProviderError(
+        event,
+        'OpenAI Responses response failed',
       )
     }
 
+    if (type === 'response.incomplete') {
+      const response = event.response as Record<string, unknown> | undefined
+      if (response?.status !== 'incomplete') {
+        throw new ProviderStreamError(
+          'OpenAI Responses response.incomplete event had an invalid response status',
+          {
+            kind: 'protocol',
+            retryable: false,
+            terminal: false,
+            completionState: 'invalid',
+          },
+        )
+      }
+      const incomplete = response.incomplete_details as
+        | Record<string, unknown>
+        | undefined
+      const reason =
+        typeof incomplete?.reason === 'string' ? incomplete.reason : null
+      if (reason !== 'max_output_tokens') {
+        throw new ProviderStreamError(
+          `OpenAI Responses response incomplete${reason ? `: ${reason}` : ''}`,
+          {
+            kind: 'incomplete',
+            retryable: true,
+            terminal: true,
+            completionState: 'incomplete',
+            requestId:
+              typeof response?.id === 'string' ? response.id : undefined,
+            incompleteReason: reason,
+          },
+        )
+      }
+    }
+
     if (type === 'response.completed' || type === 'response.incomplete') {
-      sawTerminalEvent = true
+      const response = event.response as Record<string, unknown> | undefined
+      const expectedStatus =
+        type === 'response.completed' ? 'completed' : 'incomplete'
+      if (response?.status !== expectedStatus) {
+        throw new ProviderStreamError(
+          `OpenAI Responses ${type} event had an invalid response status`,
+          {
+            kind: 'protocol',
+            retryable: false,
+            terminal: false,
+            completionState: 'invalid',
+          },
+        )
+      }
       if (thinkingBlockOpen) {
         if (pendingEncryptedContent) {
           yield {
@@ -825,16 +983,13 @@ export async function* adaptResponsesStreamToAnthropic(
           type: 'content_block_stop',
           index: currentContentIndex,
         } as BetaRawMessageStreamEvent
-        thinkingBlockOpen = false
       }
       if (textBlockOpen) {
         yield {
           type: 'content_block_stop',
           index: currentContentIndex,
         } as BetaRawMessageStreamEvent
-        textBlockOpen = false
       }
-      // Close any tool blocks that never received output_item.done.
       const seenToolBlocks = new Set<ToolBlockState>([
         ...toolBlocksByOutputIndex.values(),
         ...toolBlocksByItemId.values(),
@@ -849,7 +1004,6 @@ export async function* adaptResponsesStreamToAnthropic(
           block.open = false
         }
       }
-      const response = event.response as Record<string, unknown> | undefined
       yield {
         type: 'message_delta',
         delta: {
@@ -859,21 +1013,23 @@ export async function* adaptResponsesStreamToAnthropic(
         usage: extractUsage(response),
       } as unknown as BetaRawMessageStreamEvent
       yield { type: 'message_stop' } as BetaRawMessageStreamEvent
+      return
     }
   }
 
-  // Fail closed: partial deltas without a terminal event are not a successful turn
-  // (Codex: "stream closed before response.completed"). Do not synthesize message_stop.
-  if (!sawTerminalEvent) {
-    throw new Error('stream closed before response.completed')
-  }
+  throw new ProviderStreamError('stream closed before response.completed', {
+    kind: 'premature_eof',
+    retryable: true,
+    terminal: false,
+    completionState: 'open',
+  })
 }
 
 export async function createChatGPTResponsesStream(params: {
   request: ResponsesRequest
   signal: AbortSignal
   fetchOverride?: typeof fetch
-}): Promise<AsyncIterable<Record<string, unknown>>> {
+}): Promise<OpenAIStreamAttempt> {
   const auth = await getValidChatGPTAuth()
   const fetchFn = params.fetchOverride ?? (globalThis.fetch as typeof fetch)
   const headers: Record<string, string> = {
@@ -906,7 +1062,15 @@ export async function createChatGPTResponsesStream(params: {
       response.headers,
     )
   }
-  return parseSSE(response)
+  return {
+    stream: parseSSE(response),
+    status: response.status,
+    requestId: responseRequestId(response),
+    retryAfterMs: responseRetryAfterMs(response),
+    cleanup: () => {
+      void response.body?.cancel().catch(() => {})
+    },
+  }
 }
 
 /**
@@ -924,7 +1088,7 @@ export async function createOfficialResponsesStream(params: {
   apiKey?: string
   baseURL?: string
   source?: string
-}): Promise<AsyncIterable<Record<string, unknown>>> {
+}): Promise<OpenAIStreamAttempt> {
   const useSdkClient = !params.apiKey && !params.baseURL
   if (useSdkClient) {
     const client = getOpenAIClient({
@@ -932,11 +1096,19 @@ export async function createOfficialResponsesStream(params: {
       fetchOverride: params.fetchOverride,
       source: params.source,
     })
-    // SDK yields typed ResponseStreamEvent objects (same SSE JSON shapes).
-    const stream = await client.responses.create(params.request as never, {
+    const promise = client.responses.create(params.request as never, {
       signal: params.signal,
     })
-    return stream as unknown as AsyncIterable<Record<string, unknown>>
+    const { data, response, request_id } = await promise.withResponse()
+    return {
+      stream: data as unknown as AsyncIterable<Record<string, unknown>>,
+      status: response.status,
+      requestId: responseRequestId(response, request_id),
+      retryAfterMs: responseRetryAfterMs(response),
+      cleanup: () => {
+        void response.body?.cancel().catch(() => {})
+      },
+    }
   }
 
   // Explicit base/key path (tests / rare overrides): still apply proxy + timeout.
@@ -976,7 +1148,16 @@ export async function createOfficialResponsesStream(params: {
         response.headers,
       )
     }
-    return parseSSEWithCleanup(response, cleanup)
+    return {
+      stream: parseSSEWithCleanup(response, cleanup),
+      status: response.status,
+      requestId: responseRequestId(response),
+      retryAfterMs: responseRetryAfterMs(response),
+      cleanup: () => {
+        cleanup()
+        void response.body?.cancel().catch(() => {})
+      },
+    }
   } catch (err) {
     cleanup()
     throw err

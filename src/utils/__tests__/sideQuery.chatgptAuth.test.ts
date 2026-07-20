@@ -105,6 +105,7 @@ const ENV_KEYS = [
   'OPENAI_AUTH_MODE',
   'OPENAI_API_KEY',
   'OPENAI_BASE_URL',
+  'OPENAI_MODEL',
 ] as const
 
 const savedEnv: Record<string, string | undefined> = {}
@@ -151,6 +152,7 @@ function enableOpenAIProvider(): void {
   delete process.env.CLAUDE_CODE_USE_BEDROCK
   delete process.env.CLAUDE_CODE_USE_VERTEX
   delete process.env.CLAUDE_CODE_USE_FOUNDRY
+  delete process.env.OPENAI_MODEL
 }
 
 beforeEach(() => {
@@ -352,7 +354,7 @@ describe('sideQuery OpenAI ChatGPT OAuth path', () => {
         tools: [classifierTool as never],
         tool_choice: { type: 'tool', name: 'classify_result' },
       }),
-    ).rejects.toThrow(/ChatGPT Responses API request failed \(401\)/)
+    ).rejects.toThrow(/ChatGPT Responses API request failed: 401/)
     expect(getOpenAIClientCallCount).toBe(0)
   })
 })

@@ -22,6 +22,7 @@ import type {
 } from 'src/Tool.js'
 import { toolMatchesName } from 'src/Tool.js'
 import {
+  bindAgentGeneration,
   completeAgentTask as completeAsyncAgent,
   createActivityDescriptionResolver,
   createProgressTracker,
@@ -29,6 +30,7 @@ import {
   failAgentTask as failAsyncAgent,
   getProgressUpdate,
   getTokenCountFromTracker,
+  isAgentGenerationCurrent,
   isLocalAgentTask,
   killAsyncAgent,
   type ProgressTracker,
@@ -525,6 +527,7 @@ export async function runAsyncAgentLifecycle({
   description,
   toolUseContext,
   rootSetAppState,
+  generation,
   agentIdForCleanup,
   enableSummarization,
   getWorktreeResult,
@@ -538,6 +541,7 @@ export async function runAsyncAgentLifecycle({
   description: string
   toolUseContext: ToolUseContext
   rootSetAppState: SetAppState
+  generation: object
   agentIdForCleanup: string
   enableSummarization: boolean
   getWorktreeResult: () => Promise<{
@@ -547,6 +551,13 @@ export async function runAsyncAgentLifecycle({
 }): Promise<void> {
   let stopSummarization: (() => void) | undefined
   const agentMessages: MessageType[] = []
+  const generationSetAppState = bindAgentGeneration(
+    rootSetAppState,
+    taskId,
+    generation,
+  )
+  const isCurrentGeneration = () =>
+    isAgentGenerationCurrent(rootSetAppState, taskId, generation)
   try {
     const tracker = createProgressTracker()
     const resolveActivity = createActivityDescriptionResolver(
@@ -558,7 +569,7 @@ export async function runAsyncAgentLifecycle({
             taskId,
             asAgentId(taskId),
             params,
-            rootSetAppState,
+            generationSetAppState,
           )
           stopSummarization = stop
         }

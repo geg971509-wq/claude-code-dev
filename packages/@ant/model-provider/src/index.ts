@@ -73,10 +73,15 @@ export {
 // Layered provider errors
 export {
   ProviderAPIError,
+  type ProviderAPIErrorDiagnostics,
+  ProviderStreamError,
+  type ProviderStreamErrorKind,
+  type ProviderStreamErrorOptions,
   APIContextOverflowError,
   APIRequestTooLargeError,
   APIProviderRateLimitError,
   classifyProviderHttpError,
+  getProviderErrorStatus,
   getProviderRetryAfterMs,
   isContextOverflowMessage,
   isRequestTooLargeMessage,

@@ -151,6 +151,7 @@ export type LocalAgentTaskState = TaskStateBase & {
   agentType: string;
   model?: string;
   abortController?: AbortController;
+  generation: object;
   unregisterCleanup?: () => void;
   error?: string;
   result?: AgentToolResult;
@@ -179,6 +180,29 @@ export type LocalAgentTaskState = TaskStateBase & {
 
 export function isLocalAgentTask(task: unknown): task is LocalAgentTaskState {
   return typeof task === 'object' && task !== null && 'type' in task && task.type === 'local_agent';
+}
+
+function isCurrentAgentGeneration(task: LocalAgentTaskState, generation?: object): boolean {
+  return generation === undefined || task.generation === generation;
+}
+
+export function isAgentGenerationCurrent(setAppState: SetAppState, taskId: string, generation: object): boolean {
+  let current = false;
+  setAppState(prev => {
+    const task = prev.tasks[taskId];
+    current = isLocalAgentTask(task) && task.generation === generation;
+    return prev;
+  });
+  return current;
+}
+
+export function bindAgentGeneration(setAppState: SetAppState, taskId: string, generation: object): SetAppState {
+  return updater => {
+    setAppState(prev => {
+      const task = prev.tasks[taskId];
+      return isLocalAgentTask(task) && task.generation === generation ? updater(prev) : prev;
+    });
+  };
 }
 
 /**
@@ -335,7 +359,7 @@ export const LocalAgentTask: Task = {
 /**
  * Kill an agent task. No-op if already killed/completed.
  */
-export function killAsyncAgent(taskId: string, setAppState: SetAppState): void {
+export function killAsyncAgent(taskId: string, setAppState: SetAppState): boolean {
   let killed = false;
   updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
     if (task.status !== 'running') {
@@ -357,6 +381,7 @@ export function killAsyncAgent(taskId: string, setAppState: SetAppState): void {
   if (killed) {
     void evictTaskOutput(taskId);
   }
+  return killed;
 }
 
 /**
@@ -462,13 +487,14 @@ export function updateAgentSummary(taskId: string, summary: string, setAppState:
 /**
  * Complete an agent task with result.
  */
-export function completeAgentTask(result: AgentToolResult, setAppState: SetAppState): void {
+export function completeAgentTask(result: AgentToolResult, setAppState: SetAppState): boolean {
   const taskId = result.agentId;
+  let completed = false;
   updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
     if (task.status !== 'running') {
       return task;
     }
-
+    completed = true;
     task.unregisterCleanup?.();
 
     return {
@@ -482,19 +508,22 @@ export function completeAgentTask(result: AgentToolResult, setAppState: SetAppSt
       selectedAgent: undefined,
     };
   });
-  void evictTaskOutput(taskId);
-  // Note: Notification is sent by AgentTool via enqueueAgentNotification
+  if (completed) {
+    void evictTaskOutput(taskId);
+  }
+  return completed;
 }
 
 /**
  * Fail an agent task with error.
  */
-export function failAgentTask(taskId: string, error: string, setAppState: SetAppState): void {
+export function failAgentTask(taskId: string, error: string, setAppState: SetAppState): boolean {
+  let failed = false;
   updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
     if (task.status !== 'running') {
       return task;
     }
-
+    failed = true;
     task.unregisterCleanup?.();
 
     return {
@@ -508,8 +537,10 @@ export function failAgentTask(taskId: string, error: string, setAppState: SetApp
       selectedAgent: undefined,
     };
   });
-  void evictTaskOutput(taskId);
-  // Note: Notification is sent by AgentTool via enqueueAgentNotification
+  if (failed) {
+    void evictTaskOutput(taskId);
+  }
+  return failed;
 }
 
 /**
@@ -543,6 +574,7 @@ export function registerAsyncAgent({
   const abortController = parentAbortController
     ? createChildAbortController(parentAbortController)
     : createAbortController();
+  const generation = {};
 
   const taskState: LocalAgentTaskState = {
     ...createTaskStateBase(agentId, 'local_agent', description, toolUseId),
@@ -553,6 +585,7 @@ export function registerAsyncAgent({
     selectedAgent,
     agentType: selectedAgent.agentType ?? 'general-purpose',
     abortController,
+    generation,
     retrieved: false,
     lastReportedToolCount: 0,
     lastReportedTokenCount: 0,
@@ -608,6 +641,7 @@ export function registerAgentForeground({
   void initTaskOutputAsSymlink(agentId, getAgentTranscriptPath(asAgentId(agentId)));
 
   const abortController = createAbortController();
+  const generation = {};
 
   const unregisterCleanup = registerCleanup(async () => {
     killAsyncAgent(agentId, setAppState);
@@ -622,6 +656,7 @@ export function registerAgentForeground({
     selectedAgent,
     agentType: selectedAgent.agentType ?? 'general-purpose',
     abortController,
+    generation,
     unregisterCleanup,
     retrieved: false,
     lastReportedToolCount: 0,

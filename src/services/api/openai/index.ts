@@ -1,8 +1,10 @@
 import type {
   BetaToolUnion,
   BetaMessage,
+  BetaRawMessageStreamEvent,
   BetaUsage,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+import type { ChatCompletionChunk } from 'openai/resources/chat/completions/completions.mjs'
 import type { SystemPrompt } from '../../../utils/systemPromptType.js'
 import type {
   Message,
@@ -20,11 +22,14 @@ import {
   formatOpenAIErrorStack,
   formatOpenAIErrorWithStack,
   getOpenAIPromptCacheKey,
+  getOpenAIRequestMaxRetries,
+  getOpenAIRetryDelayMs,
+  getOpenAIStreamMaxRetries,
   isOpenAIUserAbortError,
+  isTransientOpenAIError,
   toProviderHttpError,
-  type TransientRetryInfo,
   updateOpenAIUsage,
-  withTransientOpenAIRetry,
+  withOpenAIStreamIdleTimeout,
   type OpenAIUsageCounters,
 } from './openaiShared.js'
 import {
@@ -41,6 +46,7 @@ import {
   adaptOpenAIStreamToAnthropic,
   anthropicToolsToOpenAI,
   anthropicToolChoiceToOpenAI,
+  ProviderStreamError,
 } from '@ant/model-provider'
 import { isChatGPTAuthEnabled } from './chatgptAuth.js'
 import {
@@ -48,9 +54,14 @@ import {
   buildResponsesRequest,
   createChatGPTResponsesStream,
   createOfficialResponsesStream,
+  type OpenAIStreamAttempt,
   type ResponsesReasoningEffort,
 } from './responsesAdapter.js'
-import { logOpenAIRawStream } from './rawStreamLogger.js'
+import {
+  logOpenAIRawLifecycle,
+  logOpenAIRawStream,
+  type OpenAIRawStreamRoute,
+} from './rawStreamLogger.js'
 import { normalizeMessagesForAPI } from '../../../utils/messages.js'
 import { toolToAPISchema } from '../../../utils/api.js'
 import {
@@ -85,9 +96,12 @@ import type { Options } from '../claude.js'
 import { randomUUID } from 'crypto'
 import {
   createAssistantAPIErrorMessage,
+  createSystemAPIErrorMessage,
   createUserMessage,
   normalizeContentFromAPI,
 } from '../../../utils/messages.js'
+import { createCombinedAbortSignal } from '../../../utils/combinedAbortSignal.js'
+import { sleep } from '../../../utils/sleep.js'
 import type { SDKAssistantMessageError } from '../../../entrypoints/agentSdkTypes.js'
 import {
   isSearchExtraToolsEnabled,
@@ -162,10 +176,36 @@ function isOpenAIConvertibleMessage(
   return msg.type === 'assistant' || msg.type === 'user'
 }
 
+function isSemanticOpenAIEvent(event: BetaRawMessageStreamEvent): boolean {
+  if (event.type === 'content_block_delta') {
+    const delta = event.delta
+    if (delta.type === 'text_delta') return delta.text.length > 0
+    if (delta.type === 'thinking_delta') return delta.thinking.length > 0
+    if (delta.type === 'signature_delta') return delta.signature.length > 0
+    if (delta.type === 'input_json_delta') return delta.partial_json.length > 0
+    return true
+  }
+  if (event.type !== 'content_block_start') return false
+  const block = event.content_block
+  if (block.type === 'tool_use') {
+    return block.id.length > 0 || block.name.length > 0
+  }
+  if (block.type === 'text') return block.text.length > 0
+  if (block.type === 'thinking') {
+    return block.thinking.length > 0 || block.signature.length > 0
+  }
+  return true
+}
+
+function asRetryError(error: unknown): Error {
+  return error instanceof Error
+    ? error
+    : new Error(formatOpenAIErrorMessage(error))
+}
+
 /**
  * Assemble the final AssistantMessage (and optional max_tokens error) from
- * accumulated stream state. Extracted to avoid duplication between the
- * `message_stop` handler and the post-loop safety fallback.
+ * accumulated stream state after a validated message_stop terminal event.
  */
 function assembleFinalAssistantOutputs(params: {
   partialMessage: BetaMessage | null
@@ -175,6 +215,7 @@ function assembleFinalAssistantOutputs(params: {
   usage: OpenAIUsageCounters
   stopReason: string | null
   maxTokens: number
+  requestId: string | null
 }): (AssistantMessage | SystemAPIErrorMessage)[] {
   const {
     partialMessage,
@@ -184,6 +225,7 @@ function assembleFinalAssistantOutputs(params: {
     usage,
     stopReason,
     maxTokens,
+    requestId,
   } = params
   const outputs: (AssistantMessage | SystemAPIErrorMessage)[] = []
 
@@ -205,7 +247,7 @@ function assembleFinalAssistantOutputs(params: {
         stop_reason: stopReason,
         stop_sequence: null,
       } as AssistantMessage['message'],
-      requestId: undefined,
+      requestId: requestId ?? undefined,
       type: 'assistant',
       uuid: randomUUID(),
       timestamp: new Date().toISOString(),
@@ -375,7 +417,7 @@ export async function* queryModelOpenAI(
     const useChatGPTResponses = isChatGPTAuthEnabled()
     const useOfficialResponses =
       !useChatGPTResponses && shouldUseOpenAIResponsesAPI(openaiModel)
-    const openaiRoute = useChatGPTResponses
+    const openaiRoute: OpenAIRawStreamRoute = useChatGPTResponses
       ? 'chatgpt-responses'
       : useOfficialResponses
         ? 'official-responses'
@@ -385,271 +427,403 @@ export async function* queryModelOpenAI(
     logForDebugging(
       `[OpenAI] route=${openaiRoute} model=${openaiModel} messages=${openaiMessages.length}, tools=${openaiTools.length}, thinking=${enableThinking}, maxTokens=${maxTokens}, prompt_cache_key=${promptCacheKey}`,
     )
-    // Transient 5xx/connection failures on stream creation (e.g. "503 Service
-    // temporarily unavailable") retry here — the OpenAI path bypasses
-    // withRetry.ts, so without this a single 503 fails the whole turn.
-    const transientRetryOpts = {
-      signal,
-      onRetry: ({ attempt, maxRetries, delayMs, error }: TransientRetryInfo) =>
-        logForDebugging(
-          `[OpenAI] Transient ${openaiRoute} error (attempt ${attempt}/${maxRetries}, retrying in ${delayMs}ms): ${formatOpenAIErrorMessage(error)}`,
-          { level: 'error' },
-        ),
+    const createAttempt = async (
+      attemptSignal: AbortSignal,
+    ): Promise<OpenAIStreamAttempt> => {
+      if (useChatGPTResponses) {
+        return createChatGPTResponsesStream({
+          request: buildResponsesRequest({
+            model: openaiModel,
+            messages: openaiMessages,
+            tools: openaiTools,
+            toolChoice: openaiToolChoice,
+            reasoningEffort,
+            promptCacheKey,
+          }),
+          signal: attemptSignal,
+          fetchOverride: options.fetchOverride as unknown as typeof fetch,
+        })
+      }
+      if (useOfficialResponses) {
+        return createOfficialResponsesStream({
+          request: buildResponsesRequest({
+            model: openaiModel,
+            messages: openaiMessages,
+            tools: openaiTools,
+            toolChoice: openaiToolChoice,
+            reasoningEffort,
+            maxOutputTokens: maxTokens,
+            promptCacheKey,
+          }),
+          signal: attemptSignal,
+          fetchOverride: options.fetchOverride as unknown as typeof fetch,
+          source: options.querySource,
+        })
+      }
+
+      const promise = getOpenAIClient({
+        maxRetries: 0,
+        fetchOverride: options.fetchOverride as unknown as typeof fetch,
+        source: options.querySource,
+      }).chat.completions.create(
+        buildOpenAIRequestBody({
+          model: openaiModel,
+          messages: openaiMessages,
+          tools: openaiTools,
+          toolChoice: openaiToolChoice,
+          enableThinking,
+          maxTokens,
+          temperatureOverride: options.temperatureOverride,
+          promptCacheKey,
+          reasoningEffort:
+            reasoningEffort === 'max' ? 'xhigh' : reasoningEffort,
+        }),
+        { signal: attemptSignal },
+      )
+      const { data, response, request_id } = await promise.withResponse()
+      return {
+        stream: data as unknown as AsyncIterable<Record<string, unknown>>,
+        status: response.status,
+        requestId:
+          request_id ??
+          response.headers.get('x-request-id') ??
+          response.headers.get('request-id'),
+        retryAfterMs: null,
+        cleanup: () => {
+          data.controller.abort()
+          void response.body?.cancel().catch(() => {})
+        },
+      }
     }
-    // includeEncryptedReasoning defaults true (store:false multi-turn).
-    // ChatGPT/Codex path deliberately omits max_output_tokens.
-    const adaptedStream = useChatGPTResponses
-      ? adaptResponsesStreamToAnthropic(
-          logOpenAIRawStream(
-            await withTransientOpenAIRetry(
-              () =>
-                createChatGPTResponsesStream({
-                  request: buildResponsesRequest({
-                    model: openaiModel,
-                    messages: openaiMessages,
-                    tools: openaiTools,
-                    toolChoice: openaiToolChoice,
-                    reasoningEffort,
-                    promptCacheKey,
-                  }),
-                  signal,
-                  fetchOverride:
-                    options.fetchOverride as unknown as typeof fetch,
-                }),
-              transientRetryOpts,
-            ),
-            {
-              route: 'chatgpt-responses',
-              model: openaiModel,
-              source: options.querySource,
-            },
-          ),
-          openaiModel,
-        )
-      : useOfficialResponses
-        ? adaptResponsesStreamToAnthropic(
-            logOpenAIRawStream(
-              await withTransientOpenAIRetry(
-                () =>
-                  createOfficialResponsesStream({
-                    request: buildResponsesRequest({
-                      model: openaiModel,
-                      messages: openaiMessages,
-                      tools: openaiTools,
-                      toolChoice: openaiToolChoice,
-                      reasoningEffort,
-                      maxOutputTokens: maxTokens,
-                      promptCacheKey,
-                    }),
-                    signal,
-                    fetchOverride:
-                      options.fetchOverride as unknown as typeof fetch,
-                    source: options.querySource,
-                  }),
-                transientRetryOpts,
-              ),
-              {
-                route: 'official-responses',
-                model: openaiModel,
-                source: options.querySource,
-              },
-            ),
-            openaiModel,
-          )
-        : adaptOpenAIStreamToAnthropic(
-            logOpenAIRawStream(
-              await withTransientOpenAIRetry(
-                () =>
-                  getOpenAIClient({
-                    maxRetries: 0,
-                    fetchOverride:
-                      options.fetchOverride as unknown as typeof fetch,
-                    source: options.querySource,
-                  }).chat.completions.create(
-                    buildOpenAIRequestBody({
-                      model: openaiModel,
-                      messages: openaiMessages,
-                      tools: openaiTools,
-                      toolChoice: openaiToolChoice,
-                      enableThinking,
-                      maxTokens,
-                      temperatureOverride: options.temperatureOverride,
-                      promptCacheKey,
-                      reasoningEffort:
-                        reasoningEffort === 'max' ? 'xhigh' : reasoningEffort,
-                    }),
-                    { signal },
-                  ),
-                transientRetryOpts,
-              ),
-              {
-                route: 'chat-completions',
-                model: openaiModel,
-                source: options.querySource,
-              },
-            ),
-            openaiModel,
-          )
 
-    // 12. Convert OpenAI stream to Anthropic events, then process into
-    //     AssistantMessage + StreamEvent (matching the Anthropic path behavior)
-
-    // Accumulate content blocks and usage, same as the Anthropic path in claude.ts
-    const contentBlocks: Record<number, Record<string, unknown>> = {}
+    const requestMaxRetries = getOpenAIRequestMaxRetries()
+    const streamMaxRetries = getOpenAIStreamMaxRetries()
     const collectedMessages: AssistantMessage[] = []
-    let partialMessage: BetaMessage | null = null
-    let stopReason: string | null = null
-    let usage: OpenAIUsageCounters = {
+    const start = Date.now()
+    let finalUsage: OpenAIUsageCounters = {
       input_tokens: 0,
       output_tokens: 0,
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 0,
     }
-    let ttftMs = 0
-    const start = Date.now()
+    let finalTtftMs = 0
+    let requestRetries = 0
+    let streamRetries = 0
+    let requestAttempt = 0
 
-    for await (const event of adaptedStream) {
-      switch (event.type) {
-        case 'message_start': {
-          partialMessage = event.message
-          ttftMs = Date.now() - start
-          if (event.message.usage) {
-            usage = {
-              ...usage,
-              ...(event.message.usage as unknown as typeof usage),
-            }
-          }
-          break
+    for (;;) {
+      requestAttempt++
+      const streamId = randomUUID()
+      const attemptController = new AbortController()
+      const combinedSignal = createCombinedAbortSignal(signal, {
+        signalB: attemptController.signal,
+      })
+      let attempt: OpenAIStreamAttempt
+
+      try {
+        attempt = await createAttempt(combinedSignal.signal)
+      } catch (error) {
+        combinedSignal.cleanup()
+        attemptController.abort()
+        logOpenAIRawLifecycle({
+          lifecycle: 'error',
+          route: openaiRoute,
+          model: openaiModel,
+          source: options.querySource,
+          streamId,
+          requestAttempt,
+          streamAttempt: streamRetries + 1,
+          phase: 'request',
+          error,
+        })
+        if (
+          signal.aborted ||
+          isOpenAIUserAbortError(error) ||
+          !isTransientOpenAIError(error) ||
+          requestRetries >= requestMaxRetries
+        ) {
+          throw error
         }
-        case 'content_block_start': {
-          const idx = event.index
-          const cb = event.content_block
-          if (cb.type === 'tool_use') {
-            contentBlocks[idx] = { ...cb, input: '' }
-          } else if (cb.type === 'text') {
-            contentBlocks[idx] = { ...cb, text: '' }
-          } else if (cb.type === 'thinking') {
-            contentBlocks[idx] = { ...cb, thinking: '', signature: '' }
-          } else {
-            contentBlocks[idx] = { ...cb }
-          }
-          break
-        }
-        case 'content_block_delta': {
-          const idx = event.index
-          const delta = event.delta
-          const block = contentBlocks[idx]
-          if (!block) break
-          if (delta.type === 'text_delta') {
-            block.text = ((block.text as string | undefined) || '') + delta.text
-          } else if (delta.type === 'input_json_delta') {
-            block.input =
-              ((block.input as string | undefined) || '') + delta.partial_json
-          } else if (delta.type === 'thinking_delta') {
-            block.thinking =
-              ((block.thinking as string | undefined) || '') + delta.thinking
-          } else if (delta.type === 'signature_delta') {
-            block.signature = delta.signature
-          }
-          break
-        }
-        case 'content_block_stop': {
-          // Block accumulation is complete; assembly happens at message_stop.
-          break
-        }
-        case 'message_delta': {
-          const deltaUsage = event.usage
-          if (deltaUsage) {
-            usage = updateOpenAIUsage(
-              usage,
-              deltaUsage as unknown as Parameters<typeof updateOpenAIUsage>[1],
-            )
-          }
-          if (event.delta.stop_reason != null) {
-            stopReason = event.delta.stop_reason
-          }
-          break
-        }
-        case 'message_stop': {
-          // Assemble ONE AssistantMessage with ALL content blocks, matching the
-          // Anthropic SDK path. Real usage (input + output tokens) is available
-          // here and injected so tokenCountWithEstimation() can read it.
-          if (partialMessage) {
-            for (const output of assembleFinalAssistantOutputs({
-              partialMessage,
-              contentBlocks,
-              tools,
-              agentId: options.agentId,
-              usage,
-              stopReason,
-              maxTokens,
-            })) {
-              if (output.type === 'assistant') {
-                collectedMessages.push(output)
-              }
-              yield output
-            }
-            // Reset partialMessage so the post-loop safety fallback does not
-            // yield a second identical AssistantMessage.
-            partialMessage = null
-          }
-          // Track cost and token usage
-          if (usage.input_tokens + usage.output_tokens > 0) {
-            const costUSD = calculateUSDCost(
-              openaiModel,
-              usage as unknown as BetaUsage,
-            )
-            addToTotalSessionCost(
-              costUSD,
-              usage as unknown as BetaUsage,
-              options.model,
-            )
-          }
-          break
-        }
+
+        requestRetries++
+        const delayMs = getOpenAIRetryDelayMs(error, requestRetries)
+        logOpenAIRawLifecycle({
+          lifecycle: 'retry',
+          route: openaiRoute,
+          model: openaiModel,
+          source: options.querySource,
+          streamId,
+          requestAttempt,
+          streamAttempt: streamRetries + 1,
+          phase: 'request',
+          attempt: requestRetries,
+          maxRetries: requestMaxRetries,
+          delayMs,
+          error,
+        })
+        yield createSystemAPIErrorMessage(
+          asRetryError(error),
+          delayMs,
+          requestRetries,
+          requestMaxRetries,
+        )
+        await sleep(delayMs, signal, { throwOnAbort: true })
+        continue
       }
 
-      // Also yield as StreamEvent for real-time display (matching Anthropic path)
-      yield {
-        type: 'stream_event',
-        event,
-        ...(event.type === 'message_start' ? { ttftMs } : undefined),
-      } as StreamEvent
+      let partialMessage: BetaMessage | null = null
+      const contentBlocks: Record<number, Record<string, unknown>> = {}
+      let usage: OpenAIUsageCounters = {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      }
+      let stopReason: string | null = null
+      let ttftMs = 0
+      let committed = false
+      let completed = false
+      let eventCount = 0
+      let streamError: unknown
+      const prelude: StreamEvent[] = []
+
+      try {
+        const timedStream = withOpenAIStreamIdleTimeout(attempt.stream, {
+          abortAttempt: () => attemptController.abort(),
+          userSignal: signal,
+          requestId: attempt.requestId,
+        })
+        const rawStream = logOpenAIRawStream(timedStream, {
+          route: openaiRoute,
+          model: openaiModel,
+          source: options.querySource,
+          streamId,
+          requestAttempt,
+          streamAttempt: streamRetries + 1,
+          status: String(attempt.status),
+          requestId: attempt.requestId ?? undefined,
+        })
+        const adaptedStream: AsyncIterable<BetaRawMessageStreamEvent> =
+          openaiRoute === 'chat-completions'
+            ? adaptOpenAIStreamToAnthropic(
+                rawStream as AsyncIterable<ChatCompletionChunk>,
+                openaiModel,
+              )
+            : adaptResponsesStreamToAnthropic(rawStream, openaiModel)
+
+        for await (const event of adaptedStream) {
+          eventCount++
+          if (
+            !committed &&
+            (isSemanticOpenAIEvent(event) || event.type === 'message_stop')
+          ) {
+            committed = true
+            for (const bufferedEvent of prelude) yield bufferedEvent
+            prelude.length = 0
+          }
+
+          switch (event.type) {
+            case 'message_start': {
+              partialMessage = event.message
+              ttftMs = Date.now() - start
+              if (event.message.usage) {
+                usage = {
+                  ...usage,
+                  ...(event.message.usage as unknown as typeof usage),
+                }
+              }
+              break
+            }
+            case 'content_block_start': {
+              const idx = event.index
+              const cb = event.content_block
+              if (cb.type === 'tool_use') {
+                contentBlocks[idx] = { ...cb, input: '' }
+              } else if (cb.type === 'text') {
+                contentBlocks[idx] = { ...cb, text: '' }
+              } else if (cb.type === 'thinking') {
+                contentBlocks[idx] = { ...cb, thinking: '', signature: '' }
+              } else {
+                contentBlocks[idx] = { ...cb }
+              }
+              break
+            }
+            case 'content_block_delta': {
+              const idx = event.index
+              const delta = event.delta
+              const block = contentBlocks[idx]
+              if (!block) break
+              if (delta.type === 'text_delta') {
+                block.text =
+                  ((block.text as string | undefined) || '') + delta.text
+              } else if (delta.type === 'input_json_delta') {
+                block.input =
+                  ((block.input as string | undefined) || '') +
+                  delta.partial_json
+              } else if (delta.type === 'thinking_delta') {
+                block.thinking =
+                  ((block.thinking as string | undefined) || '') +
+                  delta.thinking
+              } else if (delta.type === 'signature_delta') {
+                block.signature = delta.signature
+              }
+              break
+            }
+            case 'content_block_stop':
+              break
+            case 'message_delta': {
+              if (event.usage) {
+                usage = updateOpenAIUsage(
+                  usage,
+                  event.usage as unknown as Parameters<
+                    typeof updateOpenAIUsage
+                  >[1],
+                )
+              }
+              if (event.delta.stop_reason != null) {
+                stopReason = event.delta.stop_reason
+              }
+              break
+            }
+            case 'message_stop': {
+              completed = true
+              if (partialMessage) {
+                for (const output of assembleFinalAssistantOutputs({
+                  partialMessage,
+                  contentBlocks,
+                  tools,
+                  agentId: options.agentId,
+                  usage,
+                  stopReason,
+                  maxTokens,
+                  requestId: attempt.requestId,
+                })) {
+                  if (output.type === 'assistant') {
+                    collectedMessages.push(output)
+                  }
+                  yield output
+                }
+              }
+              finalUsage = usage
+              finalTtftMs = ttftMs
+              if (usage.input_tokens + usage.output_tokens > 0) {
+                const costUSD = calculateUSDCost(
+                  openaiModel,
+                  usage as unknown as BetaUsage,
+                )
+                addToTotalSessionCost(
+                  costUSD,
+                  usage as unknown as BetaUsage,
+                  options.model,
+                )
+              }
+              break
+            }
+          }
+
+          const streamEvent = {
+            type: 'stream_event',
+            event,
+            ...(event.type === 'message_start' ? { ttftMs } : undefined),
+          } as StreamEvent
+          if (committed) yield streamEvent
+          else prelude.push(streamEvent)
+        }
+
+        if (!completed) {
+          throw new ProviderStreamError(
+            'OpenAI stream ended before message_stop',
+            {
+              kind: 'premature_eof',
+              retryable: true,
+              terminal: false,
+              completionState: 'open',
+              requestId: attempt.requestId,
+            },
+          )
+        }
+      } catch (error) {
+        streamError = error
+        logOpenAIRawLifecycle({
+          lifecycle: 'error',
+          route: openaiRoute,
+          model: openaiModel,
+          source: options.querySource,
+          streamId,
+          requestAttempt,
+          streamAttempt: streamRetries + 1,
+          status: String(attempt.status),
+          requestId: attempt.requestId ?? undefined,
+          phase: 'stream',
+          eventCount,
+          error,
+        })
+      } finally {
+        attempt.cleanup()
+        combinedSignal.cleanup()
+        attemptController.abort()
+      }
+
+      if (streamError !== undefined) {
+        if (
+          signal.aborted ||
+          isOpenAIUserAbortError(streamError) ||
+          committed ||
+          !isTransientOpenAIError(streamError) ||
+          streamRetries >= streamMaxRetries
+        ) {
+          throw streamError
+        }
+
+        streamRetries++
+        const delayMs = getOpenAIRetryDelayMs(streamError, streamRetries)
+        logOpenAIRawLifecycle({
+          lifecycle: 'retry',
+          route: openaiRoute,
+          model: openaiModel,
+          source: options.querySource,
+          streamId,
+          requestAttempt,
+          streamAttempt: streamRetries,
+          status: String(attempt.status),
+          requestId: attempt.requestId ?? undefined,
+          phase: 'stream',
+          attempt: streamRetries,
+          maxRetries: streamMaxRetries,
+          delayMs,
+          error: streamError,
+        })
+        yield createSystemAPIErrorMessage(
+          asRetryError(streamError),
+          delayMs,
+          streamRetries,
+          streamMaxRetries,
+        )
+        await sleep(delayMs, signal, { throwOnAbort: true })
+        continue
+      }
+
+      break
     }
 
-    // Record LLM observation in Langfuse (no-op if not configured)
     recordLLMObservation(options.langfuseTrace ?? null, {
       model: openaiModel,
       provider: 'openai',
       input: convertMessagesToLangfuse(openaiMessages),
       output: convertOutputToLangfuse(collectedMessages),
       usage: {
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-        cache_creation_input_tokens: usage.cache_creation_input_tokens,
-        cache_read_input_tokens: usage.cache_read_input_tokens,
+        input_tokens: finalUsage.input_tokens,
+        output_tokens: finalUsage.output_tokens,
+        cache_creation_input_tokens: finalUsage.cache_creation_input_tokens,
+        cache_read_input_tokens: finalUsage.cache_read_input_tokens,
       },
       startTime: new Date(start),
       endTime: new Date(),
-      completionStartTime: ttftMs > 0 ? new Date(start + ttftMs) : undefined,
+      completionStartTime:
+        finalTtftMs > 0 ? new Date(start + finalTtftMs) : undefined,
       tools: convertToolsToLangfuse(toolSchemas as unknown[]),
       ...(enableThinking && { thinking: { type: 'enabled' } }),
     })
-
-    // Safety: if stream ended without message_stop, assemble and yield whatever we have
-    if (partialMessage) {
-      for (const output of assembleFinalAssistantOutputs({
-        partialMessage,
-        contentBlocks,
-        tools,
-        agentId: options.agentId,
-        usage,
-        stopReason,
-        maxTokens,
-      })) {
-        yield output
-      }
-    }
   } catch (error) {
     // ESC / AbortSignal must not become "API Error: …" (Anthropic path rethrows).
     if (signal.aborted || isOpenAIUserAbortError(error)) {

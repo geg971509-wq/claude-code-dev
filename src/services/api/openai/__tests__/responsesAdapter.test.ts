@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { ProviderAPIError } from '@ant/model-provider'
 import { calculateCacheHitRate } from '../../../../utils/cacheWarning.js'
 import {
   adaptResponsesStreamToAnthropic,
@@ -13,6 +14,8 @@ import {
   formatOpenAIErrorWithStack,
   formatOpenAIPromptCacheKey,
   isOpenAIUserAbortError,
+  throwHttpStatusError,
+  toProviderHttpError,
 } from '../openaiShared.js'
 
 async function collectStopReason(
@@ -379,22 +382,25 @@ describe('adaptResponsesStreamToAnthropic stop_reason', () => {
     expect(stopReason).toBe('end_turn')
   })
 
-  test('incomplete stream maps to max_tokens', async () => {
-    const stopReason = await collectStopReason([
-      {
-        type: 'response.output_text.delta',
-        delta: 'partial',
-      },
-      {
-        type: 'response.incomplete',
-        response: {
-          status: 'incomplete',
-          usage: { input_tokens: 3, output_tokens: 1 },
+  test('incomplete stream without max_output_tokens fails closed', async () => {
+    await expect(
+      collectStopReason([
+        { type: 'response.output_text.delta', delta: 'partial' },
+        {
+          type: 'response.incomplete',
+          response: {
+            status: 'incomplete',
+            incomplete_details: { reason: 'server_error' },
+            usage: { input_tokens: 3, output_tokens: 1 },
+          },
         },
-      },
-    ])
-
-    expect(stopReason).toBe('max_tokens')
+      ]),
+    ).rejects.toMatchObject({
+      name: 'ProviderStreamError',
+      kind: 'incomplete',
+      retryable: true,
+      incompleteReason: 'server_error',
+    })
   })
 
   test('incomplete_details.max_output_tokens maps to max_tokens', async () => {
@@ -702,6 +708,51 @@ describe('adaptResponsesStreamToAnthropic tool JSON + encrypted reasoning', () =
 })
 
 describe('adaptResponsesStreamToAnthropic terminal lifecycle', () => {
+  test('rejects completed events without matching response status', async () => {
+    async function* stream() {
+      yield { type: 'response.completed' }
+    }
+    await expect(
+      (async () => {
+        for await (const _ of adaptResponsesStreamToAnthropic(stream(), 'o3')) {
+          // drain
+        }
+      })(),
+    ).rejects.toMatchObject({
+      name: 'ProviderStreamError',
+      kind: 'protocol',
+      retryable: false,
+    })
+  })
+
+  test('rejects provider error objects without a top-level type', async () => {
+    async function* stream() {
+      yield {
+        error: {
+          message: 'provider exploded',
+          code: 'server_error',
+          type: 'server_error',
+        },
+      }
+      yield {
+        type: 'response.completed',
+        response: { status: 'completed' },
+      }
+    }
+    await expect(
+      (async () => {
+        for await (const _ of adaptResponsesStreamToAnthropic(stream(), 'o3')) {
+          // drain
+        }
+      })(),
+    ).rejects.toMatchObject({
+      name: 'ProviderStreamError',
+      kind: 'provider',
+      code: 'server_error',
+      type: 'server_error',
+    })
+  })
+
   test('throws when stream ends without response.completed/incomplete', async () => {
     async function* stream() {
       yield {
@@ -871,6 +922,77 @@ describe('formatHttpStatusError', () => {
     expect(
       formatHttpStatusError('ChatGPT Responses API request', 500, ' boom '),
     ).toBe('ChatGPT Responses API request failed: 500: boom')
+  })
+
+  test('preserves structured diagnostics from a raw provider body', () => {
+    let rejection: unknown
+    try {
+      throwHttpStatusError(
+        'OpenAI Responses API request',
+        429,
+        JSON.stringify({
+          error: {
+            message: 'The configured model is temporarily overloaded',
+            code: 'model_overloaded',
+            type: 'server_error',
+            param: 'model',
+          },
+        }),
+        new Headers({
+          'x-request-id': 'req_raw',
+          'retry-after': '2',
+        }),
+      )
+    } catch (error) {
+      rejection = error
+    }
+
+    expect(rejection).toBeInstanceOf(ProviderAPIError)
+    expect(rejection).toMatchObject({
+      requestId: 'req_raw',
+      retryAfterMs: 2_000,
+      code: 'model_overloaded',
+      type: 'server_error',
+      param: 'model',
+    })
+    expect((rejection as ProviderAPIError).bodyPreview).toContain(
+      'configured model',
+    )
+    expect((rejection as Error).message).toBe(
+      'OpenAI Responses API request failed: 429: The configured model is temporarily overloaded',
+    )
+  })
+
+  test('preserves bounded diagnostics from an SDK error', () => {
+    const error = Object.assign(new Error('invalid request'), {
+      status: 400,
+      requestID: 'req_sdk',
+      code: 'invalid_request_error',
+      type: 'invalid_request_error',
+      param: 'input',
+      headers: new Headers({ 'retry-after': '3' }),
+      error: {
+        message: 'The input is invalid',
+        code: 'invalid_request_error',
+      },
+    })
+    const layered = toProviderHttpError(error)
+
+    expect(layered).toMatchObject({
+      requestId: 'req_sdk',
+      retryAfterMs: 3_000,
+      code: 'invalid_request_error',
+      type: 'invalid_request_error',
+      param: 'input',
+    })
+    expect(layered?.bodyPreview).toContain('The input is invalid')
+  })
+
+  test('caps raw response detail at 500 characters', () => {
+    const body = 'x'.repeat(600)
+    expect(
+      formatHttpStatusError('OpenAI Responses API request', 500, body),
+    ).toBe(`OpenAI Responses API request failed: 500: ${'x'.repeat(499)}…`)
   })
 })
 

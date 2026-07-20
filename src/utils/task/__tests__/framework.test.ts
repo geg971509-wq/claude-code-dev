@@ -12,11 +12,20 @@ mock.module('src/utils/sdkEventQueue.js', () => ({
   enqueueSdkEvent: (event: any) => sdkEvents.push(event),
 }))
 
+const terminalRecords: any[] = []
+let terminalWriteError: Error | undefined
+let terminalWriteBlock: Promise<void> | undefined
 mock.module('src/utils/task/diskOutput.js', () => ({
   getTaskOutputPath: (id: string) => `/tmp/output/${id}`,
   getTaskOutputDelta: async () => null,
   evictTaskOutput: noop,
   initTaskOutputAsSymlink: async () => {},
+  deleteTerminalTaskRecord: async () => {},
+  writeTerminalTaskRecord: async (record: any) => {
+    if (terminalWriteBlock) await terminalWriteBlock
+    if (terminalWriteError) throw terminalWriteError
+    terminalRecords.push(record)
+  },
 }))
 
 mock.module('src/utils/messageQueueManager.js', () => ({
@@ -67,6 +76,9 @@ function createSetAppState(initial: AppStateLike = { tasks: {} }): {
 
 afterEach(() => {
   sdkEvents.length = 0
+  terminalRecords.length = 0
+  terminalWriteError = undefined
+  terminalWriteBlock = undefined
 })
 
 // ─── Tests ───
@@ -147,7 +159,7 @@ describe('registerTask', () => {
 })
 
 describe('evictTerminalTask', () => {
-  test('removes terminal+notified task', () => {
+  test('removes terminal+notified task after persisting it', async () => {
     const { setAppState, getState } = createSetAppState({
       tasks: {
         'task-001': makeTask({
@@ -158,32 +170,34 @@ describe('evictTerminalTask', () => {
       },
     })
 
-    evictTerminalTask('task-001', setAppState as any)
+    await evictTerminalTask('task-001', setAppState as any)
 
     expect(getState().tasks['task-001']).toBeUndefined()
+    expect(terminalRecords).toHaveLength(1)
+    expect(terminalRecords[0].status).toBe('completed')
   })
 
-  test('skips if task not terminal', () => {
+  test('skips if task not terminal', async () => {
     const { setAppState, getState } = createSetAppState({
       tasks: { 'task-001': makeTask({ status: 'running', notified: true }) },
     })
 
-    evictTerminalTask('task-001', setAppState as any)
+    await evictTerminalTask('task-001', setAppState as any)
 
     expect(getState().tasks['task-001']).toBeDefined()
   })
 
-  test('skips if task not notified', () => {
+  test('skips if task not notified', async () => {
     const { setAppState, getState } = createSetAppState({
       tasks: { 'task-001': makeTask({ status: 'completed', notified: false }) },
     })
 
-    evictTerminalTask('task-001', setAppState as any)
+    await evictTerminalTask('task-001', setAppState as any)
 
     expect(getState().tasks['task-001']).toBeDefined()
   })
 
-  test('skips if within evictAfter grace period', () => {
+  test('skips if within evictAfter grace period', async () => {
     const { setAppState, getState } = createSetAppState({
       tasks: {
         'task-001': makeTask({
@@ -195,18 +209,56 @@ describe('evictTerminalTask', () => {
       },
     })
 
-    evictTerminalTask('task-001', setAppState as any)
+    await evictTerminalTask('task-001', setAppState as any)
 
     expect(getState().tasks['task-001']).toBeDefined()
   })
 
-  test('skips if task not found', () => {
+  test('skips if task not found', async () => {
     const { setAppState, getState } = createSetAppState({ tasks: {} })
 
-    evictTerminalTask('nonexistent', setAppState as any)
+    await evictTerminalTask('nonexistent', setAppState as any)
 
-    // No crash
     expect(Object.keys(getState().tasks)).toHaveLength(0)
+  })
+
+  test('keeps task resident when terminal persistence fails', async () => {
+    terminalWriteError = new Error('disk full')
+    const { setAppState, getState } = createSetAppState({
+      tasks: {
+        'task-001': makeTask({
+          status: 'completed',
+          notified: true,
+          evictAfter: Date.now() - 1,
+        }),
+      },
+    })
+
+    await evictTerminalTask('task-001', setAppState as any)
+
+    expect(getState().tasks['task-001']).toBeDefined()
+  })
+
+  test('does not evict a task re-registered while persistence is pending', async () => {
+    let releaseWrite = noop
+    terminalWriteBlock = new Promise<void>(resolve => {
+      releaseWrite = resolve
+    })
+    const original = makeTask({
+      status: 'completed',
+      notified: true,
+      evictAfter: Date.now() - 1,
+    })
+    const { setAppState, getState } = createSetAppState({
+      tasks: { 'task-001': original },
+    })
+
+    const eviction = evictTerminalTask('task-001', setAppState as any)
+    registerTask(makeTask({ status: 'running' }), setAppState as any)
+    releaseWrite()
+    await eviction
+
+    expect(getState().tasks['task-001'].status).toBe('running')
   })
 })
 

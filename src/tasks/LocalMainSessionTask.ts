@@ -134,6 +134,7 @@ export function registerMainSessionTask(
     selectedAgent,
     agentType: 'main-session',
     abortController,
+    generation: {},
     unregisterCleanup,
     retrieved: false,
     lastReportedToolCount: 0,

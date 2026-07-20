@@ -14,9 +14,16 @@ import {
   type TaskType,
 } from '../../Task.js'
 import type { TaskState } from '../../tasks/types.js'
+import { logError } from '../log.js'
 import { enqueuePendingNotification } from '../messageQueueManager.js'
 import { enqueueSdkEvent } from '../sdkEventQueue.js'
-import { getTaskOutputDelta, getTaskOutputPath } from './diskOutput.js'
+import {
+  deleteTerminalTaskRecord,
+  getTaskOutputDelta,
+  getTaskOutputPath,
+  type TerminalTaskRecord,
+  writeTerminalTaskRecord,
+} from './diskOutput.js'
 
 // Standard polling interval for all tasks
 export const POLL_INTERVAL_MS = 1000
@@ -40,6 +47,86 @@ export type TaskAttachment = {
 
 type SetAppState = (updater: (prev: AppState) => AppState) => void
 
+const taskRecordOperations = new Map<string, Promise<void>>()
+const evictionOperations = new Map<string, Promise<void>>()
+
+function extractTaskResultText(task: TaskState): string | undefined {
+  if (!('result' in task) || !task.result) return undefined
+  if (typeof task.result === 'string') return task.result
+  if (
+    typeof task.result !== 'object' ||
+    !('content' in task.result) ||
+    !Array.isArray(task.result.content)
+  ) {
+    return undefined
+  }
+  const text = task.result.content
+    .filter(
+      (block): block is { type: 'text'; text: string } =>
+        typeof block === 'object' &&
+        block !== null &&
+        'type' in block &&
+        block.type === 'text' &&
+        'text' in block &&
+        typeof block.text === 'string',
+    )
+    .map(block => block.text)
+    .join('\n')
+  return text || undefined
+}
+
+function toTerminalTaskRecord(task: TaskState): TerminalTaskRecord | null {
+  if (!isTerminalTaskStatus(task.status)) return null
+
+  return {
+    version: 1,
+    id: task.id,
+    type: task.type,
+    status: task.status as TerminalTaskRecord['status'],
+    description: task.description,
+    toolUseId: task.toolUseId,
+    startTime: task.startTime,
+    endTime: task.endTime,
+    exitCode:
+      task.type === 'local_bash' ? (task.result?.code ?? null) : undefined,
+    error:
+      'error' in task && typeof task.error === 'string'
+        ? task.error
+        : undefined,
+    prompt:
+      task.type === 'local_agent'
+        ? task.prompt
+        : task.type === 'remote_agent'
+          ? task.command
+          : undefined,
+    result: extractTaskResultText(task),
+  }
+}
+
+function enqueueTaskRecordOperation(
+  taskId: string,
+  operation: () => Promise<void>,
+): Promise<void> {
+  const previous = taskRecordOperations.get(taskId) ?? Promise.resolve()
+  const current = previous.catch(() => {}).then(operation)
+  taskRecordOperations.set(taskId, current)
+  void current
+    .finally(() => {
+      if (taskRecordOperations.get(taskId) === current) {
+        taskRecordOperations.delete(taskId)
+      }
+    })
+    .catch(() => {})
+  return current
+}
+
+function persistTerminalTask(task: TaskState): Promise<void> {
+  const record = toTerminalTaskRecord(task)
+  return record
+    ? enqueueTaskRecordOperation(task.id, () => writeTerminalTaskRecord(record))
+    : Promise.resolve()
+}
+
 /**
  * Update a task's state in AppState.
  * Helper function for task implementations.
@@ -50,6 +137,7 @@ export function updateTaskState<T extends TaskState>(
   setAppState: SetAppState,
   updater: (task: T) => T,
 ): void {
+  let terminalTask: TaskState | undefined
   setAppState(prev => {
     const task = prev.tasks?.[taskId] as T | undefined
     if (!task) {
@@ -61,6 +149,9 @@ export function updateTaskState<T extends TaskState>(
       // spread so s.tasks subscribers don't re-render on unchanged state.
       return prev
     }
+    if (isTerminalTaskStatus(updated.status)) {
+      terminalTask = updated
+    }
     return {
       ...prev,
       tasks: {
@@ -69,6 +160,9 @@ export function updateTaskState<T extends TaskState>(
       },
     }
   })
+  if (terminalTask) {
+    void persistTerminalTask(terminalTask).catch(logError)
+  }
 }
 
 /**
@@ -98,6 +192,10 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
     return { ...prev, tasks: { ...prev.tasks, [task.id]: merged } }
   })
 
+  void enqueueTaskRecordOperation(task.id, () =>
+    deleteTerminalTaskRecord(task.id),
+  ).catch(logError)
+
   // Replacement (resume) — not a new start. Skip to avoid double-emit.
   if (isReplacement) return
 
@@ -125,22 +223,52 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
 export function evictTerminalTask(
   taskId: string,
   setAppState: SetAppState,
-): void {
-  setAppState(prev => {
-    const task = prev.tasks?.[taskId]
-    if (!task) return prev
-    if (!isTerminalTaskStatus(task.status)) return prev
-    if (!task.notified) return prev
-    // Panel grace period — blocks eviction until deadline passes.
-    // 'retain' in task narrows to LocalAgentTaskState (the only type with
-    // that field); evictAfter is optional so 'evictAfter' in task would
-    // miss tasks that haven't had it set yet.
-    if ('retain' in task && (task.evictAfter ?? Infinity) > Date.now()) {
+): Promise<void> {
+  const existing = evictionOperations.get(taskId)
+  if (existing) return existing
+
+  const operation = (async () => {
+    let task: TaskState | undefined
+    setAppState(prev => {
+      const candidate = prev.tasks?.[taskId]
+      if (
+        !candidate ||
+        !isTerminalTaskStatus(candidate.status) ||
+        !candidate.notified ||
+        ('retain' in candidate &&
+          (candidate.evictAfter ?? Infinity) > Date.now())
+      ) {
+        return prev
+      }
+      task = candidate
       return prev
+    })
+    if (!task) return
+
+    try {
+      await persistTerminalTask(task)
+    } catch (error) {
+      logError(error)
+      return
     }
-    const { [taskId]: _, ...remainingTasks } = prev.tasks
-    return { ...prev, tasks: remainingTasks }
-  })
+
+    setAppState(prev => {
+      const fresh = prev.tasks?.[taskId]
+      if (
+        fresh !== task ||
+        !isTerminalTaskStatus(fresh.status) ||
+        !fresh.notified ||
+        ('retain' in fresh && (fresh.evictAfter ?? Infinity) > Date.now())
+      ) {
+        return prev
+      }
+      const { [taskId]: _, ...remainingTasks } = prev.tasks
+      return { ...prev, tasks: remainingTasks }
+    })
+  })()
+  evictionOperations.set(taskId, operation)
+  void operation.finally(() => evictionOperations.delete(taskId))
+  return operation
 }
 
 /**
@@ -216,36 +344,26 @@ export function applyTaskOffsetsAndEvictions(
   evictedTaskIds: string[],
 ): void {
   const offsetIds = Object.keys(updatedTaskOffsets)
-  if (offsetIds.length === 0 && evictedTaskIds.length === 0) {
-    return
+  if (offsetIds.length > 0) {
+    setAppState(prev => {
+      let changed = false
+      const newTasks = { ...prev.tasks }
+      for (const id of offsetIds) {
+        const fresh = newTasks[id]
+        // Re-check status on fresh state — task may have completed during the
+        // await. If it's no longer running, the offset update is moot.
+        if (fresh?.status === 'running') {
+          newTasks[id] = { ...fresh, outputOffset: updatedTaskOffsets[id]! }
+          changed = true
+        }
+      }
+      return changed ? { ...prev, tasks: newTasks } : prev
+    })
   }
-  setAppState(prev => {
-    let changed = false
-    const newTasks = { ...prev.tasks }
-    for (const id of offsetIds) {
-      const fresh = newTasks[id]
-      // Re-check status on fresh state — task may have completed during the
-      // await. If it's no longer running, the offset update is moot.
-      if (fresh?.status === 'running') {
-        newTasks[id] = { ...fresh, outputOffset: updatedTaskOffsets[id]! }
-        changed = true
-      }
-    }
-    for (const id of evictedTaskIds) {
-      const fresh = newTasks[id]
-      // Re-check terminal+notified on fresh state (TOCTOU: resume may have
-      // replaced the task during the generateTaskAttachments await)
-      if (!fresh || !isTerminalTaskStatus(fresh.status) || !fresh.notified) {
-        continue
-      }
-      if ('retain' in fresh && (fresh.evictAfter ?? Infinity) > Date.now()) {
-        continue
-      }
-      delete newTasks[id]
-      changed = true
-    }
-    return changed ? { ...prev, tasks: newTasks } : prev
-  })
+
+  for (const id of evictedTaskIds) {
+    void evictTerminalTask(id, setAppState)
+  }
 }
 
 /**

@@ -1,14 +1,18 @@
+import { randomBytes } from 'crypto'
 import { constants as fsConstants } from 'fs'
 import {
   type FileHandle,
+  lstat,
   mkdir,
   open,
+  rename,
   stat,
   symlink,
   unlink,
 } from 'fs/promises'
 import { join } from 'path'
 import { getSessionId } from '../../bootstrap/state.js'
+import type { TaskType } from '../../Task.js'
 import { getErrnoCode } from '../errors.js'
 import { readFileRange, tailFile } from '../fsOperations.js'
 import { logError } from '../log.js'
@@ -21,6 +25,37 @@ import { getProjectTempDir } from '../permissions/filesystem.js'
 const O_NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0
 
 const DEFAULT_MAX_READ_BYTES = 8 * 1024 * 1024 // 8MB
+const TERMINAL_TASK_RECORD_VERSION = 1
+const MAX_TERMINAL_RECORD_BYTES = 256 * 1024
+const MAX_TERMINAL_FIELD_LENGTH = 64 * 1024
+const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+const TASK_TYPES: readonly TaskType[] = [
+  'local_bash',
+  'local_agent',
+  'remote_agent',
+  'in_process_teammate',
+  'local_workflow',
+  'monitor_mcp',
+  'dream',
+]
+const TERMINAL_STATUSES = ['completed', 'failed', 'killed'] as const
+
+type TerminalTaskStatus = (typeof TERMINAL_STATUSES)[number]
+
+export type TerminalTaskRecord = {
+  version: typeof TERMINAL_TASK_RECORD_VERSION
+  id: string
+  type: TaskType
+  status: TerminalTaskStatus
+  description: string
+  toolUseId?: string
+  startTime: number
+  endTime?: number
+  exitCode?: number | null
+  error?: string
+  prompt?: string
+  result?: string
+}
 
 /**
  * Disk cap for task output files. In file mode (bash), a watchdog polls
@@ -66,11 +101,201 @@ async function ensureOutputDir(): Promise<void> {
   await mkdir(getTaskOutputDir(), { recursive: true })
 }
 
+function validateTaskId(taskId: string): void {
+  if (
+    !TASK_ID_PATTERN.test(taskId) ||
+    taskId === '.' ||
+    taskId === '..' ||
+    taskId.includes('..')
+  ) {
+    throw new Error(`Invalid task ID: ${taskId}`)
+  }
+}
+
+function getTaskRecordPath(taskId: string): string {
+  validateTaskId(taskId)
+  return join(getTaskOutputDir(), `${taskId}.meta.json`)
+}
+
 /**
  * Get the output file path for a task
  */
 export function getTaskOutputPath(taskId: string): string {
+  validateTaskId(taskId)
   return join(getTaskOutputDir(), `${taskId}.output`)
+}
+
+function truncateTerminalField(value: string | undefined): string | undefined {
+  if (value === undefined || value.length <= MAX_TERMINAL_FIELD_LENGTH) {
+    return value
+  }
+  const truncated = value.slice(0, MAX_TERMINAL_FIELD_LENGTH)
+  return /[\uD800-\uDBFF]$/.test(truncated) ? truncated.slice(0, -1) : truncated
+}
+
+const TERMINAL_RECORD_TEXT_FIELDS = [
+  'result',
+  'prompt',
+  'error',
+  'description',
+  'toolUseId',
+] as const
+
+function shrinkTerminalField(value: string): string {
+  const truncated = value.slice(0, Math.floor(value.length / 2))
+  return /[\uD800-\uDBFF]$/.test(truncated) ? truncated.slice(0, -1) : truncated
+}
+
+function normalizeTerminalTaskRecord(
+  record: TerminalTaskRecord,
+): TerminalTaskRecord {
+  const normalized: TerminalTaskRecord = {
+    ...record,
+    description: truncateTerminalField(record.description) ?? '',
+    toolUseId: truncateTerminalField(record.toolUseId),
+    error: truncateTerminalField(record.error),
+    prompt: truncateTerminalField(record.prompt),
+    result: truncateTerminalField(record.result),
+  }
+
+  for (const field of TERMINAL_RECORD_TEXT_FIELDS) {
+    while (
+      normalized[field] &&
+      Buffer.byteLength(JSON.stringify(normalized), 'utf8') >
+        MAX_TERMINAL_RECORD_BYTES
+    ) {
+      normalized[field] = shrinkTerminalField(normalized[field])
+    }
+  }
+
+  return normalized
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === 'string'
+}
+
+function parseTerminalTaskRecord(
+  raw: string,
+  expectedId: string,
+): TerminalTaskRecord | null {
+  let value: unknown
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (!value || typeof value !== 'object') return null
+
+  const record = value as Record<string, unknown>
+  if (
+    record.version !== TERMINAL_TASK_RECORD_VERSION ||
+    record.id !== expectedId ||
+    typeof record.type !== 'string' ||
+    !TASK_TYPES.includes(record.type as TaskType) ||
+    typeof record.status !== 'string' ||
+    !TERMINAL_STATUSES.includes(record.status as TerminalTaskStatus) ||
+    typeof record.description !== 'string' ||
+    typeof record.startTime !== 'number' ||
+    !Number.isFinite(record.startTime) ||
+    (record.endTime !== undefined &&
+      (typeof record.endTime !== 'number' ||
+        !Number.isFinite(record.endTime))) ||
+    (record.exitCode !== undefined &&
+      record.exitCode !== null &&
+      (!Number.isInteger(record.exitCode) ||
+        typeof record.exitCode !== 'number')) ||
+    !isOptionalString(record.toolUseId) ||
+    !isOptionalString(record.error) ||
+    !isOptionalString(record.prompt) ||
+    !isOptionalString(record.result)
+  ) {
+    return null
+  }
+
+  for (const field of [
+    record.description,
+    record.toolUseId,
+    record.error,
+    record.prompt,
+    record.result,
+  ]) {
+    if (typeof field === 'string' && field.length > MAX_TERMINAL_FIELD_LENGTH) {
+      return null
+    }
+  }
+
+  return record as TerminalTaskRecord
+}
+
+export async function writeTerminalTaskRecord(
+  record: TerminalTaskRecord,
+): Promise<void> {
+  validateTaskId(record.id)
+  await ensureOutputDir()
+  const target = getTaskRecordPath(record.id)
+  const temp = `${target}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
+  const payload = JSON.stringify(normalizeTerminalTaskRecord(record))
+  if (Buffer.byteLength(payload, 'utf8') > MAX_TERMINAL_RECORD_BYTES) {
+    throw new Error(`Terminal task record is too large: ${record.id}`)
+  }
+
+  let file: FileHandle | undefined
+  try {
+    file = await open(
+      temp,
+      process.platform === 'win32'
+        ? 'wx'
+        : fsConstants.O_WRONLY |
+            fsConstants.O_CREAT |
+            fsConstants.O_EXCL |
+            O_NOFOLLOW,
+      0o600,
+    )
+    await file.writeFile(payload, 'utf8')
+    await file.sync()
+    await file.close()
+    file = undefined
+    await rename(temp, target)
+  } catch (error) {
+    await file?.close().catch(() => {})
+    await unlink(temp).catch(() => {})
+    throw error
+  }
+}
+
+export async function readTerminalTaskRecord(
+  taskId: string,
+): Promise<TerminalTaskRecord | null> {
+  try {
+    validateTaskId(taskId)
+    const path = getTaskRecordPath(taskId)
+    const info = await lstat(path)
+    if (!info.isFile() || info.isSymbolicLink()) return null
+    if (info.size > MAX_TERMINAL_RECORD_BYTES) return null
+
+    const file = await open(
+      path,
+      process.platform === 'win32' ? 'r' : fsConstants.O_RDONLY | O_NOFOLLOW,
+    )
+    try {
+      return parseTerminalTaskRecord(await file.readFile('utf8'), taskId)
+    } finally {
+      await file.close()
+    }
+  } catch (error) {
+    if (getErrnoCode(error) === 'ENOENT') return null
+    logError(error)
+    return null
+  }
+}
+
+export async function deleteTerminalTaskRecord(taskId: string): Promise<void> {
+  try {
+    await unlink(getTaskRecordPath(taskId))
+  } catch (error) {
+    if (getErrnoCode(error) !== 'ENOENT') throw error
+  }
 }
 
 // Tracks fire-and-forget promises (initTaskOutput, initTaskOutputAsSymlink,
@@ -382,15 +607,12 @@ export async function cleanupTaskOutput(taskId: string): Promise<void> {
     outputs.delete(taskId)
   }
 
-  try {
-    await unlink(getTaskOutputPath(taskId))
-  } catch (e) {
-    const code = getErrnoCode(e)
-    if (code === 'ENOENT') {
-      return
-    }
-    logError(e)
-  }
+  await Promise.all([
+    unlink(getTaskOutputPath(taskId)).catch(error => {
+      if (getErrnoCode(error) !== 'ENOENT') logError(error)
+    }),
+    deleteTerminalTaskRecord(taskId).catch(logError),
+  ])
 }
 
 /**

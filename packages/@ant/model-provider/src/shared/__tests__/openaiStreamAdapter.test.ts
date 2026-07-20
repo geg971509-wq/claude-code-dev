@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { ChatCompletionChunk } from 'openai/resources/chat/completions/completions.mjs'
+import { ProviderStreamError } from '../../types/providerErrors.js'
 import { adaptOpenAIStreamToAnthropic } from '../openaiStreamAdapter.js'
 
 /** Helper to create a mock async iterable from chunk array */
@@ -117,6 +118,71 @@ describe('adaptOpenAIStreamToAnthropic', () => {
     ) as any[]
     expect(textDeltas[0].delta.text).toBe('Hello')
     expect(textDeltas[1].delta.text).toBe(' world')
+  })
+
+  test('rejects EOF without finish_reason and emits no terminal events', async () => {
+    const events: Array<{ type: string }> = []
+    const consume = async () => {
+      for await (const event of adaptOpenAIStreamToAnthropic(
+        mockStream([
+          makeChunk({
+            choices: [
+              { index: 0, delta: { content: 'partial' }, finish_reason: null },
+            ],
+          }),
+        ]),
+        'gpt-4o',
+      )) {
+        events.push(event)
+      }
+    }
+
+    try {
+      await consume()
+      throw new Error('Expected stream consumption to reject')
+    } catch (error) {
+      expect(error).toBeInstanceOf(ProviderStreamError)
+      expect(error).toMatchObject({
+        kind: 'premature_eof',
+        retryable: true,
+        terminal: false,
+      })
+    }
+
+    expect(events.some(event => event.type === 'content_block_stop')).toBe(
+      false,
+    )
+    expect(events.some(event => event.type === 'message_delta')).toBe(false)
+    expect(events.some(event => event.type === 'message_stop')).toBe(false)
+  })
+
+  test('propagates iterator errors after finish_reason', async () => {
+    const iteratorError = new Error('trailing stream failure')
+    const chunks = [
+      makeChunk({
+        choices: [{ index: 0, delta: { content: 'hi' }, finish_reason: null }],
+      }),
+      makeChunk({
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      }),
+    ]
+    const stream: AsyncIterable<ChatCompletionChunk> = {
+      async *[Symbol.asyncIterator]() {
+        yield* chunks
+        throw iteratorError
+      },
+    }
+
+    const consume = async () => {
+      for await (const _event of adaptOpenAIStreamToAnthropic(
+        stream,
+        'gpt-4o',
+      )) {
+        // Consume the adapter to surface the iterator failure.
+      }
+    }
+
+    await expect(consume()).rejects.toBe(iteratorError)
   })
 
   test('converts tool_calls stream', async () => {
@@ -735,6 +801,7 @@ describe('prompt caching support', () => {
     expect(msgDelta.usage.input_tokens).toBe(123)
     expect(msgDelta.usage.output_tokens).toBe(45)
     expect(msgDelta.delta.stop_reason).toBe('end_turn')
+    expect(events.at(-1)?.type).toBe('message_stop')
   })
 
   test('captures input_tokens from trailing chunk (used by tokenCountWithEstimation for autocompact)', async () => {
@@ -930,6 +997,31 @@ describe('prompt caching support', () => {
     // input_tokens = prompt_tokens - cached_tokens = 2000 - 1500 = 500
     expect(msgDelta.usage.input_tokens).toBe(500)
     expect(msgDelta.usage.output_tokens).toBe(100)
+  })
+
+  test('rejects unknown finish_reason values', async () => {
+    await expect(
+      collectEvents([
+        makeChunk({
+          choices: [
+            { index: 0, delta: { content: 'hi' }, finish_reason: null },
+          ],
+        }),
+        makeChunk({
+          choices: [
+            {
+              index: 0,
+              delta: {},
+              finish_reason: 'not_a_finish_reason',
+            },
+          ],
+        } as any),
+      ]),
+    ).rejects.toMatchObject({
+      name: 'ProviderStreamError',
+      kind: 'protocol',
+      retryable: false,
+    })
   })
 
   test('subtracts cached_tokens from input_tokens to match Anthropic semantic', async () => {

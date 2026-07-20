@@ -63,8 +63,10 @@ export function getOfficialOpenAIPromptCacheKey(
 
 import {
   classifyProviderHttpError,
+  getProviderErrorStatus,
   getProviderRetryAfterMs,
   parseRetryAfterMs,
+  ProviderStreamError,
   type ProviderAPIError,
 } from '@ant/model-provider'
 import { APIConnectionError as OpenAIAPIConnectionError } from 'openai'
@@ -201,6 +203,58 @@ export function formatOpenAIErrorMessage(error: unknown): string {
   return out
 }
 
+type OpenAIHttpErrorDetails = {
+  message: string | null
+  code: string | null
+  type: string | null
+  param: string | null
+  bodyPreview: string | null
+}
+
+function boundedHttpDiagnostic(value: unknown): string | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null
+  const text = String(value).trim()
+  if (!text) return null
+  return text.length > 500 ? `${text.slice(0, 499)}…` : text
+}
+
+function parseOpenAIHttpErrorBody(
+  bodyText: string | undefined,
+): OpenAIHttpErrorDetails {
+  const body = bodyText?.trim()
+  const details: OpenAIHttpErrorDetails = {
+    message: null,
+    code: null,
+    type: null,
+    param: null,
+    bodyPreview: boundedHttpDiagnostic(body),
+  }
+  if (!body) return details
+
+  try {
+    const parsed = JSON.parse(body) as unknown
+    if (parsed == null || typeof parsed !== 'object') return details
+    const root = parsed as Record<string, unknown>
+    const nested =
+      root.error != null && typeof root.error === 'object'
+        ? (root.error as Record<string, unknown>)
+        : undefined
+    details.message = boundedHttpDiagnostic(
+      nested?.message ?? root.message ?? root.error,
+    )
+    details.code = boundedHttpDiagnostic(nested?.code ?? root.code)
+    details.type = boundedHttpDiagnostic(nested?.type ?? root.type)
+    details.param = boundedHttpDiagnostic(nested?.param ?? root.param)
+  } catch {
+    // Non-JSON provider bodies remain available through the bounded preview.
+  }
+  return details
+}
+
+function formatBoundedHttpDetail(value: string): string {
+  return value.length > 500 ? `${value.slice(0, 499)}…` : value
+}
+
 /**
  * Format a non-OK HTTP response for Responses/ChatGPT fetch paths.
  * Keeps the same empty-body wording as the OpenAI SDK for greppability.
@@ -210,12 +264,12 @@ export function formatHttpStatusError(
   status: number,
   bodyText?: string,
 ): string {
-  const body = bodyText?.trim()
-  if (!body) {
+  const details = parseOpenAIHttpErrorBody(bodyText)
+  const detail = details.message ?? details.bodyPreview
+  if (!detail) {
     return `${label} failed: ${status} status code (no body)`
   }
-  const clipped = body.length > 500 ? `${body.slice(0, 500)}…` : body
-  return `${label} failed: ${status}: ${clipped}`
+  return `${label} failed: ${status}: ${formatBoundedHttpDetail(detail)}`
 }
 
 /**
@@ -228,8 +282,9 @@ export function throwHttpStatusError(
   bodyText?: string,
   headers?: unknown,
 ): never {
+  const details = parseOpenAIHttpErrorBody(bodyText)
   const message = formatHttpStatusError(label, status, bodyText)
-  throw classifyProviderHttpError(status, message, { headers })
+  throw classifyProviderHttpError(status, message, { headers, ...details })
 }
 
 /**
@@ -290,7 +345,12 @@ export function toProviderHttpError(error: unknown): ProviderAPIError | null {
     statusCode?: unknown
     message?: unknown
     headers?: unknown
-    error?: { message?: unknown }
+    requestID?: unknown
+    requestId?: unknown
+    code?: unknown
+    type?: unknown
+    param?: unknown
+    error?: unknown
   }
   const statusCandidate = err.status ?? err.statusCode
   const status =
@@ -300,38 +360,93 @@ export function toProviderHttpError(error: unknown): ProviderAPIError | null {
         ? Number(statusCandidate)
         : undefined
   if (status === undefined) return null
+  const nested =
+    err.error != null && typeof err.error === 'object'
+      ? (err.error as Record<string, unknown>)
+      : undefined
+  let bodyPreview: string | null = null
+  if (nested) {
+    try {
+      bodyPreview = boundedHttpDiagnostic(JSON.stringify(nested))
+    } catch {
+      // An unusual cyclic SDK error still retains scalar diagnostics below.
+    }
+  }
   const message = formatOpenAIErrorMessage(error)
   return classifyProviderHttpError(status, message, {
     headers: err.headers,
+    requestId: boundedHttpDiagnostic(err.requestID ?? err.requestId),
+    code: boundedHttpDiagnostic(err.code ?? nested?.code),
+    type: boundedHttpDiagnostic(err.type ?? nested?.type),
+    param: boundedHttpDiagnostic(err.param ?? nested?.param),
+    bodyPreview,
   })
 }
 
 const TRANSIENT_RETRY_BASE_DELAY_MS = 500
 const TRANSIENT_RETRY_MAX_DELAY_MS = 30_000
 const DEFAULT_TRANSIENT_MAX_RETRIES = 5
+const DEFAULT_OPENAI_REQUEST_MAX_RETRIES = 4
+const DEFAULT_OPENAI_STREAM_MAX_RETRIES = 5
+const DEFAULT_OPENAI_STREAM_IDLE_TIMEOUT_MS = 300_000
+
+function parseBoundedRetryCount(
+  value: string | undefined,
+  fallback: number,
+): number {
+  if (value === undefined || value.trim() === '') return fallback
+  const parsed = Number.parseInt(value, 10)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(100, Math.max(0, parsed))
+}
+
+export function getOpenAIRequestMaxRetries(): number {
+  const configured = process.env.OPENAI_REQUEST_MAX_RETRIES
+  if (configured !== undefined && configured.trim() !== '') {
+    return parseBoundedRetryCount(
+      configured,
+      DEFAULT_OPENAI_REQUEST_MAX_RETRIES,
+    )
+  }
+  return parseBoundedRetryCount(
+    process.env.CLAUDE_CODE_MAX_RETRIES,
+    DEFAULT_OPENAI_REQUEST_MAX_RETRIES,
+  )
+}
+
+export function getOpenAIStreamMaxRetries(): number {
+  const configured = process.env.OPENAI_STREAM_MAX_RETRIES
+  if (configured !== undefined && configured.trim() !== '') {
+    return parseBoundedRetryCount(configured, DEFAULT_OPENAI_STREAM_MAX_RETRIES)
+  }
+  return parseBoundedRetryCount(
+    process.env.CLAUDE_CODE_MAX_RETRIES,
+    DEFAULT_OPENAI_STREAM_MAX_RETRIES,
+  )
+}
+
+export function getOpenAIStreamIdleTimeoutMs(): number {
+  const parsed = Number.parseInt(
+    process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS || '',
+    10,
+  )
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_OPENAI_STREAM_IDLE_TIMEOUT_MS
+}
 
 /**
- * Transient request-establishment failure: HTTP 408/409/5xx (e.g.
- * `503 Service temporarily unavailable`) or an SDK connection error
- * (reset / timeout, no HTTP status). These are safe to retry before any
- * stream events have been emitted.
- *
- * 429 is deliberately excluded — it flows through the layered
- * APIProviderRateLimitError handling in the caller's catch block.
+ * A failure that can safely be retried before semantic output escapes. This
+ * deliberately includes 429: provider-directed Retry-After is honored below.
  */
 export function isTransientOpenAIError(error: unknown): boolean {
   if (error == null || typeof error !== 'object') return false
   if (isOpenAIUserAbortError(error)) return false
-  const err = error as { status?: unknown; statusCode?: unknown }
-  const statusCandidate = err.status ?? err.statusCode
-  const status =
-    typeof statusCandidate === 'number'
-      ? statusCandidate
-      : typeof statusCandidate === 'string' && /^\d+$/.test(statusCandidate)
-        ? Number(statusCandidate)
-        : undefined
+  if (error instanceof ProviderStreamError) return error.retryable
+
+  const status = getProviderErrorStatus(error)
   if (status !== undefined) {
-    return status === 408 || status === 409 || status >= 500
+    return status === 408 || status === 409 || status === 429 || status >= 500
   }
   // OpenAI SDK connection failures (incl. timeouts) carry no HTTP status.
   return error instanceof OpenAIAPIConnectionError
@@ -344,7 +459,7 @@ export function getTransientOpenAIMaxRetries(): number {
   return DEFAULT_TRANSIENT_MAX_RETRIES
 }
 
-function transientRetryDelayMs(error: unknown, attempt: number): number {
+export function getOpenAIRetryDelayMs(error: unknown, attempt: number): number {
   // Server-directed delay first: layered ProviderAPIError.retryAfterMs,
   // then a raw Retry-After header on SDK errors.
   const fromProvider = getProviderRetryAfterMs(error)
@@ -371,6 +486,70 @@ export type TransientRetryInfo = {
   maxRetries: number
   delayMs: number
   error: unknown
+}
+
+export async function* withOpenAIStreamIdleTimeout<T>(
+  stream: AsyncIterable<T>,
+  opts: {
+    timeoutMs?: number
+    abortAttempt: () => void
+    userSignal: AbortSignal
+    requestId?: string | null
+  },
+): AsyncGenerator<T, void> {
+  const iterator = stream[Symbol.asyncIterator]()
+  const timeoutMs = opts.timeoutMs ?? getOpenAIStreamIdleTimeoutMs()
+  let failed = false
+
+  try {
+    for (;;) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        const timeout = new Promise<IteratorResult<T>>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(
+              new ProviderStreamError(
+                `OpenAI stream idle timeout after ${timeoutMs}ms`,
+                {
+                  kind: 'idle_timeout',
+                  retryable: true,
+                  terminal: false,
+                  requestId: opts.requestId,
+                },
+              ),
+            )
+            opts.abortAttempt()
+          }, timeoutMs)
+          timer.unref?.()
+        })
+        const result = await Promise.race([iterator.next(), timeout])
+        if (result.done) return
+        yield result.value
+      } finally {
+        if (timer !== undefined) clearTimeout(timer)
+      }
+    }
+  } catch (error) {
+    failed = true
+    if (
+      opts.userSignal.aborted ||
+      isOpenAIUserAbortError(error) ||
+      error instanceof ProviderStreamError
+    ) {
+      throw error
+    }
+    throw new ProviderStreamError(formatOpenAIErrorMessage(error), {
+      kind: 'provider',
+      retryable: true,
+      terminal: false,
+      requestId: opts.requestId,
+      cause: error,
+    })
+  } finally {
+    const returned = iterator.return?.()
+    if (failed) void returned?.catch(() => {})
+    else await returned?.catch(() => {})
+  }
 }
 
 /**
@@ -409,7 +588,7 @@ export async function withTransientOpenAIRetry<T>(
         throw error
       }
       attempt++
-      const delayMs = transientRetryDelayMs(error, attempt)
+      const delayMs = getOpenAIRetryDelayMs(error, attempt)
       opts.onRetry?.({ attempt, maxRetries, delayMs, error })
       await sleep(delayMs, opts.signal, { throwOnAbort: true })
     }
