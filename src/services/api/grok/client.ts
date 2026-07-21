@@ -10,14 +10,19 @@ import { getProxyFetchOptions } from 'src/utils/proxy.js'
 
 const DEFAULT_BASE_URL = 'https://api.x.ai/v1'
 
-let cachedClient: OpenAI | null = null
+const cachedClients = new Map<number, OpenAI>()
 
 export function getGrokClient(options?: {
   maxRetries?: number
   fetchOverride?: typeof fetch
   source?: string
 }): OpenAI {
-  if (cachedClient) return cachedClient
+  const maxRetries = options?.maxRetries ?? 0
+  const useCache = !options?.fetchOverride
+  if (useCache) {
+    const cachedClient = cachedClients.get(maxRetries)
+    if (cachedClient) return cachedClient
+  }
 
   const apiKey = process.env.GROK_API_KEY || process.env.XAI_API_KEY || ''
   const baseURL = process.env.GROK_BASE_URL || DEFAULT_BASE_URL
@@ -25,20 +30,20 @@ export function getGrokClient(options?: {
   const client = new OpenAI({
     apiKey,
     baseURL,
-    maxRetries: options?.maxRetries ?? 0,
+    maxRetries,
     timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
     dangerouslyAllowBrowser: true,
     fetchOptions: getProxyFetchOptions({ forAnthropicAPI: false }),
     ...(options?.fetchOverride && { fetch: options.fetchOverride }),
   })
 
-  if (!options?.fetchOverride) {
-    cachedClient = client
+  if (useCache) {
+    cachedClients.set(maxRetries, client)
   }
 
   return client
 }
 
 export function clearGrokClientCache(): void {
-  cachedClient = null
+  cachedClients.clear()
 }

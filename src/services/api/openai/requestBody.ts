@@ -66,6 +66,11 @@ export function isOpenAIReasoningChatModel(model: string): boolean {
   return m.includes('gpt-5') && !m.includes('gpt-5-chat')
 }
 
+export function supportsOpenAIReasoningEffortNone(model: string): boolean {
+  const match = model.toLowerCase().match(/^gpt-5\.(\d+)(?:-|$)/)
+  return match ? Number(match[1]) >= 1 : false
+}
+
 /**
  * Codex-aligned Azure Responses host markers (hostname only).
  * Shared by routing capability and `store` default so the two cannot drift.
@@ -164,6 +169,11 @@ export function resolveOpenAIPromptCacheKey(): string | undefined {
  * - MiMo (Xiaomi):            `chat_template_kwargs: { enable_thinking: true }`
  * OpenAI SDK passes unknown keys through to the HTTP body.
  */
+export type OpenAIJSONOutputFormat = {
+  type: 'json_schema'
+  schema: Record<string, unknown>
+}
+
 export function buildOpenAIRequestBody(params: {
   model: string
   messages: any[]
@@ -174,7 +184,9 @@ export function buildOpenAIRequestBody(params: {
   temperatureOverride?: number
   /** Session-scoped routing key for official OpenAI requests. */
   promptCacheKey?: string
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
+  reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+  outputFormat?: OpenAIJSONOutputFormat
+  stopSequences?: string[]
 }): ChatCompletionCreateParamsStreaming & {
   thinking?: { type: string }
   enable_thinking?: boolean
@@ -182,7 +194,7 @@ export function buildOpenAIRequestBody(params: {
   /** OpenAI prompt-cache routing key (not always in SDK types yet). */
   prompt_cache_key?: string
   max_completion_tokens?: number
-  reasoning_effort?: 'low' | 'medium' | 'high' | 'xhigh'
+  reasoning_effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 } {
   const {
     model,
@@ -194,6 +206,8 @@ export function buildOpenAIRequestBody(params: {
     temperatureOverride,
     promptCacheKey,
     reasoningEffort,
+    outputFormat,
+    stopSequences,
   } = params
   const isReasoningChat = isOpenAIReasoningChatModel(model)
   return {
@@ -207,6 +221,19 @@ export function buildOpenAIRequestBody(params: {
         reasoning_effort: reasoningEffort,
       }),
     ...(promptCacheKey && { prompt_cache_key: promptCacheKey }),
+    ...(outputFormat && {
+      response_format: {
+        type: 'json_schema' as const,
+        json_schema: {
+          name: 'side_query_output',
+          schema: outputFormat.schema,
+          strict: true,
+        },
+      },
+    }),
+    ...(!isReasoningChat &&
+      stopSequences &&
+      stopSequences.length > 0 && { stop: stopSequences }),
     ...(tools.length > 0 && {
       tools,
       ...(toolChoice && { tool_choice: toolChoice }),

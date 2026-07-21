@@ -4,7 +4,6 @@ import type {
   BetaRawMessageStreamEvent,
   BetaUsage,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
-import type { ChatCompletionChunk } from 'openai/resources/chat/completions/completions.mjs'
 import type { SystemPrompt } from '../../../utils/systemPromptType.js'
 import type {
   Message,
@@ -15,13 +14,10 @@ import type {
 } from '../../../types/message.js'
 import type { AgentId } from '../../../types/ids.js'
 import type { Tools } from '../../../Tool.js'
-import { getSessionId } from '../../../bootstrap/state.js'
-import { getOpenAIClient } from './client.js'
 import {
+  formatOpenAIAssistantAPIError,
   formatOpenAIErrorMessage,
   formatOpenAIErrorStack,
-  formatOpenAIErrorWithStack,
-  formatOpenAIPromptCacheKey,
   getOpenAIRequestMaxRetries,
   getOpenAIRetryDelayMs,
   getOpenAIStreamMaxRetries,
@@ -43,20 +39,18 @@ import { APIUserAbortError } from '@anthropic-ai/sdk'
 import {
   anthropicMessagesToOpenAI,
   resolveOpenAIModel,
-  adaptOpenAIStreamToAnthropic,
   anthropicToolsToOpenAI,
   anthropicToolChoiceToOpenAI,
   ProviderStreamError,
 } from '@ant/model-provider'
-import { isChatGPTAuthEnabled } from './chatgptAuth.js'
-import {
-  adaptResponsesStreamToAnthropic,
-  buildResponsesRequest,
-  createChatGPTResponsesStream,
-  createOfficialResponsesStream,
-  type OpenAIStreamAttempt,
-  type ResponsesReasoningEffort,
+import type {
+  OpenAIStreamAttempt,
+  ResponsesReasoningEffort,
 } from './responsesAdapter.js'
+import {
+  adaptPreparedOpenAIStream,
+  prepareOpenAIStreamRequest,
+} from './streamAttempt.js'
 import {
   logOpenAIRawLifecycle,
   logOpenAIRawStream,
@@ -414,88 +408,22 @@ export async function* queryModelOpenAI(
     // - API-key + capable base + o*/gpt-5* (or OPENAI_USE_RESPONSES=1) →
     //   official /v1/responses (with max_output_tokens).
     // - API-key otherwise → Chat Completions (custom proxies stay here by default).
-    const useChatGPTResponses = isChatGPTAuthEnabled()
-    const useOfficialResponses =
-      !useChatGPTResponses && shouldUseOpenAIResponsesAPI(openaiModel)
-    const openaiRoute: OpenAIRawStreamRoute = useChatGPTResponses
-      ? 'chatgpt-responses'
-      : useOfficialResponses
-        ? 'official-responses'
-        : 'chat-completions'
-    const promptCacheKey =
-      resolveOpenAIPromptCacheKey() ??
-      formatOpenAIPromptCacheKey(getSessionId())
+    const preparedRequest = prepareOpenAIStreamRequest({
+      model: openaiModel,
+      messages: openaiMessages,
+      tools: openaiTools,
+      toolChoice: openaiToolChoice,
+      enableThinking,
+      maxTokens,
+      temperatureOverride: options.temperatureOverride,
+      reasoningEffort,
+      fetchOverride: options.fetchOverride as unknown as typeof fetch,
+      source: options.querySource,
+    })
+    const openaiRoute: OpenAIRawStreamRoute = preparedRequest.route
     logForDebugging(
-      `[OpenAI] route=${openaiRoute} model=${openaiModel} messages=${openaiMessages.length}, tools=${openaiTools.length}, thinking=${enableThinking}, maxTokens=${maxTokens}, prompt_cache_key=${promptCacheKey}`,
+      `[OpenAI] route=${openaiRoute} model=${openaiModel} messages=${openaiMessages.length}, tools=${openaiTools.length}, thinking=${enableThinking}, maxTokens=${maxTokens}, prompt_cache_key=${preparedRequest.promptCacheKey}`,
     )
-    const createAttempt = async (
-      attemptSignal: AbortSignal,
-    ): Promise<OpenAIStreamAttempt> => {
-      if (useChatGPTResponses) {
-        return createChatGPTResponsesStream({
-          request: buildResponsesRequest({
-            model: openaiModel,
-            messages: openaiMessages,
-            tools: openaiTools,
-            toolChoice: openaiToolChoice,
-            reasoningEffort,
-            promptCacheKey,
-          }),
-          signal: attemptSignal,
-          fetchOverride: options.fetchOverride as unknown as typeof fetch,
-        })
-      }
-      if (useOfficialResponses) {
-        return createOfficialResponsesStream({
-          request: buildResponsesRequest({
-            model: openaiModel,
-            messages: openaiMessages,
-            tools: openaiTools,
-            toolChoice: openaiToolChoice,
-            reasoningEffort,
-            maxOutputTokens: maxTokens,
-            promptCacheKey,
-          }),
-          signal: attemptSignal,
-          fetchOverride: options.fetchOverride as unknown as typeof fetch,
-          source: options.querySource,
-        })
-      }
-
-      const promise = getOpenAIClient({
-        maxRetries: 0,
-        fetchOverride: options.fetchOverride as unknown as typeof fetch,
-        source: options.querySource,
-      }).chat.completions.create(
-        buildOpenAIRequestBody({
-          model: openaiModel,
-          messages: openaiMessages,
-          tools: openaiTools,
-          toolChoice: openaiToolChoice,
-          enableThinking,
-          maxTokens,
-          temperatureOverride: options.temperatureOverride,
-          promptCacheKey,
-          reasoningEffort:
-            reasoningEffort === 'max' ? 'xhigh' : reasoningEffort,
-        }),
-        { signal: attemptSignal },
-      )
-      const { data, response, request_id } = await promise.withResponse()
-      return {
-        stream: data as unknown as AsyncIterable<Record<string, unknown>>,
-        status: response.status,
-        requestId:
-          request_id ??
-          response.headers.get('x-request-id') ??
-          response.headers.get('request-id'),
-        retryAfterMs: null,
-        cleanup: () => {
-          data.controller.abort()
-          void response.body?.cancel().catch(() => {})
-        },
-      }
-    }
 
     const requestMaxRetries = getOpenAIRequestMaxRetries()
     const streamMaxRetries = getOpenAIStreamMaxRetries()
@@ -522,7 +450,7 @@ export async function* queryModelOpenAI(
       let attempt: OpenAIStreamAttempt
 
       try {
-        attempt = await createAttempt(combinedSignal.signal)
+        attempt = await preparedRequest.createAttempt(combinedSignal.signal)
       } catch (error) {
         combinedSignal.cleanup()
         attemptController.abort()
@@ -605,13 +533,7 @@ export async function* queryModelOpenAI(
           requestId: attempt.requestId ?? undefined,
         })
         const adaptedStream: AsyncIterable<BetaRawMessageStreamEvent> =
-          openaiRoute === 'chat-completions'
-            ? adaptOpenAIStreamToAnthropic(
-                rawStream as AsyncIterable<ChatCompletionChunk>,
-                openaiModel,
-                { includeCacheWriteTokens: !!promptCacheKey },
-              )
-            : adaptResponsesStreamToAnthropic(rawStream, openaiModel)
+          adaptPreparedOpenAIStream(preparedRequest, rawStream, openaiModel)
 
         for await (const event of adaptedStream) {
           eventCount++
@@ -854,17 +776,18 @@ export async function* queryModelOpenAI(
       return
     }
     const errorMessage = formatOpenAIErrorMessage(error)
-    // Full stack + cause chain in debug log; short stack also on user surface.
+    // Full stack + cause chain in debug only; user surface is kimi-style
+    // short message (5xx) or short stack (non-5xx).
     logForDebugging(
       `[OpenAI] Error: ${errorMessage}\n${formatOpenAIErrorStack(error, 16)}`,
       { level: 'error' },
     )
+    const surface = formatOpenAIAssistantAPIError(error, 8)
     yield createAssistantAPIErrorMessage({
-      content: `API Error: ${formatOpenAIErrorWithStack(error, 8)}`,
-      apiError: 'api_error',
-      error: (error instanceof Error
-        ? error
-        : new Error(errorMessage)) as unknown as SDKAssistantMessageError,
+      content: surface.content,
+      apiError: surface.apiError,
+      error: surface.error as SDKAssistantMessageError,
+      errorDetails: surface.errorDetails,
     })
   }
 }

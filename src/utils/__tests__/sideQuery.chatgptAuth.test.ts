@@ -28,8 +28,18 @@ mock.module('src/services/analytics/index.js', () => ({
 
 let getOpenAIClientCallCount = 0
 let chatCompletionsCreateCount = 0
+let responsesCreateCount = 0
 let lastChatCompletionsArgs: Record<string, unknown> | null = null
+let lastResponsesArgs: Record<string, unknown> | null = null
 let chatCompletionsUsage: Record<string, unknown> = {}
+
+function asyncStream<T>(events: T[]): AsyncIterable<T> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield* events
+    },
+  }
+}
 
 mock.module('src/services/api/openai/client.js', () => ({
   getOpenAIClient: () => {
@@ -37,32 +47,85 @@ mock.module('src/services/api/openai/client.js', () => ({
     return {
       chat: {
         completions: {
-          create: async (args: Record<string, unknown>) => {
+          create: (args: Record<string, unknown>) => {
             chatCompletionsCreateCount++
             lastChatCompletionsArgs = args
-            return {
-              id: 'chatcmpl_test',
-              choices: [
+            const data = Object.assign(
+              asyncStream([
                 {
-                  finish_reason: 'tool_calls',
-                  message: {
-                    content: null,
-                    tool_calls: [
-                      {
-                        type: 'function',
-                        id: 'call_api_key',
-                        function: {
-                          name: 'classify_result',
-                          arguments: JSON.stringify({ shouldBlock: false }),
-                        },
+                  choices: [
+                    {
+                      index: 0,
+                      delta: {
+                        tool_calls: [
+                          {
+                            index: 0,
+                            type: 'function',
+                            id: 'call_api_key',
+                            function: {
+                              name: 'classify_result',
+                              arguments: JSON.stringify({ shouldBlock: false }),
+                            },
+                          },
+                        ],
                       },
-                    ],
-                  },
+                      finish_reason: null,
+                    },
+                  ],
                 },
-              ],
-              usage: chatCompletionsUsage,
+                {
+                  choices: [
+                    { index: 0, delta: {}, finish_reason: 'tool_calls' },
+                  ],
+                },
+                { choices: [], usage: chatCompletionsUsage },
+              ]),
+              { controller: new AbortController() },
+            )
+            return {
+              withResponse: async () => ({
+                data,
+                response: {
+                  status: 200,
+                  headers: new Headers({ 'x-request-id': 'req_chat_test' }),
+                  body: null,
+                },
+                request_id: 'req_chat_test',
+              }),
             }
           },
+        },
+      },
+      responses: {
+        create: (args: Record<string, unknown>) => {
+          responsesCreateCount++
+          lastResponsesArgs = args
+          const data = asyncStream([
+            {
+              type: 'response.output_text.delta',
+              output_index: 0,
+              item_id: 'msg_responses_test',
+              delta: '{"selected_memories":[]}',
+            },
+            {
+              type: 'response.completed',
+              response: {
+                status: 'completed',
+                usage: { input_tokens: 12, output_tokens: 4 },
+              },
+            },
+          ])
+          return {
+            withResponse: async () => ({
+              data,
+              response: {
+                status: 200,
+                headers: new Headers({ 'x-request-id': 'req_responses_test' }),
+                body: null,
+              },
+              request_id: 'req_responses_test',
+            }),
+          }
         },
       },
     }
@@ -106,6 +169,9 @@ const ENV_KEYS = [
   'OPENAI_API_KEY',
   'OPENAI_BASE_URL',
   'OPENAI_MODEL',
+  'OPENAI_USE_RESPONSES',
+  'OPENAI_ENABLE_THINKING',
+  'OPENAI_PROMPT_CACHE_KEY',
 ] as const
 
 const savedEnv: Record<string, string | undefined> = {}
@@ -153,6 +219,9 @@ function enableOpenAIProvider(): void {
   delete process.env.CLAUDE_CODE_USE_VERTEX
   delete process.env.CLAUDE_CODE_USE_FOUNDRY
   delete process.env.OPENAI_MODEL
+  delete process.env.OPENAI_USE_RESPONSES
+  delete process.env.OPENAI_ENABLE_THINKING
+  delete process.env.OPENAI_PROMPT_CACHE_KEY
 }
 
 beforeEach(() => {
@@ -161,7 +230,9 @@ beforeEach(() => {
   }
   getOpenAIClientCallCount = 0
   chatCompletionsCreateCount = 0
+  responsesCreateCount = 0
   lastChatCompletionsArgs = null
+  lastResponsesArgs = null
   chatCompletionsUsage = { prompt_tokens: 3, completion_tokens: 2 }
   capturedFetch = null
   enableOpenAIProvider()
@@ -309,7 +380,63 @@ describe('sideQuery OpenAI ChatGPT OAuth path', () => {
     expect(result.usage.cache_creation_input_tokens).toBe(250)
   })
 
-  test('compatible API key mode omits official cache fields', async () => {
+  test('official GPT-5 uses Responses with max tokens and structured output', async () => {
+    delete process.env.OPENAI_AUTH_MODE
+    delete process.env.OPENAI_BASE_URL
+    process.env.OPENAI_API_KEY = 'sk-test-not-real'
+    const { sideQuery } = await import('../sideQuery.js')
+
+    const result = await sideQuery({
+      querySource: 'memdir_relevance',
+      model: 'gpt-5.1',
+      messages: [{ role: 'user', content: 'select memories' }],
+      max_tokens: 321,
+      thinking: false,
+      output_format: {
+        type: 'json_schema',
+        schema: {
+          type: 'object',
+          properties: {
+            selected_memories: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['selected_memories'],
+          additionalProperties: false,
+        },
+      },
+    })
+
+    expect(chatCompletionsCreateCount).toBe(0)
+    expect(responsesCreateCount).toBe(1)
+    expect(lastResponsesArgs?.model).toBe('gpt-5.1')
+    expect(lastResponsesArgs?.max_output_tokens).toBe(321)
+    expect(lastResponsesArgs?.reasoning).toEqual({
+      effort: 'none',
+      summary: 'auto',
+    })
+    expect(lastResponsesArgs?.text).toEqual({
+      format: {
+        type: 'json_schema',
+        name: 'side_query_output',
+        schema: {
+          type: 'object',
+          properties: {
+            selected_memories: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['selected_memories'],
+          additionalProperties: false,
+        },
+        strict: true,
+      },
+    })
+    const textBlock = result.content.find(block => block.type === 'text')
+    expect(textBlock?.type === 'text' ? textBlock.text : undefined).toBe(
+      '{"selected_memories":[]}',
+    )
+    expect(result.usage.input_tokens).toBe(12)
+    expect(result.usage.output_tokens).toBe(4)
+  })
+
+  test('compatible API key mode maps chat-only request options', async () => {
     delete process.env.OPENAI_AUTH_MODE
     process.env.OPENAI_BASE_URL = 'https://api.deepseek.com/v1'
     process.env.OPENAI_API_KEY = 'sk-test-not-real'
@@ -327,10 +454,30 @@ describe('sideQuery OpenAI ChatGPT OAuth path', () => {
       querySource: 'auto_mode',
       model: 'deepseek-chat',
       messages: [{ role: 'user', content: 'hi' }],
+      max_tokens: 333,
+      thinking: 128,
+      stop_sequences: ['</block>'],
+      output_format: {
+        type: 'json_schema',
+        schema: { type: 'object', properties: { ok: { type: 'boolean' } } },
+      },
     })
 
+    expect(responsesCreateCount).toBe(0)
     expect(lastChatCompletionsArgs).not.toBeNull()
     expect('prompt_cache_key' in lastChatCompletionsArgs!).toBe(false)
+    expect(lastChatCompletionsArgs?.max_tokens).toBe(333)
+    expect(lastChatCompletionsArgs?.thinking).toEqual({ type: 'enabled' })
+    expect(lastChatCompletionsArgs?.enable_thinking).toBe(true)
+    expect(lastChatCompletionsArgs?.stop).toEqual(['</block>'])
+    expect(lastChatCompletionsArgs?.response_format).toEqual({
+      type: 'json_schema',
+      json_schema: {
+        name: 'side_query_output',
+        schema: { type: 'object', properties: { ok: { type: 'boolean' } } },
+        strict: true,
+      },
+    })
     expect(result.usage.input_tokens).toBe(400)
     expect(result.usage.cache_read_input_tokens).toBe(600)
     expect(result.usage.cache_creation_input_tokens).toBe(0)

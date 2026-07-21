@@ -227,6 +227,7 @@ let _searchExtraToolsEnabled = false
 
 /** Captured arguments from the last chat.completions.create() call */
 let _lastCreateArgs: Record<string, any> | null = null
+let _lastAdapterOptions: { includeCacheWriteTokens?: boolean } | undefined
 
 beforeEach(() => {
   _nextEvents = []
@@ -234,17 +235,24 @@ beforeEach(() => {
   _activeAttempt = null
   _createCalls = 0
   _lastCreateArgs = null
+  _lastAdapterOptions = undefined
   _searchExtraToolsEnabled = false
 })
 
 mock.module('@ant/model-provider', () => ({
   ...realModelProvider,
   resolveOpenAIModel: (m: string) => m,
-  adaptOpenAIStreamToAnthropic: (_stream: any, _model: string) =>
-    eventStream(
+  adaptOpenAIStreamToAnthropic: (
+    _stream: any,
+    _model: string,
+    options?: { includeCacheWriteTokens?: boolean },
+  ) => {
+    _lastAdapterOptions = options
+    return eventStream(
       _activeAttempt?.events ?? _nextEvents,
       _activeAttempt?.streamError,
-    ),
+    )
+  },
   anthropicMessagesToOpenAI: (messages: any[]) =>
     messages.map(msg => ({
       role: msg.message?.role ?? 'user',
@@ -848,11 +856,14 @@ describe('queryModelOpenAI — max_tokens forwarded to request', () => {
       makeMessageStop(),
     ]
 
-    await runQueryModel(_nextEvents)
+    await runQueryModel(_nextEvents, {
+      OPENAI_BASE_URL: 'https://api.openai.com/v1',
+    })
 
     expect(_lastCreateArgs).not.toBeNull()
     expect(_lastCreateArgs!.max_tokens).toBe(8192)
     expect(_lastCreateArgs!.prompt_cache_key).toStartWith('ccb:')
+    expect(_lastAdapterOptions?.includeCacheWriteTokens).toBe(true)
   })
 
   test('compatible providers do not receive OpenAI cache parameters', async () => {
@@ -860,10 +871,12 @@ describe('queryModelOpenAI — max_tokens forwarded to request', () => {
 
     await runQueryModel(_nextEvents, {
       OPENAI_BASE_URL: 'https://api.deepseek.com/v1',
+      OPENAI_PROMPT_CACHE_KEY: 'explicit-key',
     })
 
     expect(_lastCreateArgs).not.toBeNull()
     expect('prompt_cache_key' in _lastCreateArgs!).toBe(false)
+    expect(_lastAdapterOptions?.includeCacheWriteTokens).toBe(false)
   })
 })
 

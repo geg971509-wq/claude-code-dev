@@ -17,13 +17,14 @@ import type {
 } from 'openai/resources/chat/completions/completions.mjs'
 import { getGrokClient } from './client.js'
 import {
+  formatOpenAIAssistantAPIError,
   formatOpenAIErrorMessage,
   formatOpenAIErrorStack,
-  formatOpenAIErrorWithStack,
   isOpenAIUserAbortError,
   toProviderHttpError,
   type TransientRetryInfo,
   updateOpenAIUsage,
+  withOpenAIStreamIdleTimeout,
   withTransientOpenAIRetry,
 } from '../openai/openaiShared.js'
 import {
@@ -39,6 +40,7 @@ import {
   anthropicToolsToOpenAI,
   anthropicToolChoiceToOpenAI,
   adaptOpenAIStreamToAnthropic,
+  ProviderStreamError,
   resolveGrokModel,
 } from '@ant/model-provider'
 import { normalizeMessagesForAPI } from '../../../utils/messages.js'
@@ -118,26 +120,32 @@ export async function* queryModelGrok(
 
     // Transient 5xx/connection failures retry here — the Grok path bypasses
     // withRetry.ts (same as the OpenAI path).
-    const stream = await withTransientOpenAIRetry(
+    const {
+      data: stream,
+      response,
+      request_id,
+    } = await withTransientOpenAIRetry(
       () =>
-        client.chat.completions.create(
-          {
-            model: grokModel,
-            messages: openaiMessages,
-            ...(openaiTools.length > 0 && {
-              tools: openaiTools,
-              ...(openaiToolChoice && { tool_choice: openaiToolChoice }),
-            }),
-            stream: true,
-            stream_options: { include_usage: true },
-            ...(options.temperatureOverride !== undefined && {
-              temperature: options.temperatureOverride,
-            }),
-          } as ChatCompletionCreateParamsStreaming,
-          {
-            signal,
-          },
-        ),
+        client.chat.completions
+          .create(
+            {
+              model: grokModel,
+              messages: openaiMessages,
+              ...(openaiTools.length > 0 && {
+                tools: openaiTools,
+                ...(openaiToolChoice && { tool_choice: openaiToolChoice }),
+              }),
+              stream: true,
+              stream_options: { include_usage: true },
+              ...(options.temperatureOverride !== undefined && {
+                temperature: options.temperatureOverride,
+              }),
+            } as ChatCompletionCreateParamsStreaming,
+            {
+              signal,
+            },
+          )
+          .withResponse(),
       {
         signal,
         onRetry: ({
@@ -153,8 +161,17 @@ export async function* queryModelGrok(
       },
     )
 
+    const requestId =
+      request_id ??
+      response.headers.get('x-request-id') ??
+      response.headers.get('request-id')
+    const timedStream = withOpenAIStreamIdleTimeout(stream, {
+      abortAttempt: () => stream.controller.abort(),
+      userSignal: signal,
+      requestId,
+    })
     const adaptedStream = adaptOpenAIStreamToAnthropic(
-      stream as AsyncIterable<ChatCompletionChunk>,
+      timedStream as AsyncIterable<ChatCompletionChunk>,
       grokModel,
     )
 
@@ -172,113 +189,140 @@ export async function* queryModelGrok(
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 0,
     }
+    let stopReason: string | null = null
+    let completed = false
     let ttftMs = 0
     const start = Date.now()
 
-    for await (const event of adaptedStream) {
-      switch (event.type) {
-        case 'message_start': {
-          partialMessage = event.message
-          ttftMs = Date.now() - start
-          if (event.message.usage) {
-            usage = updateOpenAIUsage(
-              usage,
-              event.message.usage as unknown as Parameters<
-                typeof updateOpenAIUsage
-              >[1],
-            )
+    try {
+      for await (const event of adaptedStream) {
+        switch (event.type) {
+          case 'message_start': {
+            partialMessage = event.message
+            ttftMs = Date.now() - start
+            if (event.message.usage) {
+              usage = updateOpenAIUsage(
+                usage,
+                event.message.usage as unknown as Parameters<
+                  typeof updateOpenAIUsage
+                >[1],
+              )
+            }
+            break
           }
-          break
-        }
-        case 'content_block_start': {
-          const idx = event.index
-          const cb = event.content_block
-          if (cb.type === 'tool_use') {
-            contentBlocks[idx] = { ...cb, input: '' }
-          } else if (cb.type === 'text') {
-            contentBlocks[idx] = { ...cb, text: '' }
-          } else if (cb.type === 'thinking') {
-            contentBlocks[idx] = { ...cb, thinking: '', signature: '' }
-          } else {
-            contentBlocks[idx] = { ...cb }
+          case 'content_block_start': {
+            const idx = event.index
+            const cb = event.content_block
+            if (cb.type === 'tool_use') {
+              contentBlocks[idx] = { ...cb, input: '' }
+            } else if (cb.type === 'text') {
+              contentBlocks[idx] = { ...cb, text: '' }
+            } else if (cb.type === 'thinking') {
+              contentBlocks[idx] = { ...cb, thinking: '', signature: '' }
+            } else {
+              contentBlocks[idx] = { ...cb }
+            }
+            break
           }
-          break
-        }
-        case 'content_block_delta': {
-          const idx = event.index
-          const delta = event.delta
-          const block = contentBlocks[idx]
-          if (!block) break
-          if (delta.type === 'text_delta') {
-            block.text = ((block.text as string | undefined) || '') + delta.text
-          } else if (delta.type === 'input_json_delta') {
-            block.input =
-              ((block.input as string | undefined) || '') + delta.partial_json
-          } else if (delta.type === 'thinking_delta') {
-            block.thinking =
-              ((block.thinking as string | undefined) || '') + delta.thinking
-          } else if (delta.type === 'signature_delta') {
-            block.signature = delta.signature
+          case 'content_block_delta': {
+            const idx = event.index
+            const delta = event.delta
+            const block = contentBlocks[idx]
+            if (!block) break
+            if (delta.type === 'text_delta') {
+              block.text =
+                ((block.text as string | undefined) || '') + delta.text
+            } else if (delta.type === 'input_json_delta') {
+              block.input =
+                ((block.input as string | undefined) || '') + delta.partial_json
+            } else if (delta.type === 'thinking_delta') {
+              block.thinking =
+                ((block.thinking as string | undefined) || '') + delta.thinking
+            } else if (delta.type === 'signature_delta') {
+              block.signature = delta.signature
+            }
+            break
           }
-          break
+          case 'content_block_stop':
+            break
+          case 'message_delta': {
+            if (event.delta.stop_reason != null) {
+              stopReason = event.delta.stop_reason
+            }
+            if (event.usage) {
+              usage = updateOpenAIUsage(
+                usage,
+                event.usage as unknown as Parameters<
+                  typeof updateOpenAIUsage
+                >[1],
+              )
+            }
+            break
+          }
+          case 'message_stop': {
+            completed = true
+            const allBlocks = Object.keys(contentBlocks)
+              .sort((a, b) => Number(a) - Number(b))
+              .map(key => contentBlocks[Number(key)])
+              .filter(Boolean)
+            if (partialMessage && allBlocks.length > 0) {
+              const message: AssistantMessage = {
+                message: {
+                  ...partialMessage,
+                  content: normalizeContentFromAPI(
+                    allBlocks as unknown as BetaMessage['content'],
+                    tools,
+                    options.agentId,
+                  ),
+                  usage,
+                  stop_reason: stopReason,
+                  stop_sequence: null,
+                } as AssistantMessage['message'],
+                requestId: requestId ?? undefined,
+                type: 'assistant',
+                uuid: randomUUID(),
+                timestamp: new Date().toISOString(),
+              }
+              collectedMessages.push(message)
+              yield message
+            }
+            if (usage.input_tokens + usage.output_tokens > 0) {
+              const costUSD = calculateUSDCost(
+                grokModel,
+                usage as unknown as BetaUsage,
+              )
+              addToTotalSessionCost(
+                costUSD,
+                usage as unknown as BetaUsage,
+                options.model,
+              )
+            }
+            break
+          }
         }
-        case 'content_block_stop': {
-          const idx = event.index
-          const block = contentBlocks[idx]
-          if (!block || !partialMessage) break
 
-          const m: AssistantMessage = {
-            message: {
-              ...partialMessage,
-              content: normalizeContentFromAPI(
-                [block] as unknown as BetaMessage['content'],
-                tools,
-                options.agentId,
-              ),
-            } as AssistantMessage['message'],
-            requestId: undefined,
-            type: 'assistant',
-            uuid: randomUUID(),
-            timestamp: new Date().toISOString(),
-          }
-          collectedMessages.push(m)
-          yield m
-          break
-        }
-        case 'message_delta': {
-          const deltaUsage = event.usage
-          if (deltaUsage) {
-            usage = updateOpenAIUsage(
-              usage,
-              deltaUsage as unknown as Parameters<typeof updateOpenAIUsage>[1],
-            )
-          }
-          break
-        }
-        case 'message_stop':
-          break
+        yield {
+          type: 'stream_event',
+          event,
+          ...(event.type === 'message_start' ? { ttftMs } : undefined),
+        } as StreamEvent
       }
 
-      if (
-        event.type === 'message_stop' &&
-        usage.input_tokens + usage.output_tokens > 0
-      ) {
-        const costUSD = calculateUSDCost(
-          grokModel,
-          usage as unknown as BetaUsage,
-        )
-        addToTotalSessionCost(
-          costUSD,
-          usage as unknown as BetaUsage,
-          options.model,
+      if (!completed) {
+        throw new ProviderStreamError(
+          'Grok stream closed before message_stop',
+          {
+            kind: 'premature_eof',
+            retryable: true,
+            terminal: false,
+            completionState: 'open',
+            requestId,
+          },
         )
       }
-
-      yield {
-        type: 'stream_event',
-        event,
-        ...(event.type === 'message_start' ? { ttftMs } : undefined),
-      } as StreamEvent
+    } finally {
+      stream.controller.abort()
+      void response.body?.cancel().catch(() => {})
     }
 
     // Record LLM observation in Langfuse (no-op if not configured)
@@ -329,12 +373,12 @@ export async function* queryModelGrok(
       `[Grok] Error: ${errorMessage}\n${formatOpenAIErrorStack(error, 16)}`,
       { level: 'error' },
     )
+    const surface = formatOpenAIAssistantAPIError(error, 8)
     yield createAssistantAPIErrorMessage({
-      content: `API Error: ${formatOpenAIErrorWithStack(error, 8)}`,
-      apiError: 'api_error',
-      error: (error instanceof Error
-        ? error
-        : new Error(errorMessage)) as unknown as SDKAssistantMessageError,
+      content: surface.content,
+      apiError: surface.apiError,
+      error: surface.error as SDKAssistantMessageError,
+      errorDetails: surface.errorDetails,
     })
   }
 }

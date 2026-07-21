@@ -1,4 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk'
+import { randomUUID } from 'crypto'
 import type { BetaToolUnion } from '@anthropic-ai/sdk/resources/beta/messages.js'
 import {
   getLastApiCompletionTimestamp,
@@ -32,18 +33,15 @@ import { logForDebugging } from './debug.js'
 import { errorMessage } from './errors.js'
 import { getAPIProvider } from './model/providers.js'
 import { normalizeModelStringForAPI } from './model/model.js'
-import { getOpenAIClient } from '../services/api/openai/client.js'
 import { getGrokClient } from '../services/api/grok/client.js'
-import { isChatGPTAuthEnabled } from '../services/api/openai/chatgptAuth.js'
 import {
-  adaptResponsesStreamToAnthropic,
-  buildResponsesRequest,
-  createChatGPTResponsesStream,
-} from '../services/api/openai/responsesAdapter.js'
-import {
-  formatOpenAIPromptCacheKey,
-  getOfficialOpenAIPromptCacheKey,
+  withOpenAIStreamIdleTimeout,
+  withTransientOpenAIRetry,
 } from '../services/api/openai/openaiShared.js'
+import {
+  adaptPreparedOpenAIStream,
+  prepareOpenAIStreamRequest,
+} from '../services/api/openai/streamAttempt.js'
 import {
   anthropicMessagesToOpenAI,
   resolveOpenAIModel,
@@ -54,8 +52,14 @@ import {
   anthropicToolsToGemini,
   anthropicToolChoiceToGemini,
   normalizeOpenAIUsage,
+  asSystemPrompt,
+  type AssistantMessage,
+  type UserMessage,
 } from '@ant/model-provider'
-import type { SystemPrompt } from './systemPromptType.js'
+import {
+  isOpenAIThinkingEnabled,
+  supportsOpenAIReasoningEffortNone,
+} from '../services/api/openai/requestBody.js'
 import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 
 type MessageParam = Anthropic.MessageParam
@@ -146,6 +150,22 @@ function messageParamsToOpenAIRoleContent(
     }
   }
   return result
+}
+
+function messageParamsToInternalMessages(
+  messages: MessageParam[],
+): Array<UserMessage | AssistantMessage> {
+  return messages.map(
+    message =>
+      ({
+        type: message.role,
+        uuid: randomUUID(),
+        message: {
+          role: message.role,
+          content: message.content,
+        },
+      }) as unknown as UserMessage | AssistantMessage,
+  )
 }
 
 /**
@@ -558,44 +578,68 @@ async function collectAnthropicStreamToBetaMessage(
 }
 
 /**
- * ChatGPT OAuth side query via the Codex Responses API.
- *
- * Must not use getOpenAIClient() — that path only reads OPENAI_API_KEY and
- * yields 401 under OPENAI_AUTH_MODE=chatgpt (no API key configured).
+ * OpenAI side query via the same streaming route and adapters as the main loop.
+ * It collects the normalized Anthropic events back into one BetaMessage so
+ * callers keep the existing non-streaming side-query contract.
  */
-async function sideQueryViaChatGPTResponses(
+async function sideQueryViaOpenAIStream(
   opts: SideQueryOptions,
   openaiModel: string,
-  openaiMessages: Array<{
-    role: 'system' | 'user' | 'assistant'
-    content: string
-  }>,
+  openaiMessages: unknown[],
   openaiTools: unknown[] | undefined,
   openaiToolChoice: unknown,
 ): Promise<BetaMessage> {
   const start = Date.now()
-  const request = buildResponsesRequest({
+  const signal = opts.signal ?? new AbortController().signal
+  const prepared = prepareOpenAIStreamRequest({
     model: openaiModel,
     messages: openaiMessages,
     tools: openaiTools ?? [],
     toolChoice: openaiToolChoice,
-    promptCacheKey: formatOpenAIPromptCacheKey(getSessionId()),
+    enableThinking:
+      typeof opts.thinking === 'number' ||
+      (opts.thinking !== false && isOpenAIThinkingEnabled(openaiModel)),
+    maxTokens: opts.max_tokens ?? 1024,
+    temperatureOverride: opts.temperature,
+    reasoningEffort:
+      opts.thinking === false
+        ? supportsOpenAIReasoningEffortNone(openaiModel)
+          ? 'none'
+          : undefined
+        : typeof opts.thinking === 'number'
+          ? 'high'
+          : 'medium',
+    outputFormat: opts.output_format
+      ? { type: 'json_schema', schema: opts.output_format.schema }
+      : undefined,
+    stopSequences: opts.stop_sequences,
+    source: opts.querySource,
   })
 
-  const attempt = await createChatGPTResponsesStream({
-    request,
-    signal: opts.signal ?? new AbortController().signal,
-  })
-  let betaMessage: BetaMessage
-  try {
-    const adapted = adaptResponsesStreamToAnthropic(attempt.stream, openaiModel)
-    betaMessage = await collectAnthropicStreamToBetaMessage(
-      adapted,
-      openaiModel,
-    )
-  } finally {
-    attempt.cleanup()
-  }
+  const betaMessage = await withTransientOpenAIRetry(
+    async () => {
+      const attempt = await prepared.createAttempt(signal)
+      try {
+        const timedStream = withOpenAIStreamIdleTimeout(attempt.stream, {
+          abortAttempt: attempt.cleanup,
+          userSignal: signal,
+          requestId: attempt.requestId,
+        })
+        const adapted = adaptPreparedOpenAIStream(
+          prepared,
+          timedStream,
+          openaiModel,
+        )
+        return await collectAnthropicStreamToBetaMessage(adapted, openaiModel)
+      } finally {
+        attempt.cleanup()
+      }
+    },
+    {
+      signal,
+      maxRetries: opts.maxRetries,
+    },
+  )
 
   const now = Date.now()
   const lastCompletion = getLastApiCompletionTimestamp()
@@ -615,24 +659,13 @@ async function sideQueryViaChatGPTResponses(
       lastCompletion !== null ? now - lastCompletion : undefined,
   })
   setLastApiCompletionTimestamp(now)
-
   return betaMessage
 }
 
 /**
  * OpenAI-compatible side query for OpenAI and Grok providers.
- * Both use the OpenAI SDK with different base URLs.
- *
- * Converts Anthropic-format params to OpenAI Chat Completions, sends a
- * non-streaming request, and wraps the response back into a BetaMessage
- * shape so callers remain provider-agnostic.
- *
- * When OPENAI_AUTH_MODE=chatgpt, OpenAI side queries use the ChatGPT OAuth
- * Responses API path (same auth/transport as the main loop) instead of the
- * API-key Chat Completions client.
- *
- * Supports tools and tool_choice for structured output (e.g. yoloClassifier,
- * permissionExplainer).
+ * OpenAI reuses the main route and stream adapters; Grok keeps its dedicated
+ * non-streaming Chat Completions path.
  */
 async function sideQueryViaOpenAICompatible(
   opts: SideQueryOptions,
@@ -657,18 +690,19 @@ async function sideQueryViaOpenAICompatible(
       ? resolveGrokModel(normalizedModel)
       : resolveOpenAIModel(normalizedModel)
 
-  // Build system prompt text
   const systemText = extractSystemText(system)
-
-  // Build OpenAI messages: system first, then user/assistant
-  const openaiMessages: Array<{
-    role: 'system' | 'user' | 'assistant'
-    content: string
-  }> = []
-  if (systemText) {
-    openaiMessages.push({ role: 'system', content: systemText })
-  }
-  openaiMessages.push(...messageParamsToOpenAIRoleContent(messages))
+  const openaiMessages =
+    provider === 'openai'
+      ? anthropicMessagesToOpenAI(
+          messageParamsToInternalMessages(messages),
+          asSystemPrompt(systemText ? [systemText] : []),
+        )
+      : [
+          ...(systemText
+            ? [{ role: 'system' as const, content: systemText }]
+            : []),
+          ...messageParamsToOpenAIRoleContent(messages),
+        ]
 
   // Convert tools and tool_choice if provided
   const openaiTools =
@@ -679,9 +713,8 @@ async function sideQueryViaOpenAICompatible(
     ? anthropicToolChoiceToOpenAI(tool_choice)
     : undefined
 
-  // ChatGPT subscription auth: use Responses API + OAuth, never empty API key.
-  if (provider === 'openai' && isChatGPTAuthEnabled()) {
-    return sideQueryViaChatGPTResponses(
+  if (provider === 'openai') {
+    return sideQueryViaOpenAIStream(
       opts,
       openaiModel,
       openaiMessages,
@@ -690,12 +723,7 @@ async function sideQueryViaOpenAICompatible(
     )
   }
 
-  // API-key / OpenAI-compatible / Grok: Chat Completions
-  // eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
-  const client: import('openai').default =
-    provider === 'grok'
-      ? getGrokClient({ maxRetries: opts.maxRetries ?? 2 })
-      : getOpenAIClient({ maxRetries: opts.maxRetries ?? 2 })
+  const client = getGrokClient({ maxRetries: opts.maxRetries ?? 2 })
 
   const start = Date.now()
 
@@ -704,14 +732,6 @@ async function sideQueryViaOpenAICompatible(
     messages: openaiMessages,
     max_tokens,
   }
-  const promptCacheKey =
-    provider === 'openai'
-      ? getOfficialOpenAIPromptCacheKey(
-          process.env.OPENAI_BASE_URL,
-          getSessionId(),
-        )
-      : undefined
-  if (promptCacheKey) requestParams.prompt_cache_key = promptCacheKey
   if (temperature !== undefined) requestParams.temperature = temperature
   if (openaiTools && openaiTools.length > 0) {
     requestParams.tools = openaiTools
@@ -742,11 +762,15 @@ async function sideQueryViaOpenAICompatible(
       if (tc.type === 'function' && 'function' in tc) {
         const fn = (tc as { function: { name: string; arguments: string } })
           .function
+        let input: unknown = {}
+        try {
+          input = JSON.parse(fn.arguments || '{}')
+        } catch {}
         contentBlocks.push({
           type: 'tool_use',
           id: tc.id ?? `toolu_${Date.now()}`,
           name: fn.name,
-          input: JSON.parse(fn.arguments || '{}'),
+          input,
         })
       }
     }
@@ -766,10 +790,7 @@ async function sideQueryViaOpenAICompatible(
     outputTokens: responseUsage?.completion_tokens ?? 0,
     cacheReadTokens:
       typeof details?.cached_tokens === 'number' ? details.cached_tokens : 0,
-    cacheWriteTokens:
-      promptCacheKey && typeof details?.cache_write_tokens === 'number'
-        ? details.cache_write_tokens
-        : 0,
+    cacheWriteTokens: 0,
   })
 
   const now = Date.now()

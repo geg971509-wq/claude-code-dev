@@ -334,6 +334,153 @@ export function formatOpenAIErrorWithStack(
 }
 
 /**
+ * Allowlisted diagnostics for OpenAI-compatible failures (kimi-style).
+ * Only stable, non-secret fields — no bodies, cookies, or auth headers.
+ */
+export type OpenAIErrorDiagnostics = {
+  status: number | null
+  requestId: string | null
+  retryAfterMs: number | null
+  /** Cloudflare ray or provider x-trace-id when present. */
+  traceId: string | null
+  code: string | null
+}
+
+function readOpenAIErrorHeader(headers: unknown, name: string): string | null {
+  if (!headers || typeof headers !== 'object') return null
+  if (typeof (headers as { get?: unknown }).get === 'function') {
+    const v = (headers as { get(n: string): string | null }).get(name)
+    return boundedHttpDiagnostic(v)
+  }
+  const record = headers as Record<string, unknown>
+  const lower = name.toLowerCase()
+  for (const [k, v] of Object.entries(record)) {
+    if (k.toLowerCase() === lower) return boundedHttpDiagnostic(v)
+  }
+  return null
+}
+
+function statusFromOpenAIErrorMessage(message: string): number | null {
+  const match = message.match(/\b([45]\d\d)\s+status code\b/i)
+  if (!match) return null
+  const n = Number(match[1])
+  return Number.isFinite(n) ? n : null
+}
+
+/**
+ * Collect kimi-style status / request / backoff / trace diagnostics from an
+ * OpenAI SDK error, layered ProviderAPIError, or thin fetch wrapper.
+ */
+export function collectOpenAIErrorDiagnostics(
+  error: unknown,
+): OpenAIErrorDiagnostics {
+  const message = formatOpenAIErrorMessage(error)
+  const status =
+    getProviderErrorStatus(error) ?? statusFromOpenAIErrorMessage(message)
+
+  if (error == null || typeof error !== 'object') {
+    return {
+      status: status ?? null,
+      requestId: null,
+      retryAfterMs: null,
+      traceId: null,
+      code: null,
+    }
+  }
+
+  const err = error as {
+    headers?: unknown
+    requestID?: unknown
+    requestId?: unknown
+    retryAfterMs?: unknown
+    code?: unknown
+    error?: { code?: unknown }
+  }
+
+  const requestId =
+    boundedHttpDiagnostic(err.requestID ?? err.requestId) ??
+    readOpenAIErrorHeader(err.headers, 'x-request-id') ??
+    readOpenAIErrorHeader(err.headers, 'request-id')
+
+  const retryAfterMs =
+    getProviderRetryAfterMs(error) ??
+    parseRetryAfterMs(readOpenAIErrorHeader(err.headers, 'retry-after'))
+
+  const traceId =
+    readOpenAIErrorHeader(err.headers, 'cf-ray') ??
+    readOpenAIErrorHeader(err.headers, 'x-trace-id')
+
+  const code = boundedHttpDiagnostic(err.code ?? err.error?.code)
+
+  return {
+    status: status ?? null,
+    requestId,
+    retryAfterMs,
+    traceId,
+    code,
+  }
+}
+
+/** Compact allowlisted diagnostic string for errorDetails / debug. */
+export function formatOpenAIErrorDetails(
+  diagnostics: OpenAIErrorDiagnostics,
+): string | undefined {
+  const parts: string[] = []
+  if (diagnostics.status != null) parts.push(`status=${diagnostics.status}`)
+  if (diagnostics.requestId) parts.push(`request_id=${diagnostics.requestId}`)
+  if (diagnostics.retryAfterMs != null) {
+    parts.push(`retry_after_ms=${diagnostics.retryAfterMs}`)
+  }
+  if (diagnostics.traceId) parts.push(`trace_id=${diagnostics.traceId}`)
+  if (diagnostics.code) parts.push(`code=${diagnostics.code}`)
+  return parts.length > 0 ? parts.join('; ') : undefined
+}
+
+export type OpenAIAssistantAPIErrorFields = {
+  /** Full `API Error: …` user content (no stack for HTTP 5xx). */
+  content: string
+  apiError: 'api_error'
+  /** SDK classification — 5xx → server_error (kimi normalizeAPIStatusError). */
+  error: 'server_error' | 'unknown'
+  errorDetails?: string
+}
+
+/**
+ * Build the assistant API-error message fields for OpenAI/Grok catch paths.
+ *
+ * Mirrors kimi's convertOpenAIError + normalizeAPIStatusError intent:
+ * typed status classification, allowlisted diagnostics, short user surface.
+ * HTTP 5xx never include transport stacks (those look like local crashes in
+ * bundled `/$bunfs/root/cli.js`). Non-5xx keep a short stack for diagnosis
+ * (historical 403 allowlist work). Retry policy is unchanged.
+ */
+export function formatOpenAIAssistantAPIError(
+  error: unknown,
+  maxStackFrames = 8,
+): OpenAIAssistantAPIErrorFields {
+  const message = formatOpenAIErrorMessage(error)
+  const diagnostics = collectOpenAIErrorDiagnostics(error)
+  const errorDetails = formatOpenAIErrorDetails(diagnostics)
+  const status = diagnostics.status
+
+  if (status != null && status >= 500) {
+    return {
+      content: `API Error: ${message}`,
+      apiError: 'api_error',
+      error: 'server_error',
+      errorDetails: errorDetails ?? message,
+    }
+  }
+
+  return {
+    content: `API Error: ${formatOpenAIErrorWithStack(error, maxStackFrames)}`,
+    apiError: 'api_error',
+    error: 'unknown',
+    ...(errorDetails ? { errorDetails } : {}),
+  }
+}
+
+/**
  * Lift an OpenAI SDK / fetch error into a layered provider error when the
  * status is known (overflow / too-large / rate-limit). Returns null when the
  * error has no usable HTTP status.

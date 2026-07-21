@@ -8,7 +8,10 @@ import {
   parseSSE,
 } from '../responsesAdapter.js'
 import {
+  collectOpenAIErrorDiagnostics,
   formatHttpStatusError,
+  formatOpenAIAssistantAPIError,
+  formatOpenAIErrorDetails,
   formatOpenAIErrorMessage,
   formatOpenAIErrorStack,
   formatOpenAIErrorWithStack,
@@ -288,6 +291,31 @@ describe('buildResponsesRequest protocol fields', () => {
     }) as Record<string, unknown>
 
     expect(request.prompt_cache_key).toBe('session-abc')
+  })
+
+  test('maps JSON schema output to Responses text.format', () => {
+    const request = buildResponsesRequest({
+      model: 'gpt-5',
+      messages: [{ role: 'user', content: 'hello' }],
+      tools: [],
+      toolChoice: undefined,
+      outputFormat: {
+        type: 'json_schema',
+        schema: { type: 'object', properties: { ok: { type: 'boolean' } } },
+      },
+    }) as Record<string, unknown>
+
+    expect(request.text).toEqual({
+      format: {
+        type: 'json_schema',
+        name: 'side_query_output',
+        schema: {
+          type: 'object',
+          properties: { ok: { type: 'boolean' } },
+        },
+        strict: true,
+      },
+    })
   })
 
   test('omits prompt_cache_key entirely when promptCacheKey is not provided', () => {
@@ -1040,5 +1068,73 @@ describe('formatOpenAIErrorStack / withStack', () => {
     expect(text).toContain('403')
     expect(text).toContain('permission denied')
     expect(text).toContain('at a')
+  })
+})
+
+describe('formatOpenAIAssistantAPIError (kimi-style 5xx surface)', () => {
+  test('empty-body 502 is server_error without transport stack', () => {
+    const err = Object.assign(new Error('502 status code (no body)'), {
+      status: 502,
+      requestID: null,
+      headers: {
+        get(name: string) {
+          if (name.toLowerCase() === 'retry-after') return '60'
+          if (name.toLowerCase() === 'cf-ray') return 'abc123-SJC'
+          return null
+        },
+      },
+      stack:
+        'Error: 502 status code (no body)\n    at generate (/$bunfs/root/cli.js:1)\n    at makeRequest (/$bunfs/root/cli.js:2)',
+    })
+    const surface = formatOpenAIAssistantAPIError(err, 8)
+    expect(surface.content).toBe('API Error: 502 status code (no body)')
+    expect(surface.content).not.toContain('/$bunfs/root/cli.js')
+    expect(surface.content).not.toContain('at generate')
+    expect(surface.apiError).toBe('api_error')
+    expect(surface.error).toBe('server_error')
+    expect(surface.errorDetails).toContain('status=502')
+    expect(surface.errorDetails).toContain('retry_after_ms=60000')
+    expect(surface.errorDetails).toContain('trace_id=abc123-SJC')
+  })
+
+  test('collects request id and code for 5xx diagnostics', () => {
+    const err = Object.assign(new Error('503 status code (no body)'), {
+      status: 503,
+      requestID: 'req_up',
+      code: 'server_error',
+    })
+    const diagnostics = collectOpenAIErrorDiagnostics(err)
+    expect(diagnostics).toEqual({
+      status: 503,
+      requestId: 'req_up',
+      retryAfterMs: null,
+      traceId: null,
+      code: 'server_error',
+    })
+    expect(formatOpenAIErrorDetails(diagnostics)).toBe(
+      'status=503; request_id=req_up; code=server_error',
+    )
+  })
+
+  test('non-5xx still keeps short stack on user surface', () => {
+    const err = Object.assign(new Error('permission denied'), {
+      status: 403,
+      stack:
+        'Error: permission denied\n    at a (a.ts:1)\n    at b (b.ts:2)\n    at c (c.ts:3)',
+    })
+    const surface = formatOpenAIAssistantAPIError(err, 8)
+    expect(surface.error).toBe('unknown')
+    expect(surface.content).toContain('403')
+    expect(surface.content).toContain('at a')
+  })
+
+  test('parses status from empty-body message when status field missing', () => {
+    const err = new Error('502 status code (no body)')
+    err.stack =
+      'Error: 502 status code (no body)\n    at generate (/$bunfs/root/cli.js:1)'
+    const surface = formatOpenAIAssistantAPIError(err, 8)
+    expect(surface.error).toBe('server_error')
+    expect(surface.content).toBe('API Error: 502 status code (no body)')
+    expect(surface.content).not.toContain('cli.js')
   })
 })

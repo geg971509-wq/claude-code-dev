@@ -123,6 +123,12 @@ export async function* queryModelGemini(
     const contentBlocks: Record<number, Record<string, unknown>> = {}
     const collectedMessages: AssistantMessage[] = []
     let partialMessage: BetaMessage | null = null
+    let usage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    }
     let ttftMs = 0
     const start = Date.now()
 
@@ -130,6 +136,18 @@ export async function* queryModelGemini(
       switch (event.type) {
         case 'message_start':
           partialMessage = event.message
+          usage = {
+            input_tokens:
+              event.message.usage.input_tokens ?? usage.input_tokens,
+            output_tokens:
+              event.message.usage.output_tokens ?? usage.output_tokens,
+            cache_creation_input_tokens:
+              event.message.usage.cache_creation_input_tokens ??
+              usage.cache_creation_input_tokens,
+            cache_read_input_tokens:
+              event.message.usage.cache_read_input_tokens ??
+              usage.cache_read_input_tokens,
+          }
           ttftMs = Date.now() - start
           break
         case 'content_block_start': {
@@ -192,7 +210,24 @@ export async function* queryModelGemini(
           yield message
           break
         }
-        case 'message_delta':
+        case 'message_delta': {
+          usage = {
+            input_tokens: event.usage.input_tokens ?? usage.input_tokens,
+            output_tokens: event.usage.output_tokens ?? usage.output_tokens,
+            cache_creation_input_tokens:
+              event.usage.cache_creation_input_tokens ??
+              usage.cache_creation_input_tokens,
+            cache_read_input_tokens:
+              event.usage.cache_read_input_tokens ??
+              usage.cache_read_input_tokens,
+          }
+          const lastMessage = collectedMessages.at(-1)
+          if (lastMessage) {
+            lastMessage.message.usage = usage
+            lastMessage.message.stop_reason = event.delta.stop_reason
+          }
+          break
+        }
         case 'message_stop':
           break
       }
@@ -210,10 +245,7 @@ export async function* queryModelGemini(
       provider: 'gemini',
       input: convertMessagesToLangfuse(messagesForAPI, systemPrompt),
       output: convertOutputToLangfuse(collectedMessages),
-      usage: {
-        input_tokens: 0,
-        output_tokens: 0,
-      },
+      usage,
       startTime: new Date(start),
       endTime: new Date(),
       completionStartTime: ttftMs > 0 ? new Date(start + ttftMs) : undefined,

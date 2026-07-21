@@ -4,6 +4,7 @@ import {
   isOpenAIReasoningChatModel,
   isOpenAIResponsesCapableBaseURL,
   isAzureResponsesBaseURL,
+  supportsOpenAIReasoningEffortNone,
   shouldUseOpenAIResponsesAPI,
   resolveOpenAIPromptCacheKey,
   buildOpenAIRequestBody,
@@ -314,6 +315,43 @@ describe('buildOpenAIRequestBody — thinking params', () => {
     expect(body.tools).toBeUndefined()
     expect(body.tool_choice).toBeUndefined()
   })
+
+  test('maps JSON schema output and stop sequences for chat models', () => {
+    const body = buildOpenAIRequestBody({
+      ...baseParams,
+      model: 'deepseek-chat',
+      enableThinking: false,
+      outputFormat: {
+        type: 'json_schema',
+        schema: { type: 'object', properties: { ok: { type: 'boolean' } } },
+      },
+      stopSequences: ['</result>'],
+    })
+
+    expect(body.response_format).toEqual({
+      type: 'json_schema',
+      json_schema: {
+        name: 'side_query_output',
+        schema: {
+          type: 'object',
+          properties: { ok: { type: 'boolean' } },
+        },
+        strict: true,
+      },
+    })
+    expect(body.stop).toEqual(['</result>'])
+  })
+
+  test('omits unsupported stop sequences for reasoning chat models', () => {
+    const body = buildOpenAIRequestBody({
+      ...baseParams,
+      model: 'gpt-5',
+      enableThinking: false,
+      stopSequences: ['done'],
+    })
+
+    expect(body.stop).toBeUndefined()
+  })
 })
 
 describe('isOpenAIReasoningChatModel / shouldUseOpenAIResponsesAPI', () => {
@@ -342,6 +380,13 @@ describe('isOpenAIReasoningChatModel / shouldUseOpenAIResponsesAPI', () => {
     expect(isOpenAIReasoningChatModel('gpt-5-mini')).toBe(true)
     expect(isOpenAIReasoningChatModel('gpt-5-chat')).toBe(false)
     expect(isOpenAIReasoningChatModel('gpt-5-chat-latest')).toBe(false)
+  })
+
+  test('allows reasoning effort none only for explicit GPT-5.1+ models', () => {
+    expect(supportsOpenAIReasoningEffortNone('gpt-5')).toBe(false)
+    expect(supportsOpenAIReasoningEffortNone('o3')).toBe(false)
+    expect(supportsOpenAIReasoningEffortNone('gpt-5.1')).toBe(true)
+    expect(supportsOpenAIReasoningEffortNone('gpt-5.6-sol')).toBe(true)
   })
 
   test('rejects non-reasoning chat models', () => {

@@ -2,13 +2,25 @@ import { describe, test } from 'bun:test'
 import { relative, resolve } from 'path'
 
 const PROJECT_ROOT = resolve(__dirname, '..', '..', '..', '..', '..')
-const RUNNER_ABS = resolve(__dirname, 'client.runner.ts')
+const RUNNER_ABS = resolve(__dirname, 'queryModelOpenAI.isolated.ts')
 const RUNNER_REL = './' + relative(PROJECT_ROOT, RUNNER_ABS).replace(/\\/g, '/')
 
-describe('getGrokClient', () => {
-  test('runs client cache tests in an isolated subprocess', async () => {
+describe('queryModelOpenAI', () => {
+  test('runs query tests in an isolated subprocess', async () => {
+    const env = { ...process.env }
+    for (const key of Object.keys(env)) {
+      if (
+        key.startsWith('OPENAI_') ||
+        key === 'CLAUDE_CODE_MAX_OUTPUT_TOKENS' ||
+        key === 'CLAUDE_CODE_MAX_RETRIES'
+      ) {
+        delete env[key]
+      }
+    }
+
     const proc = Bun.spawn(['bun', 'test', RUNNER_REL], {
       cwd: PROJECT_ROOT,
+      env,
       stdout: 'pipe',
       stderr: 'pipe',
     })
@@ -18,7 +30,7 @@ describe('getGrokClient', () => {
       const stdout = await new Response(proc.stdout).text()
       const output = `${stderr}\n${stdout}`.slice(-3000)
       throw new Error(
-        `Grok client subprocess failed (exit ${code}):\n${output}`,
+        `OpenAI query subprocess failed (exit ${code}):\n${output}`,
       )
     }
   }, 60_000)

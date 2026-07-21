@@ -11,13 +11,18 @@ import {
   assertValidToolArgumentsJson,
   throwHttpStatusError,
 } from './openaiShared.js'
-import { isAzureResponsesBaseURL } from './requestBody.js'
+import {
+  isAzureResponsesBaseURL,
+  type OpenAIJSONOutputFormat,
+} from './requestBody.js'
 import { createCombinedAbortSignal } from '../../../utils/combinedAbortSignal.js'
 import { getProxyFetchOptions } from '../../../utils/proxy.js'
 
 type ResponsesInputItem = Record<string, unknown>
 type ResponsesTool = Record<string, unknown>
 export type ResponsesReasoningEffort =
+  | 'none'
+  | 'minimal'
   | 'low'
   | 'medium'
   | 'high'
@@ -37,6 +42,14 @@ type ResponsesRequest = {
   parallel_tool_calls?: boolean
   include?: string[]
   max_output_tokens?: number
+  text?: {
+    format: {
+      type: 'json_schema'
+      name: string
+      schema: Record<string, unknown>
+      strict: true
+    }
+  }
   /** Sticky cache routing key — stable for the CCB session. Omitted when unset. */
   prompt_cache_key?: string
 }
@@ -274,6 +287,7 @@ export function buildResponsesRequest(params: {
   promptCacheKey?: string
   /** Default true: request encrypted reasoning for store:false multi-turn. */
   includeEncryptedReasoning?: boolean
+  outputFormat?: OpenAIJSONOutputFormat
   /**
    * Codex: `store` true only on Azure Responses endpoints.
    * Defaults from OPENAI_BASE_URL azure markers when omitted.
@@ -308,6 +322,16 @@ export function buildResponsesRequest(params: {
     ...(params.maxOutputTokens !== undefined
       ? { max_output_tokens: params.maxOutputTokens }
       : {}),
+    ...(params.outputFormat && {
+      text: {
+        format: {
+          type: 'json_schema' as const,
+          name: 'side_query_output',
+          schema: params.outputFormat.schema,
+          strict: true as const,
+        },
+      },
+    }),
     parallel_tool_calls: true,
     // Same OAuth session → same key so OpenAI can sticky-route to a cache node.
     // Must not hash the full message list (would change every turn).
