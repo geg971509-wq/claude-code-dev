@@ -275,6 +275,7 @@ describe('Responses request route contracts', () => {
       reasoningEffort: 'max',
       promptCacheKey: 'ccb:session-abc',
       sessionId: 'session-abc',
+      installationId: 'install-abc',
       store: true,
       outputFormat,
     }) as Record<string, unknown>
@@ -283,9 +284,12 @@ describe('Responses request route contracts', () => {
       store: true,
       include: ['reasoning.encrypted_content'],
       prompt_cache_key: 'ccb:session-abc',
+      // Codex client_metadata baseline keys (responses_metadata.rs).
       client_metadata: {
+        'x-codex-installation-id': 'install-abc',
         session_id: 'session-abc',
         thread_id: 'session-abc',
+        'x-codex-window-id': 'session-abc:0',
       },
       reasoning: { effort: 'max' },
       tools: [

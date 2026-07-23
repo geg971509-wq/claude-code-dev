@@ -323,11 +323,20 @@ describe('sideQuery OpenAI ChatGPT OAuth path', () => {
       type: 'function',
       name: 'classify_result',
     })
-    expect(capturedFetch!.body.client_metadata).toEqual(
+    const clientMetadata = capturedFetch!.body.client_metadata as Record<
+      string,
+      string
+    >
+    expect(clientMetadata).toEqual(
       expect.objectContaining({
+        'x-codex-installation-id': expect.any(String),
         session_id: expect.any(String),
         thread_id: expect.any(String),
+        'x-codex-window-id': expect.stringMatching(/.+:0$/),
       }),
+    )
+    expect(capturedFetch!.headers['x-codex-window-id']).toBe(
+      clientMetadata['x-codex-window-id'],
     )
     expect(capturedFetch!.body).not.toHaveProperty('max_output_tokens')
 

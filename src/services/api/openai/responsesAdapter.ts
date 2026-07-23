@@ -18,7 +18,13 @@ import {
   type OpenAIJSONOutputFormat,
 } from './requestBody.js'
 import { createCombinedAbortSignal } from '../../../utils/combinedAbortSignal.js'
+import { getOrCreateUserID } from '../../../utils/config.js'
 import { getProxyFetchOptions } from '../../../utils/proxy.js'
+
+/** Codex `X_CODEX_INSTALLATION_ID_HEADER` — body key in client_metadata. */
+const X_CODEX_INSTALLATION_ID = 'x-codex-installation-id'
+/** Codex `X_CODEX_WINDOW_ID_HEADER` — body + HTTP compatibility projection. */
+const X_CODEX_WINDOW_ID = 'x-codex-window-id'
 
 type ResponsesInputItem = Record<string, unknown>
 type ResponsesTool = {
@@ -71,11 +77,39 @@ type ResponsesRequestParams = {
   /** Override for tests; production uses the current CCB session id. */
   promptCacheKey?: string
   sessionId?: string
+  /**
+   * Codex installation_id. ChatGPT path only.
+   * Defaults to CCB stable userID (getOrCreateUserID).
+   */
+  installationId?: string
   /** Default true: request encrypted reasoning for store:false multi-turn. */
   includeEncryptedReasoning?: boolean
   outputFormat?: OpenAIJSONOutputFormat
   /** Defaults from OPENAI_BASE_URL azure markers when omitted. */
   store?: boolean
+}
+
+/**
+ * Codex `CodexResponsesMetadata::client_metadata()` baseline keys.
+ * Always: x-codex-installation-id, session_id, thread_id, x-codex-window-id.
+ * Optional turn/subagent/parent fields omitted until CCB has real sources.
+ * Root agents: session_id === thread_id (Codex Session::new).
+ * window_id format: `${thread_id}:${window_number}` (starts at 0).
+ */
+function buildCodexClientMetadata(params: {
+  sessionId: string
+  installationId: string
+  threadId?: string
+  windowNumber?: number
+}): Record<string, string> {
+  const threadId = params.threadId ?? params.sessionId
+  const windowNumber = params.windowNumber ?? 0
+  return {
+    [X_CODEX_INSTALLATION_ID]: params.installationId,
+    session_id: params.sessionId,
+    thread_id: threadId,
+    [X_CODEX_WINDOW_ID]: `${threadId}:${windowNumber}`,
+  }
 }
 
 // isAzureResponsesBaseURL lives in requestBody.ts (shared with routing).
@@ -375,13 +409,13 @@ export function buildChatGPTResponsesRequest(
           ? { effort: params.reasoningEffort }
           : { effort: params.reasoningEffort, summary: 'auto' as const },
     }),
-    // Same OAuth session → same key so OpenAI can sticky-route to a cache node.
-    // Must not hash the full message list (would change every turn).
+    // Codex private Responses: client_metadata is the canonical identity blob.
+    // Headers below project a subset (session/thread/window); do not invent extras.
     ...(params.sessionId && {
-      client_metadata: {
-        session_id: params.sessionId,
-        thread_id: params.sessionId,
-      },
+      client_metadata: buildCodexClientMetadata({
+        sessionId: params.sessionId,
+        installationId: params.installationId ?? getOrCreateUserID(),
+      }),
     }),
   }
 }
@@ -407,8 +441,16 @@ export function buildOfficialResponsesRequest(
   }
 }
 
+/**
+ * Codex HTTP projections for Responses:
+ * - session-id / thread-id (build_session_headers)
+ * - x-client-request-id = thread_id (ResponsesClient::stream_request)
+ * - x-codex-window-id from compatibility_headers (ChatGPT/Codex only)
+ * installation_id stays in client_metadata body on normal stream (not header).
+ */
 function responsesIdentityHeaders(
   sessionId: string | undefined,
+  options?: { codexWindowId?: string },
 ): Record<string, string> {
   return {
     Accept: 'text/event-stream',
@@ -417,6 +459,9 @@ function responsesIdentityHeaders(
       'session-id': sessionId,
       'thread-id': sessionId,
       'x-client-request-id': sessionId,
+    }),
+    ...(options?.codexWindowId && {
+      [X_CODEX_WINDOW_ID]: options.codexWindowId,
     }),
   }
 }
@@ -1127,8 +1172,11 @@ export async function createChatGPTResponsesStream(params: {
 }): Promise<OpenAIStreamAttempt> {
   const auth = await getValidChatGPTAuth()
   const fetchFn = params.fetchOverride ?? (globalThis.fetch as typeof fetch)
+  const codexWindowId =
+    params.request.client_metadata?.[X_CODEX_WINDOW_ID] ??
+    (params.sessionId ? `${params.sessionId}:0` : undefined)
   const headers: Record<string, string> = {
-    ...responsesIdentityHeaders(params.sessionId),
+    ...responsesIdentityHeaders(params.sessionId, { codexWindowId }),
     Authorization: `Bearer ${auth.accessToken}`,
     'Content-Type': 'application/json',
     'OpenAI-Beta': 'responses=experimental',
