@@ -4,12 +4,10 @@ import {
   adaptOpenAIStreamToAnthropic,
   parseRetryAfterMs,
 } from '@ant/model-provider'
+import { getOrCreateUserID } from '../../../utils/config.js'
 import { isChatGPTAuthEnabled } from './chatgptAuth.js'
 import { getOpenAIClient } from './client.js'
-import {
-  formatOpenAIPromptCacheKey,
-  getOfficialOpenAIPromptCacheKey,
-} from './openaiShared.js'
+import { getOfficialOpenAIPromptCacheKey } from './openaiShared.js'
 import type { OpenAIRawStreamRoute } from './rawStreamLogger.js'
 import {
   buildOpenAIRequestBody,
@@ -60,13 +58,14 @@ export function prepareOpenAIStreamRequest(
       ? 'official-responses'
       : 'chat-completions'
   const sessionId = getSessionId()
-  // ChatGPT private Responses always gets a sticky key. API-key paths only
-  // auto-attach one on official OpenAI hosts — OPENAI_USE_RESPONSES=1 on a
-  // custom proxy must not inherit ccb: keys (compatible providers ignore or
-  // reject OpenAI-specific params). Explicit OPENAI_PROMPT_CACHE_KEY only
-  // overrides when a default key is already allowed for this host.
+  // ChatGPT/Codex private Responses: prompt_cache_key defaults to raw session_id
+  // (codex-rs ModelClient::prompt_cache_key). API-key paths only auto-attach a
+  // sticky key on official OpenAI hosts — OPENAI_USE_RESPONSES=1 on a custom
+  // proxy must not inherit ccb: keys (compatible providers ignore or reject
+  // OpenAI-specific params). Explicit OPENAI_PROMPT_CACHE_KEY only overrides
+  // when a default key is already allowed for this host.
   const defaultPromptCacheKey = useChatGPTResponses
-    ? formatOpenAIPromptCacheKey(sessionId)
+    ? sessionId
     : getOfficialOpenAIPromptCacheKey(process.env.OPENAI_BASE_URL, sessionId)
   const promptCacheKey = defaultPromptCacheKey
     ? (resolveOpenAIPromptCacheKey() ?? defaultPromptCacheKey)
@@ -86,6 +85,8 @@ export function prepareOpenAIStreamRequest(
             reasoningEffort: request.reasoningEffort,
             promptCacheKey,
             sessionId,
+            // Inject here so buildChatGPTResponsesRequest stays I/O-free.
+            installationId: getOrCreateUserID(),
             outputFormat: request.outputFormat,
           }),
           signal,

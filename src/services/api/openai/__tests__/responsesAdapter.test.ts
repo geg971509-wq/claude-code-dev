@@ -17,7 +17,6 @@ import {
   formatOpenAIErrorMessage,
   formatOpenAIErrorStack,
   formatOpenAIErrorWithStack,
-  formatOpenAIPromptCacheKey,
   isOpenAIUserAbortError,
   throwHttpStatusError,
   toProviderHttpError,
@@ -43,7 +42,8 @@ async function collectStopReason(
 }
 
 describe('buildChatGPTResponsesRequest', () => {
-  const promptCacheKey = formatOpenAIPromptCacheKey('session-abc-123')
+  // Codex ModelClient::prompt_cache_key uses raw session_id on ChatGPT path.
+  const promptCacheKey = 'session-abc-123'
 
   test('includes max reasoning effort for ChatGPT Responses requests', () => {
     const request = buildChatGPTResponsesRequest({
@@ -130,11 +130,11 @@ describe('buildChatGPTResponsesRequest', () => {
       promptCacheKey,
     })
 
-    expect(request.prompt_cache_key).toBe('ccb:session-abc-123')
+    expect(request.prompt_cache_key).toBe('session-abc-123')
   })
 
   test('prompt_cache_key is stable across turns (not derived from messages)', () => {
-    const key = formatOpenAIPromptCacheKey('same-session')
+    const key = 'same-session'
     const turn1 = buildChatGPTResponsesRequest({
       model: 'gpt-5.5',
       messages: [{ role: 'user', content: 'first' }],
@@ -155,7 +155,27 @@ describe('buildChatGPTResponsesRequest', () => {
     })
 
     expect(turn1.prompt_cache_key).toBe(turn2.prompt_cache_key)
-    expect(turn1.prompt_cache_key).toBe('ccb:same-session')
+    expect(turn1.prompt_cache_key).toBe('same-session')
+  })
+
+  test('defaults tool_choice to auto when tools are present (Codex)', () => {
+    const request = buildChatGPTResponsesRequest({
+      model: 'gpt-5',
+      messages: [{ role: 'user', content: 'hello' }],
+      tools: [
+        {
+          type: 'function',
+          function: {
+            name: 'lookup',
+            description: 'Look up a value',
+            parameters: { type: 'object', properties: {} },
+          },
+        },
+      ],
+      toolChoice: undefined,
+    }) as Record<string, unknown>
+
+    expect(request.tool_choice).toBe('auto')
   })
 })
 
@@ -273,7 +293,8 @@ describe('Responses request route contracts', () => {
       tools: [tool],
       toolChoice,
       reasoningEffort: 'max',
-      promptCacheKey: 'ccb:session-abc',
+      // Codex: prompt_cache_key === session_id (not ccb: prefix).
+      promptCacheKey: 'session-abc',
       sessionId: 'session-abc',
       installationId: 'install-abc',
       store: true,
@@ -283,7 +304,7 @@ describe('Responses request route contracts', () => {
     expect(request).toMatchObject({
       store: true,
       include: ['reasoning.encrypted_content'],
-      prompt_cache_key: 'ccb:session-abc',
+      prompt_cache_key: 'session-abc',
       // Codex client_metadata baseline keys (responses_metadata.rs).
       client_metadata: {
         'x-codex-installation-id': 'install-abc',

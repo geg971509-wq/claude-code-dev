@@ -18,7 +18,6 @@ import {
   type OpenAIJSONOutputFormat,
 } from './requestBody.js'
 import { createCombinedAbortSignal } from '../../../utils/combinedAbortSignal.js'
-import { getOrCreateUserID } from '../../../utils/config.js'
 import { getProxyFetchOptions } from '../../../utils/proxy.js'
 
 /** Codex `X_CODEX_INSTALLATION_ID_HEADER` — body key in client_metadata. */
@@ -79,7 +78,7 @@ type ResponsesRequestParams = {
   sessionId?: string
   /**
    * Codex installation_id. ChatGPT path only.
-   * Defaults to CCB stable userID (getOrCreateUserID).
+   * Caller-injected (streamAttempt uses getOrCreateUserID); builder stays pure.
    */
   installationId?: string
   /** Default true: request encrypted reasoning for store:false multi-turn. */
@@ -94,7 +93,10 @@ type ResponsesRequestParams = {
  * Always: x-codex-installation-id, session_id, thread_id, x-codex-window-id.
  * Optional turn/subagent/parent fields omitted until CCB has real sources.
  * Root agents: session_id === thread_id (Codex Session::new).
- * window_id format: `${thread_id}:${window_number}` (starts at 0).
+ *
+ * Intentional CCB delta: window stays `${threadId}:0` until CCB has a real
+ * compact/window source. prompt_cache_key is set by streamAttempt to raw
+ * session_id (Codex ModelClient::prompt_cache_key), not a ccb: prefix.
  */
 function buildCodexClientMetadata(params: {
   sessionId: string
@@ -398,11 +400,17 @@ export function buildChatGPTResponsesRequest(
   params: ResponsesRequestParams,
 ): ChatGPTResponsesRequest {
   const fields = buildResponsesRequestFields(params)
+  // Codex ResponsesApiRequest always sets tool_choice: "auto". Forced function
+  // choice remains available for side-query classifiers that pass toolChoice.
+  const tools = Array.isArray(params.tools) ? params.tools : []
+  const toolChoice = params.toolChoice
+    ? convertToolChoiceToResponses(params.toolChoice)
+    : tools.length > 0
+      ? 'auto'
+      : undefined
   return {
     ...fields,
-    ...(params.toolChoice
-      ? { tool_choice: convertToolChoiceToResponses(params.toolChoice) }
-      : {}),
+    ...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
     ...(params.reasoningEffort && {
       reasoning:
         params.reasoningEffort === 'max'
@@ -411,12 +419,14 @@ export function buildChatGPTResponsesRequest(
     }),
     // Codex private Responses: client_metadata is the canonical identity blob.
     // Headers below project a subset (session/thread/window); do not invent extras.
-    ...(params.sessionId && {
-      client_metadata: buildCodexClientMetadata({
-        sessionId: params.sessionId,
-        installationId: params.installationId ?? getOrCreateUserID(),
+    // installationId is required for metadata — omit blob when caller skipped it.
+    ...(params.sessionId &&
+      params.installationId && {
+        client_metadata: buildCodexClientMetadata({
+          sessionId: params.sessionId,
+          installationId: params.installationId,
+        }),
       }),
-    }),
   }
 }
 

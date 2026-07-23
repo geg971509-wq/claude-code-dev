@@ -323,6 +323,7 @@ describe('sideQuery OpenAI ChatGPT OAuth path', () => {
       type: 'function',
       name: 'classify_result',
     })
+    // Codex: prompt_cache_key defaults to raw session_id (not ccb: prefix).
     const clientMetadata = capturedFetch!.body.client_metadata as Record<
       string,
       string
@@ -335,6 +336,8 @@ describe('sideQuery OpenAI ChatGPT OAuth path', () => {
         'x-codex-window-id': expect.stringMatching(/.+:0$/),
       }),
     )
+    expect(capturedFetch!.body.prompt_cache_key).toBe(clientMetadata.session_id)
+    expect(capturedFetch!.body.prompt_cache_key).not.toMatch(/^ccb:/)
     expect(capturedFetch!.headers['x-codex-window-id']).toBe(
       clientMetadata['x-codex-window-id'],
     )
