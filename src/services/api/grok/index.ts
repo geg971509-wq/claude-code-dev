@@ -46,7 +46,7 @@ import {
 import { normalizeMessagesForAPI } from '../../../utils/messages.js'
 import type { SDKAssistantMessageError } from '../../../entrypoints/agentSdkTypes.js'
 import { toolToAPISchema } from '../../../utils/api.js'
-import { logForDebugging } from '../../../utils/debug.js'
+import { isDebugMode, logForDebugging } from '../../../utils/debug.js'
 import { addToTotalSessionCost } from '../../../cost-tracker.js'
 import { calculateUSDCost } from '../../../utils/modelCost.js'
 import { recordLLMObservation } from '../../../services/langfuse/tracing.js'
@@ -77,6 +77,7 @@ export async function* queryModelGrok(
   StreamEvent | AssistantMessage | SystemAPIErrorMessage,
   void
 > {
+  const includeErrorStack = options.verbose === true || isDebugMode()
   try {
     const grokModel = resolveGrokModel(options.model)
     const messagesForAPI = normalizeMessagesForAPI(messages, tools)
@@ -373,7 +374,7 @@ export async function* queryModelGrok(
       `[Grok] Error: ${errorMessage}\n${formatOpenAIErrorStack(error, 16)}`,
       { level: 'error' },
     )
-    const surface = formatOpenAIAssistantAPIError(error, 8)
+    const surface = formatOpenAIAssistantAPIError(error, includeErrorStack, 8)
     yield createAssistantAPIErrorMessage({
       content: surface.content,
       apiError: surface.apiError,

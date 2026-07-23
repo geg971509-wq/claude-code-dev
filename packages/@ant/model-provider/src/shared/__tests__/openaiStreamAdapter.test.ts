@@ -342,31 +342,40 @@ describe('adaptOpenAIStreamToAnthropic', () => {
     expect(msgDelta.delta.stop_reason).toBe('max_tokens')
   })
 
-  test('rejects invalid tool call JSON at finish', async () => {
-    await expect(
-      collectEvents([
-        makeChunk({
-          choices: [
-            {
-              index: 0,
-              delta: {
-                tool_calls: [
-                  {
-                    index: 0,
-                    id: 'call_bad',
-                    function: { name: 'bash', arguments: '{bad' },
-                  },
-                ],
-              },
-              finish_reason: null,
+  test('soft-fails invalid tool call JSON at finish (Anthropic parity)', async () => {
+    const events = await collectEvents([
+      makeChunk({
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call_bad',
+                  function: { name: 'bash', arguments: '{bad' },
+                },
+              ],
             },
-          ],
-        }),
-        makeChunk({
-          choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
-        }),
-      ]),
-    ).rejects.toThrow(/invalid JSON arguments/)
+            finish_reason: null,
+          },
+        ],
+      }),
+      makeChunk({
+        choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+      }),
+    ])
+    // Stream completes; the execution boundary handles invalid arguments.
+    expect(events.some(e => e.type === 'message_stop')).toBe(true)
+    const jsonDeltas = events.filter(
+      e =>
+        e.type === 'content_block_delta' &&
+        (e as { delta?: { type?: string; partial_json?: string } }).delta
+          ?.type === 'input_json_delta',
+    ) as Array<{ delta: { partial_json: string } }>
+    expect(jsonDeltas.some(e => e.delta.partial_json.includes('{bad'))).toBe(
+      true,
+    )
   })
 
   test('maps completion_tokens_details.reasoning_tokens', async () => {

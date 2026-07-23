@@ -100,10 +100,7 @@ export {
   anthropicToolsToOpenAI,
   anthropicToolChoiceToOpenAI,
 } from './shared/openaiConvertTools.js'
-export {
-  adaptOpenAIStreamToAnthropic,
-  assertValidToolArgumentsJson,
-} from './shared/openaiStreamAdapter.js'
+export { adaptOpenAIStreamToAnthropic } from './shared/openaiStreamAdapter.js'
 export {
   normalizeOpenAIUsage,
   type AnthropicUsage,

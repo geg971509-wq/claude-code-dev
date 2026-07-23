@@ -86,6 +86,7 @@ export class SessionsWebSocket {
   private sessionNotFoundRetries = 0
   private pingInterval: NodeJS.Timeout | null = null
   private reconnectTimer: NodeJS.Timeout | null = null
+  private connectAttempt = 0
 
   constructor(
     private readonly sessionId: string,
@@ -93,6 +94,10 @@ export class SessionsWebSocket {
     private readonly getAccessToken: () => string,
     private readonly callbacks: SessionsWebSocketCallbacks,
   ) {}
+
+  private ownsConnectAttempt(attempt: number): boolean {
+    return this.connectAttempt === attempt && this.state === 'connecting'
+  }
 
   /**
    * Connect to the sessions WebSocket endpoint
@@ -102,105 +107,155 @@ export class SessionsWebSocket {
       logForDebugging('[SessionsWebSocket] Already connecting')
       return
     }
-
-    this.state = 'connecting'
-
-    const baseUrl = getOauthConfig().BASE_API_URL.replace('http', 'ws')
-    const url = `${baseUrl}/v1/sessions/ws/${this.sessionId}/subscribe?organization_uuid=${this.orgUuid}`
-
-    logForDebugging(`[SessionsWebSocket] Connecting to ${url}`)
-
-    // Get fresh token for each connection attempt
-    const accessToken = this.getAccessToken()
-    const headers = {
-      Authorization: `Bearer ${accessToken}`,
-      'anthropic-version': '2023-06-01',
+    // reconnect()/scheduleReconnect leave state=closed; allow closed → connecting.
+    if (this.state === 'connected') {
+      logForDebugging('[SessionsWebSocket] Already connected')
+      return
     }
 
-    if (typeof Bun !== 'undefined') {
-      // Bun's WebSocket supports headers/proxy options but the DOM typings don't
-      // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-      const ws = new globalThis.WebSocket(url, {
-        headers,
-        proxy: getWebSocketProxyUrl(url),
-        tls: getWebSocketTLSOptions() || undefined,
-      } as unknown as string[])
-      this.ws = ws
+    this.state = 'connecting'
+    const attempt = ++this.connectAttempt
 
-      ws.addEventListener('open', () => {
-        logForDebugging(
-          '[SessionsWebSocket] Connection opened, authenticated via headers',
-        )
-        this.state = 'connected'
-        this.reconnectAttempts = 0
-        this.sessionNotFoundRetries = 0
-        this.startPingInterval()
-        this.callbacks.onConnected?.()
-      })
+    let setupWs: WebSocketLike | null = null
+    try {
+      const baseUrl = getOauthConfig().BASE_API_URL.replace('http', 'ws')
+      const url = `${baseUrl}/v1/sessions/ws/${this.sessionId}/subscribe?organization_uuid=${this.orgUuid}`
 
-      ws.addEventListener('message', (event: MessageEvent) => {
-        const data =
-          typeof event.data === 'string' ? event.data : String(event.data)
-        this.handleMessage(data)
-      })
+      logForDebugging(`[SessionsWebSocket] Connecting to ${url}`)
 
-      ws.addEventListener('error', () => {
-        const err = new Error('[SessionsWebSocket] WebSocket error')
-        logError(err)
-        this.callbacks.onError?.(err)
-      })
+      // Get fresh token for each connection attempt
+      const accessToken = this.getAccessToken()
+      const headers = {
+        Authorization: `Bearer ${accessToken}`,
+        'anthropic-version': '2023-06-01',
+      }
 
-      // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-      ws.addEventListener('close', (event: CloseEvent) => {
-        logForDebugging(
-          `[SessionsWebSocket] Closed: code=${event.code} reason=${event.reason}`,
-        )
-        this.handleClose(event.code)
-      })
+      if (typeof Bun !== 'undefined') {
+        // close() may race in; don't install a zombie socket
+        if (!this.ownsConnectAttempt(attempt)) return
+        // Bun's WebSocket supports headers/proxy options but the DOM typings don't
+        // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+        const ws = new globalThis.WebSocket(url, {
+          headers,
+          proxy: getWebSocketProxyUrl(url),
+          tls: getWebSocketTLSOptions() || undefined,
+        } as unknown as string[])
+        setupWs = ws
+        if (!this.ownsConnectAttempt(attempt)) {
+          ws.close()
+          return
+        }
+        this.ws = ws
 
-      ws.addEventListener('pong', () => {
-        logForDebugging('[SessionsWebSocket] Pong received')
-      })
-    } else {
-      const { default: WS } = await import('ws')
-      const ws = new WS(url, {
-        headers,
-        agent: getWebSocketProxyAgent(url),
-        ...getWebSocketTLSOptions(),
-      })
-      this.ws = ws
+        ws.addEventListener('open', () => {
+          if (this.ws !== ws) return
+          if (!this.ownsConnectAttempt(attempt)) {
+            ws.close()
+            return
+          }
+          logForDebugging(
+            '[SessionsWebSocket] Connection opened, authenticated via headers',
+          )
+          this.state = 'connected'
+          this.reconnectAttempts = 0
+          this.sessionNotFoundRetries = 0
+          this.startPingInterval()
+          this.callbacks.onConnected?.()
+        })
 
-      ws.on('open', () => {
-        logForDebugging(
-          '[SessionsWebSocket] Connection opened, authenticated via headers',
-        )
-        // Auth is handled via headers, so we're immediately connected
-        this.state = 'connected'
-        this.reconnectAttempts = 0
-        this.sessionNotFoundRetries = 0
-        this.startPingInterval()
-        this.callbacks.onConnected?.()
-      })
+        ws.addEventListener('message', (event: MessageEvent) => {
+          if (this.ws !== ws) return
+          const data =
+            typeof event.data === 'string' ? event.data : String(event.data)
+          this.handleMessage(data)
+        })
 
-      ws.on('message', (data: Buffer) => {
-        this.handleMessage(data.toString())
-      })
+        ws.addEventListener('error', () => {
+          if (this.ws !== ws) return
+          const err = new Error('[SessionsWebSocket] WebSocket error')
+          logError(err)
+          this.callbacks.onError?.(err)
+        })
 
-      ws.on('error', (err: Error) => {
-        logError(new Error(`[SessionsWebSocket] Error: ${err.message}`))
-        this.callbacks.onError?.(err)
-      })
+        // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+        ws.addEventListener('close', (event: CloseEvent) => {
+          if (this.ws !== ws) return
+          logForDebugging(
+            `[SessionsWebSocket] Closed: code=${event.code} reason=${event.reason}`,
+          )
+          this.handleClose(event.code)
+        })
 
-      ws.on('close', (code: number, reason: Buffer) => {
-        logForDebugging(
-          `[SessionsWebSocket] Closed: code=${code} reason=${reason.toString()}`,
-        )
-        this.handleClose(code)
-      })
+        ws.addEventListener('pong', () => {
+          if (this.ws !== ws) return
+          logForDebugging('[SessionsWebSocket] Pong received')
+        })
+      } else {
+        const { default: WS } = await import('ws')
+        // Await yield: close() may have won the race
+        if (!this.ownsConnectAttempt(attempt)) return
+        const ws = new WS(url, {
+          headers,
+          agent: getWebSocketProxyAgent(url),
+          ...getWebSocketTLSOptions(),
+        })
+        setupWs = ws
+        if (!this.ownsConnectAttempt(attempt)) {
+          ws.close()
+          return
+        }
+        this.ws = ws
 
-      ws.on('pong', () => {
-        logForDebugging('[SessionsWebSocket] Pong received')
-      })
+        ws.on('open', () => {
+          if (this.ws !== ws) return
+          if (!this.ownsConnectAttempt(attempt)) {
+            ws.close()
+            return
+          }
+          logForDebugging(
+            '[SessionsWebSocket] Connection opened, authenticated via headers',
+          )
+          // Auth is handled via headers, so we're immediately connected
+          this.state = 'connected'
+          this.reconnectAttempts = 0
+          this.sessionNotFoundRetries = 0
+          this.startPingInterval()
+          this.callbacks.onConnected?.()
+        })
+
+        ws.on('message', (data: Buffer) => {
+          if (this.ws !== ws) return
+          this.handleMessage(data.toString())
+        })
+
+        ws.on('error', (err: Error) => {
+          if (this.ws !== ws) return
+          logError(new Error(`[SessionsWebSocket] Error: ${err.message}`))
+          this.callbacks.onError?.(err)
+        })
+
+        ws.on('close', (code: number, reason: Buffer) => {
+          if (this.ws !== ws) return
+          logForDebugging(
+            `[SessionsWebSocket] Closed: code=${code} reason=${reason.toString()}`,
+          )
+          this.handleClose(code)
+        })
+
+        ws.on('pong', () => {
+          if (this.ws !== ws) return
+          logForDebugging('[SessionsWebSocket] Pong received')
+        })
+      }
+    } catch (error) {
+      if (setupWs && this.ws === setupWs) this.ws = null
+      try {
+        setupWs?.close()
+      } catch {
+        // Preserve the setup error.
+      }
+      if (this.ownsConnectAttempt(attempt)) this.state = 'closed'
+      throw error
     }
   }
 
@@ -294,8 +349,36 @@ export class SessionsWebSocket {
     )
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
-      void this.connect()
+      void this.connectForReconnect()
     }, delay)
+  }
+
+  private async connectForReconnect(): Promise<void> {
+    const connectPromise = this.connect()
+    const attempt = this.connectAttempt
+    try {
+      await connectPromise
+    } catch (error) {
+      logError(
+        error instanceof Error
+          ? error
+          : new Error(`[SessionsWebSocket] Reconnect failed: ${String(error)}`),
+      )
+      this.retryAfterSetupFailure(attempt)
+    }
+  }
+
+  private retryAfterSetupFailure(attempt: number): void {
+    if (this.connectAttempt !== attempt || this.state !== 'closed') return
+    if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      this.callbacks.onClose?.()
+      return
+    }
+    this.reconnectAttempts++
+    this.scheduleReconnect(
+      RECONNECT_DELAY_MS,
+      `attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`,
+    )
   }
 
   private startPingInterval(): void {
@@ -368,6 +451,7 @@ export class SessionsWebSocket {
    */
   close(): void {
     logForDebugging('[SessionsWebSocket] Closing connection')
+    this.connectAttempt++
     this.state = 'closed'
     this.stopPingInterval()
 
@@ -398,7 +482,7 @@ export class SessionsWebSocket {
     // Small delay before reconnecting (stored in reconnectTimer so it can be cancelled)
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
-      void this.connect()
+      void this.connectForReconnect()
     }, 500)
   }
 }

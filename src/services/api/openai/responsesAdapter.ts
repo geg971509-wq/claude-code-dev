@@ -5,12 +5,14 @@ import {
   normalizeResponsesFinishReason,
   ProviderStreamError,
 } from '@ant/model-provider'
+import type {
+  ResponseCreateParamsStreaming,
+  ResponseIncludable,
+  ResponseInput,
+} from 'openai/resources/responses/responses.mjs'
 import { getValidChatGPTAuth } from './chatgptAuth.js'
 import { getOpenAIClient } from './client.js'
-import {
-  assertValidToolArgumentsJson,
-  throwHttpStatusError,
-} from './openaiShared.js'
+import { throwHttpStatusError } from './openaiShared.js'
 import {
   isAzureResponsesBaseURL,
   type OpenAIJSONOutputFormat,
@@ -19,7 +21,13 @@ import { createCombinedAbortSignal } from '../../../utils/combinedAbortSignal.js
 import { getProxyFetchOptions } from '../../../utils/proxy.js'
 
 type ResponsesInputItem = Record<string, unknown>
-type ResponsesTool = Record<string, unknown>
+type ResponsesTool = {
+  type: 'function'
+  name: string
+  description: string
+  parameters: Record<string, unknown>
+  strict: false
+}
 export type ResponsesReasoningEffort =
   | 'none'
   | 'minimal'
@@ -29,7 +37,7 @@ export type ResponsesReasoningEffort =
   | 'xhigh'
   | 'max'
 
-type ResponsesRequest = {
+export type ChatGPTResponsesRequest = {
   model: string
   stream: true
   /** Codex: true only for Azure Responses endpoints; else false. */
@@ -39,9 +47,8 @@ type ResponsesRequest = {
   tools?: ResponsesTool[]
   tool_choice?: unknown
   reasoning?: { effort: ResponsesReasoningEffort; summary?: 'auto' }
-  parallel_tool_calls?: boolean
+  parallel_tool_calls: true
   include?: string[]
-  max_output_tokens?: number
   text?: {
     format: {
       type: 'json_schema'
@@ -52,6 +59,23 @@ type ResponsesRequest = {
   }
   /** Sticky cache routing key — stable for the CCB session. Omitted when unset. */
   prompt_cache_key?: string
+  client_metadata?: Record<string, string>
+}
+
+type ResponsesRequestParams = {
+  model: string
+  messages: unknown[]
+  tools: unknown[]
+  toolChoice: unknown
+  reasoningEffort?: ResponsesReasoningEffort
+  /** Override for tests; production uses the current CCB session id. */
+  promptCacheKey?: string
+  sessionId?: string
+  /** Default true: request encrypted reasoning for store:false multi-turn. */
+  includeEncryptedReasoning?: boolean
+  outputFormat?: OpenAIJSONOutputFormat
+  /** Defaults from OPENAI_BASE_URL azure markers when omitted. */
+  store?: boolean
 }
 
 // isAzureResponsesBaseURL lives in requestBody.ts (shared with routing).
@@ -65,7 +89,8 @@ type AnthropicUsage = {
   reasoning_tokens?: number
 }
 
-const ENCRYPTED_REASONING_INCLUDE = 'reasoning.encrypted_content'
+const ENCRYPTED_REASONING_INCLUDE: ResponseIncludable =
+  'reasoning.encrypted_content'
 
 export type OpenAIStreamAttempt = {
   stream: AsyncIterable<Record<string, unknown>>
@@ -255,7 +280,7 @@ function convertToolsToResponses(tools: unknown[]): ResponsesTool[] {
       description: typeof fn?.description === 'string' ? fn.description : '',
       parameters:
         fn?.parameters && typeof fn.parameters === 'object'
-          ? fn.parameters
+          ? (fn.parameters as Record<string, unknown>)
           : { type: 'object', properties: {} },
       strict: false,
     })
@@ -263,9 +288,18 @@ function convertToolsToResponses(tools: unknown[]): ResponsesTool[] {
   return result
 }
 
+type ResponsesToolChoice = NonNullable<
+  ResponseCreateParamsStreaming['tool_choice']
+>
+
 function convertToolChoiceToResponses(toolChoice: unknown): unknown {
-  if (toolChoice === 'required') return 'required'
-  if (toolChoice === 'auto') return 'auto'
+  if (
+    toolChoice === 'none' ||
+    toolChoice === 'required' ||
+    toolChoice === 'auto'
+  ) {
+    return toolChoice
+  }
   if (!toolChoice || typeof toolChoice !== 'object') return toolChoice
   const record = toolChoice as Record<string, unknown>
   const fn = record.function as Record<string, unknown> | undefined
@@ -275,52 +309,41 @@ function convertToolChoiceToResponses(toolChoice: unknown): unknown {
   return toolChoice
 }
 
-export function buildResponsesRequest(params: {
-  model: string
-  messages: unknown[]
-  tools: unknown[]
-  toolChoice: unknown
-  reasoningEffort?: ResponsesReasoningEffort
-  /** Official Responses only; Codex omits. */
-  maxOutputTokens?: number
-  /** Override for tests; production uses the current CCB session id. */
-  promptCacheKey?: string
-  /** Default true: request encrypted reasoning for store:false multi-turn. */
-  includeEncryptedReasoning?: boolean
-  outputFormat?: OpenAIJSONOutputFormat
-  /**
-   * Codex: `store` true only on Azure Responses endpoints.
-   * Defaults from OPENAI_BASE_URL azure markers when omitted.
-   */
-  store?: boolean
-}): ResponsesRequest {
+function convertOfficialToolChoiceToResponses(
+  toolChoice: unknown,
+): ResponsesToolChoice {
+  const converted = convertToolChoiceToResponses(toolChoice)
+  if (
+    converted === 'none' ||
+    converted === 'required' ||
+    converted === 'auto'
+  ) {
+    return converted
+  }
+  if (converted && typeof converted === 'object') {
+    const record = converted as Record<string, unknown>
+    if (record.type === 'function' && typeof record.name === 'string') {
+      return { type: 'function', name: record.name }
+    }
+  }
+  return 'auto'
+}
+
+function buildResponsesRequestFields(params: ResponsesRequestParams) {
   const { input, instructions } = convertMessagesToResponsesInput(
     params.messages,
   )
   const tools = convertToolsToResponses(params.tools)
   const includeEncrypted = params.includeEncryptedReasoning !== false
-  const store = params.store ?? isAzureResponsesBaseURL()
   return {
     model: params.model,
-    stream: true,
-    store,
+    stream: true as const,
+    store: params.store ?? isAzureResponsesBaseURL(),
     input,
     ...(instructions ? { instructions } : {}),
     ...(tools.length > 0 ? { tools } : {}),
-    ...(params.toolChoice
-      ? { tool_choice: convertToolChoiceToResponses(params.toolChoice) }
-      : {}),
-    ...(params.reasoningEffort
-      ? {
-          reasoning:
-            params.reasoningEffort === 'max'
-              ? { effort: params.reasoningEffort }
-              : { effort: params.reasoningEffort, summary: 'auto' as const },
-        }
-      : {}),
-    ...(includeEncrypted ? { include: [ENCRYPTED_REASONING_INCLUDE] } : {}),
-    ...(params.maxOutputTokens !== undefined
-      ? { max_output_tokens: params.maxOutputTokens }
+    ...(includeEncrypted
+      ? { include: [ENCRYPTED_REASONING_INCLUDE] as ResponseIncludable[] }
       : {}),
     ...(params.outputFormat && {
       text: {
@@ -332,10 +355,69 @@ export function buildResponsesRequest(params: {
         },
       },
     }),
-    parallel_tool_calls: true,
+    parallel_tool_calls: true as const,
+    ...(params.promptCacheKey && { prompt_cache_key: params.promptCacheKey }),
+  }
+}
+
+export function buildChatGPTResponsesRequest(
+  params: ResponsesRequestParams,
+): ChatGPTResponsesRequest {
+  const fields = buildResponsesRequestFields(params)
+  return {
+    ...fields,
+    ...(params.toolChoice
+      ? { tool_choice: convertToolChoiceToResponses(params.toolChoice) }
+      : {}),
+    ...(params.reasoningEffort && {
+      reasoning:
+        params.reasoningEffort === 'max'
+          ? { effort: params.reasoningEffort }
+          : { effort: params.reasoningEffort, summary: 'auto' as const },
+    }),
     // Same OAuth session → same key so OpenAI can sticky-route to a cache node.
     // Must not hash the full message list (would change every turn).
-    ...(params.promptCacheKey && { prompt_cache_key: params.promptCacheKey }),
+    ...(params.sessionId && {
+      client_metadata: {
+        session_id: params.sessionId,
+        thread_id: params.sessionId,
+      },
+    }),
+  }
+}
+
+export function buildOfficialResponsesRequest(
+  params: ResponsesRequestParams & { maxOutputTokens: number },
+): ResponseCreateParamsStreaming {
+  const fields = buildResponsesRequestFields(params)
+  return {
+    ...fields,
+    // SDK input types do not fully model stateless encrypted reasoning replay.
+    input: fields.input as unknown as ResponseInput,
+    ...(params.toolChoice
+      ? { tool_choice: convertOfficialToolChoiceToResponses(params.toolChoice) }
+      : {}),
+    max_output_tokens: params.maxOutputTokens,
+    ...(params.reasoningEffort && {
+      reasoning:
+        params.reasoningEffort === 'max'
+          ? { effort: 'xhigh' as const }
+          : { effort: params.reasoningEffort, summary: 'auto' as const },
+    }),
+  }
+}
+
+function responsesIdentityHeaders(
+  sessionId: string | undefined,
+): Record<string, string> {
+  return {
+    Accept: 'text/event-stream',
+    originator: 'claude-code-best',
+    ...(sessionId && {
+      'session-id': sessionId,
+      'thread-id': sessionId,
+      'x-client-request-id': sessionId,
+    }),
   }
 }
 
@@ -916,11 +998,6 @@ export async function* adaptResponsesStreamToAnthropic(
       }
       const block = resolveToolBlock(event, item)
       if (block?.open) {
-        const finalArgs =
-          item?.type === 'function_call' && typeof item.arguments === 'string'
-            ? item.arguments
-            : block.arguments
-        assertValidToolArgumentsJson(block.name, finalArgs, 'responses')
         yield {
           type: 'content_block_stop',
           index: block.contentIndex,
@@ -959,27 +1036,22 @@ export async function* adaptResponsesStreamToAnthropic(
         | undefined
       const reason =
         typeof incomplete?.reason === 'string' ? incomplete.reason : null
-      if (reason !== 'max_output_tokens') {
-        throw new ProviderStreamError(
-          `OpenAI Responses response incomplete${reason ? `: ${reason}` : ''}`,
-          {
-            kind: 'incomplete',
-            retryable: true,
-            terminal: true,
-            completionState: 'incomplete',
-            requestId:
-              typeof response?.id === 'string' ? response.id : undefined,
-            incompleteReason: reason,
-          },
-        )
-      }
+      throw new ProviderStreamError(
+        `OpenAI Responses response incomplete${reason ? `: ${reason}` : ''}`,
+        {
+          kind: 'incomplete',
+          retryable: true,
+          terminal: true,
+          completionState: 'incomplete',
+          requestId: typeof response?.id === 'string' ? response.id : undefined,
+          incompleteReason: reason,
+        },
+      )
     }
 
-    if (type === 'response.completed' || type === 'response.incomplete') {
+    if (type === 'response.completed') {
       const response = event.response as Record<string, unknown> | undefined
-      const expectedStatus =
-        type === 'response.completed' ? 'completed' : 'incomplete'
-      if (response?.status !== expectedStatus) {
+      if (response?.status !== 'completed') {
         throw new ProviderStreamError(
           `OpenAI Responses ${type} event had an invalid response status`,
           {
@@ -1019,7 +1091,6 @@ export async function* adaptResponsesStreamToAnthropic(
       ])
       for (const block of seenToolBlocks) {
         if (block.open) {
-          assertValidToolArgumentsJson(block.name, block.arguments, 'responses')
           yield {
             type: 'content_block_stop',
             index: block.contentIndex,
@@ -1049,20 +1120,20 @@ export async function* adaptResponsesStreamToAnthropic(
 }
 
 export async function createChatGPTResponsesStream(params: {
-  request: ResponsesRequest
+  request: ChatGPTResponsesRequest
   signal: AbortSignal
+  sessionId?: string
   fetchOverride?: typeof fetch
 }): Promise<OpenAIStreamAttempt> {
   const auth = await getValidChatGPTAuth()
   const fetchFn = params.fetchOverride ?? (globalThis.fetch as typeof fetch)
   const headers: Record<string, string> = {
+    ...responsesIdentityHeaders(params.sessionId),
     Authorization: `Bearer ${auth.accessToken}`,
     'Content-Type': 'application/json',
-    Accept: 'text/event-stream',
     'OpenAI-Beta': 'responses=experimental',
     Origin: 'https://chatgpt.com',
     Referer: 'https://chatgpt.com/',
-    originator: 'claude-code-best',
   }
   if (auth.accountId) {
     headers['ChatGPT-Account-Id'] = auth.accountId
@@ -1105,11 +1176,12 @@ export async function createChatGPTResponsesStream(params: {
  * outside the cached client env.
  */
 export async function createOfficialResponsesStream(params: {
-  request: ResponsesRequest
+  request: ResponseCreateParamsStreaming
   signal: AbortSignal
   fetchOverride?: typeof fetch
   apiKey?: string
   baseURL?: string
+  sessionId?: string
   source?: string
 }): Promise<OpenAIStreamAttempt> {
   const useSdkClient = !params.apiKey && !params.baseURL
@@ -1119,8 +1191,9 @@ export async function createOfficialResponsesStream(params: {
       fetchOverride: params.fetchOverride,
       source: params.source,
     })
-    const promise = client.responses.create(params.request as never, {
+    const promise = client.responses.create(params.request, {
       signal: params.signal,
+      headers: responsesIdentityHeaders(params.sessionId),
     })
     const { data, response, request_id } = await promise.withResponse()
     return {
@@ -1153,9 +1226,9 @@ export async function createOfficialResponsesStream(params: {
     const response = await fetchFn(`${base}/responses`, {
       method: 'POST',
       headers: {
+        ...responsesIdentityHeaders(params.sessionId),
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
       },
       body: JSON.stringify(params.request),
       signal,

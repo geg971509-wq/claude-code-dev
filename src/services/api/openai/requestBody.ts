@@ -117,9 +117,8 @@ export function isAzureResponsesBaseURL(
 }
 
 /**
- * Hosts that actually speak OpenAI/Azure Responses (`/responses`).
- * Custom OPENAI_BASE_URL proxies are usually Chat Completions only — do not
- * auto-route them (Codex is provider-configured for Responses; we are not).
+ * Hosts known to speak OpenAI/Azure Responses (`/responses`).
+ * Used by automatic routing, Azure `store` policy, and diagnostics.
  */
 export function isOpenAIResponsesCapableBaseURL(
   baseURL: string | undefined = process.env.OPENAI_BASE_URL,
@@ -143,8 +142,8 @@ export function isOpenAIResponsesCapableBaseURL(
  * Whether the API-key path should use `/v1/responses`.
  *
  * - OPENAI_USE_RESPONSES=0/false → never
- * - OPENAI_USE_RESPONSES=1/true → always (proxy opts in)
- * - else auto: o-series / gpt-5* only on official OpenAI/Azure bases
+ * - OPENAI_USE_RESPONSES=1/true → always
+ * - else auto: o-series / gpt-5* on known OpenAI/Azure Responses endpoints
  */
 export function shouldUseOpenAIResponsesAPI(model: string): boolean {
   if (isEnvDefinedFalsy(process.env.OPENAI_USE_RESPONSES)) return false

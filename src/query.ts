@@ -911,6 +911,7 @@ async function* queryLoop(
               toolChoice: undefined,
               isNonInteractiveSession:
                 toolUseContext.options.isNonInteractiveSession,
+              verbose: toolUseContext.options.verbose,
               fallbackModel,
               onStreamingFallback: () => {
                 streamingFallbackOccured = true

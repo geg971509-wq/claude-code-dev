@@ -36,6 +36,7 @@ import { runCleanupFunctions } from './cleanupRegistry.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { isEnvTruthy } from './envUtils.js'
+import { errorMessage, isAbortError } from './errors.js'
 import { getCurrentSessionTitle, sessionIdExists } from './sessionStorage.js'
 import { sleep } from './sleep.js'
 import { closeSentry } from './sentry.js'
@@ -291,27 +292,26 @@ export const setupGracefulShutdown = memoize(() => {
     }
   }
 
-  // Log uncaught exceptions for container observability and analytics
-  // Error names (e.g., "TypeError") are not sensitive - safe to log
-  process.on('uncaughtException', error => {
+  // Fatal handlers: log, then exit. Installing process.on suppresses Node's
+  // default crash — swallow-only left the process half-alive. Always ordered
+  // exit (not sole-listener): coexisting handlers must not restore swallow.
+  process.on('uncaughtException', (error: unknown) => {
+    if (isAbortError(error)) return
+    const errorName = error instanceof Error ? error.name : typeof error
     logForDiagnosticsNoPII('error', 'uncaught_exception', {
-      error_name: error.name,
-      error_message: error.message.slice(0, 2000),
+      error_name: errorName,
+      error_message: errorMessage(error).slice(0, 2000),
     })
     logEvent('tengu_uncaught_exception', {
       error_name:
-        error.name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        errorName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
+    void gracefulShutdown(1)
   })
 
-  // Log unhandled promise rejections for container observability and analytics
   process.on('unhandledRejection', reason => {
-    const errorName =
-      reason instanceof Error
-        ? reason.name
-        : typeof reason === 'string'
-          ? 'string'
-          : 'unknown'
+    if (isAbortError(reason)) return
+    const errorName = reason instanceof Error ? reason.name : typeof reason
     const errorInfo =
       reason instanceof Error
         ? {
@@ -319,12 +319,18 @@ export const setupGracefulShutdown = memoize(() => {
             error_message: reason.message.slice(0, 2000),
             error_stack: reason.stack?.slice(0, 4000),
           }
-        : { error_message: String(reason).slice(0, 2000) }
+        : {
+            error_name: errorName,
+            error_message: errorMessage(reason).slice(0, 2000),
+          }
     logForDiagnosticsNoPII('error', 'unhandled_rejection', errorInfo)
     logEvent('tengu_unhandled_rejection', {
       error_name:
         errorName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
+    // Listener suppresses Node's default crash — always exit ordered.
+    // (sole-listener would miss when another handler coexists, e.g. ACP.)
+    void gracefulShutdown(1)
   })
 })
 
@@ -336,17 +342,21 @@ export function gracefulShutdownSync(
     setAppState?: (f: (prev: AppState) => AppState) => void
   },
 ): void {
+  finalExitCode = Math.max(finalExitCode, exitCode)
   // Set the exit code that will be used when process naturally exits. Note that we do it
   // here inside the sync version too so that it is possible to determine if
   // gracefulShutdownSync was called by checking process.exitCode.
-  process.exitCode = exitCode
+  process.exitCode = finalExitCode
 
-  pendingShutdown = gracefulShutdown(exitCode, reason, options)
+  const shutdown = gracefulShutdown(exitCode, reason, options)
+  if (syncShutdownFallbackAttached) return
+  syncShutdownFallbackAttached = true
+  void shutdown
     .catch(error => {
       logForDebugging(`Graceful shutdown failed: ${error}`, { level: 'error' })
       cleanupTerminalModes()
       printResumeHint()
-      forceExit(exitCode)
+      forceExit(finalExitCode)
     })
     // Prevent unhandled rejection: forceExit re-throws in test mode,
     // which would escape the .catch() handler above as a new rejection.
@@ -354,6 +364,8 @@ export function gracefulShutdownSync(
 }
 
 let shutdownInProgress = false
+let finalExitCode = 0
+let syncShutdownFallbackAttached = false
 let failsafeTimer: ReturnType<typeof setTimeout> | undefined
 let orphanCheckInterval: ReturnType<typeof setInterval> | undefined
 let pendingShutdown: Promise<void> | undefined
@@ -366,6 +378,8 @@ export function isShuttingDown(): boolean {
 /** Reset shutdown state - only for use in tests */
 export function resetShutdownState(): void {
   shutdownInProgress = false
+  finalExitCode = 0
+  syncShutdownFallbackAttached = false
   resumeHintPrinted = false
   if (failsafeTimer !== undefined) {
     clearTimeout(failsafeTimer)
@@ -383,7 +397,7 @@ export function getPendingShutdownForTesting(): Promise<void> | undefined {
 }
 
 // Graceful shutdown function that drains the event loop
-export async function gracefulShutdown(
+export function gracefulShutdown(
   exitCode = 0,
   reason: ExitReason = 'other',
   options?: {
@@ -393,11 +407,24 @@ export async function gracefulShutdown(
     finalMessage?: string
   },
 ): Promise<void> {
-  if (shutdownInProgress) {
-    return
+  finalExitCode = Math.max(finalExitCode, exitCode)
+  process.exitCode = finalExitCode
+  if (pendingShutdown) {
+    return pendingShutdown
   }
   shutdownInProgress = true
+  pendingShutdown = runGracefulShutdown(reason, options)
+  return pendingShutdown
+}
 
+async function runGracefulShutdown(
+  reason: ExitReason,
+  options?: {
+    getAppState?: () => AppState
+    setAppState?: (f: (prev: AppState) => AppState) => void
+    finalMessage?: string
+  },
+): Promise<void> {
   // Resolve the SessionEnd hook budget before arming the failsafe so the
   // failsafe can scale with it. Without this, a user-configured 10s hook
   // budget is silently truncated by the 5s failsafe (gh-32712 follow-up).
@@ -410,18 +437,14 @@ export async function gracefulShutdown(
   // Runs cleanupTerminalModes first so a hung cleanup doesn't leave the terminal dirty.
   // Budget = max(5s, hook budget + 3.5s headroom for cleanup + analytics flush).
   failsafeTimer = setTimeout(
-    code => {
+    () => {
       cleanupTerminalModes()
       printResumeHint()
-      forceExit(code)
+      forceExit(finalExitCode)
     },
     Math.max(5000, sessionEndTimeoutMs + 3500),
-    exitCode,
   )
   failsafeTimer.unref()
-
-  // Set the exit code that will be used when process naturally exits
-  process.exitCode = exitCode
 
   // Exit alt screen and print resume hint FIRST, before any async operations.
   // This ensures the hint is visible even if the process is killed during
@@ -518,7 +541,7 @@ export async function gracefulShutdown(
     }
   }
 
-  forceExit(exitCode)
+  forceExit(finalExitCode)
 }
 
 class CleanupTimeoutError extends Error {

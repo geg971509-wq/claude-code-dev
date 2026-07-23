@@ -717,6 +717,7 @@ export type Options = {
   agentId?: AgentId // Only set for subagents
   outputFormat?: BetaJSONOutputFormat
   fastMode?: boolean
+  verbose?: boolean
   advisorModel?: string
   addNotification?: (notif: Notification) => void
   // API-side task budget (output_config.task_budget). Distinct from the

@@ -9,6 +9,7 @@ import { describe, expect, test } from 'bun:test'
 import { ProviderAPIError, ProviderStreamError } from '@ant/model-provider'
 import { APIConnectionError } from 'openai'
 import {
+  asOpenAIRetryError,
   getOpenAIRequestMaxRetries,
   getOpenAIRetryDelayMs,
   getOpenAIStreamIdleTimeoutMs,
@@ -240,12 +241,67 @@ describe('getOpenAIRetryDelayMs', () => {
     ).toBe(2_000)
   })
 
-  test('uses capped exponential backoff without provider guidance', () => {
+  test('uses class-capped exponential backoff without provider guidance', () => {
     expect(getOpenAIRetryDelayMs(new Error('x'), 1)).toBe(500)
     expect(getOpenAIRetryDelayMs(new Error('x'), 20)).toBe(30_000)
+    expect(getOpenAIRetryDelayMs({ status: 503, message: 'busy' }, 20)).toBe(
+      8_000,
+    )
     expect(
-      getOpenAIRetryDelayMs(new ProviderAPIError(503, 'x', null, 60_000), 1),
+      getOpenAIRetryDelayMs(
+        { status: 502, message: '502 status code (no body)' },
+        20,
+      ),
+    ).toBe(2_000)
+  })
+
+  test('honors explicit 5xx delays up to the global 30s ceiling', () => {
+    expect(
+      getOpenAIRetryDelayMs(new ProviderAPIError(503, 'busy', null, 60_000), 1),
     ).toBe(30_000)
+
+    const empty502 = Object.assign(new Error('502 status code (no body)'), {
+      status: 502,
+      headers: new Headers({ 'retry-after': '18' }),
+    })
+    expect(getOpenAIRetryDelayMs(empty502, 1)).toBe(18_000)
+    expect(getOpenAIRetryDelayMs(empty502, 1, 25_000)).toBe(18_000)
+    expect(getOpenAIRetryDelayMs({ status: 503 }, 1, 25_000)).toBe(25_000)
+  })
+
+  test('keeps full ceiling for 429 rate limits', () => {
+    const rateLimit = new ProviderAPIError(429, 'rate limited', null, 25_000)
+    expect(getOpenAIRetryDelayMs(rateLimit, 1)).toBe(25_000)
+  })
+})
+
+describe('asOpenAIRetryError', () => {
+  test('defaults to a concise UI message and preserves retry metadata', () => {
+    const headers = new Headers({ 'cf-ray': 'abc' })
+    const err = Object.assign(new Error('502 status code (no body)'), {
+      status: 502,
+      statusCode: 502,
+      headers,
+      requestID: 'req_sdk',
+      requestId: 'req_compat',
+    })
+    const wrapped = asOpenAIRetryError(err)
+    expect(wrapped.message).toBe('502 status code (no body)')
+    expect(wrapped.message).not.toMatch(/^\s*at /m)
+    expect(wrapped.cause).toBe(err)
+    expect(wrapped).toMatchObject({
+      status: 502,
+      statusCode: 502,
+      headers,
+      requestID: 'req_sdk',
+      requestId: 'req_compat',
+    })
+    expect(isTransientOpenAIError(wrapped)).toBe(true)
+  })
+
+  test('includes a bounded stack only when explicitly requested', () => {
+    const err = new Error('502 status code (no body)')
+    expect(asOpenAIRetryError(err, true, 4).message).toMatch(/^\s*at /m)
   })
 })
 

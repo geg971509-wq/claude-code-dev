@@ -323,6 +323,13 @@ describe('sideQuery OpenAI ChatGPT OAuth path', () => {
       type: 'function',
       name: 'classify_result',
     })
+    expect(capturedFetch!.body.client_metadata).toEqual(
+      expect.objectContaining({
+        session_id: expect.any(String),
+        thread_id: expect.any(String),
+      }),
+    )
+    expect(capturedFetch!.body).not.toHaveProperty('max_output_tokens')
 
     const toolUse = result.content.find(
       (
@@ -380,7 +387,7 @@ describe('sideQuery OpenAI ChatGPT OAuth path', () => {
     expect(result.usage.cache_creation_input_tokens).toBe(250)
   })
 
-  test('official GPT-5 uses Responses with max tokens and structured output', async () => {
+  test('official GPT-5 uses Codex Responses fields and structured output', async () => {
     delete process.env.OPENAI_AUTH_MODE
     delete process.env.OPENAI_BASE_URL
     process.env.OPENAI_API_KEY = 'sk-test-not-real'
@@ -409,6 +416,7 @@ describe('sideQuery OpenAI ChatGPT OAuth path', () => {
     expect(responsesCreateCount).toBe(1)
     expect(lastResponsesArgs?.model).toBe('gpt-5.1')
     expect(lastResponsesArgs?.max_output_tokens).toBe(321)
+    expect(lastResponsesArgs).not.toHaveProperty('client_metadata')
     expect(lastResponsesArgs?.reasoning).toEqual({
       effort: 'none',
       summary: 'auto',

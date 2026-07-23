@@ -1,6 +1,9 @@
 import type { ChatCompletionChunk } from 'openai/resources/chat/completions/completions.mjs'
 import { getSessionId } from '../../../bootstrap/state.js'
-import { adaptOpenAIStreamToAnthropic } from '@ant/model-provider'
+import {
+  adaptOpenAIStreamToAnthropic,
+  parseRetryAfterMs,
+} from '@ant/model-provider'
 import { isChatGPTAuthEnabled } from './chatgptAuth.js'
 import { getOpenAIClient } from './client.js'
 import {
@@ -16,7 +19,8 @@ import {
 } from './requestBody.js'
 import {
   adaptResponsesStreamToAnthropic,
-  buildResponsesRequest,
+  buildChatGPTResponsesRequest,
+  buildOfficialResponsesRequest,
   createChatGPTResponsesStream,
   createOfficialResponsesStream,
   type OpenAIStreamAttempt,
@@ -55,12 +59,15 @@ export function prepareOpenAIStreamRequest(
     : useOfficialResponses
       ? 'official-responses'
       : 'chat-completions'
+  const sessionId = getSessionId()
+  // ChatGPT private Responses always gets a sticky key. API-key paths only
+  // auto-attach one on official OpenAI hosts — OPENAI_USE_RESPONSES=1 on a
+  // custom proxy must not inherit ccb: keys (compatible providers ignore or
+  // reject OpenAI-specific params). Explicit OPENAI_PROMPT_CACHE_KEY only
+  // overrides when a default key is already allowed for this host.
   const defaultPromptCacheKey = useChatGPTResponses
-    ? formatOpenAIPromptCacheKey(getSessionId())
-    : getOfficialOpenAIPromptCacheKey(
-        process.env.OPENAI_BASE_URL,
-        getSessionId(),
-      )
+    ? formatOpenAIPromptCacheKey(sessionId)
+    : getOfficialOpenAIPromptCacheKey(process.env.OPENAI_BASE_URL, sessionId)
   const promptCacheKey = defaultPromptCacheKey
     ? (resolveOpenAIPromptCacheKey() ?? defaultPromptCacheKey)
     : undefined
@@ -71,23 +78,25 @@ export function prepareOpenAIStreamRequest(
     createAttempt: async signal => {
       if (useChatGPTResponses) {
         return createChatGPTResponsesStream({
-          request: buildResponsesRequest({
+          request: buildChatGPTResponsesRequest({
             model: request.model,
             messages: request.messages,
             tools: request.tools,
             toolChoice: request.toolChoice,
             reasoningEffort: request.reasoningEffort,
             promptCacheKey,
+            sessionId,
             outputFormat: request.outputFormat,
           }),
           signal,
+          sessionId,
           fetchOverride: request.fetchOverride,
         })
       }
 
       if (useOfficialResponses) {
         return createOfficialResponsesStream({
-          request: buildResponsesRequest({
+          request: buildOfficialResponsesRequest({
             model: request.model,
             messages: request.messages,
             tools: request.tools,
@@ -98,6 +107,7 @@ export function prepareOpenAIStreamRequest(
             outputFormat: request.outputFormat,
           }),
           signal,
+          sessionId,
           fetchOverride: request.fetchOverride,
           source: request.source,
         })
@@ -134,7 +144,7 @@ export function prepareOpenAIStreamRequest(
           request_id ??
           response.headers.get('x-request-id') ??
           response.headers.get('request-id'),
-        retryAfterMs: null,
+        retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after')),
         cleanup: () => {
           data.controller.abort()
           void response.body?.cancel().catch(() => {})

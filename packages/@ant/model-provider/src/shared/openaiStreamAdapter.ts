@@ -9,27 +9,6 @@ import { ProviderStreamError } from '../types/providerErrors.js'
 import { normalizeOpenAIUsage } from './openaiUsage.js'
 
 /**
- * Finish-time tool arg validation. Streaming JSON may be incomplete until the
- * last delta; parse once at the boundary so invalid tool calls fail the stream
- * instead of reaching the tool executor with garbage input.
- */
-export function assertValidToolArgumentsJson(
-  name: string,
-  args: string,
-  source: 'chat' | 'responses' = 'chat',
-): void {
-  const raw = args.trim() === '' ? '{}' : args
-  try {
-    JSON.parse(raw)
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    throw new Error(
-      `OpenAI ${source} tool call "${name}" has invalid JSON arguments: ${detail}`,
-    )
-  }
-}
-
-/**
  * Adapt an OpenAI streaming response into Anthropic BetaRawMessageStreamEvent.
  *
  * Mapping:
@@ -346,7 +325,6 @@ export async function* adaptOpenAIStreamToAnthropic(
 
       for (const [, block] of toolBlocks) {
         if (openBlockIndices.has(block.contentIndex)) {
-          assertValidToolArgumentsJson(block.name, block.arguments)
           yield {
             type: 'content_block_stop',
             index: block.contentIndex,

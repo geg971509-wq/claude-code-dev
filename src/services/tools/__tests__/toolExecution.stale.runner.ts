@@ -37,6 +37,9 @@ mock.module('src/services/langfuse/index.js', () => ({
 }))
 
 const { runToolUse } = await import('../toolExecution.js')
+const { isMalformedToolInput, normalizeContentFromAPI } = await import(
+  '../../../utils/messages.js'
+)
 
 function makeTool(name: string): Tool {
   let called = 0
@@ -240,5 +243,46 @@ describe('runToolUse request tool identity', () => {
       messages.some(m => String(m.toolUseResult).includes('Stale tool call')),
     ).toBe(false)
     expect((currentTool as any).getCallCount()).toBe(1)
+  })
+
+  test('rejects malformed streamed JSON before permission or execution', async () => {
+    const tool = makeTool('ProbeTool')
+    const ctx = makeContext([tool])
+    const [normalized] = normalizeContentFromAPI(
+      [
+        {
+          type: 'tool_use',
+          id: 'tu-malformed',
+          name: 'ProbeTool',
+          input: '{bad',
+        },
+      ] as any,
+      [tool],
+    )
+    const block = normalized as ToolUseBlock
+    let permissionCalls = 0
+
+    expect(isMalformedToolInput(block.input)).toBe(true)
+    const messages = await collect(
+      runToolUse(
+        block,
+        makeAssistantMessage('ProbeTool', 'tu-malformed'),
+        async () => {
+          permissionCalls++
+          return { behavior: 'allow' } as any
+        },
+        ctx,
+        [tool],
+      ),
+    )
+
+    const result = (messages[0] as any).message.content[0]
+    expect(result.is_error).toBe(true)
+    expect(String(result.content)).toContain('InputValidationError')
+    expect(String(messages[0]?.toolUseResult)).toContain(
+      'Tool input is not valid JSON',
+    )
+    expect(permissionCalls).toBe(0)
+    expect((tool as any).getCallCount()).toBe(0)
   })
 })

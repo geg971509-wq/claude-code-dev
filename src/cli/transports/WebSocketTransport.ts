@@ -72,6 +72,26 @@ type WebSocketLike = {
   ping?(): void // Bun & ws both support this
 }
 
+type BunWebSocketListeners = {
+  runtime: 'bun'
+  open: () => void
+  message: (event: MessageEvent) => void
+  error: () => void
+  close: (event: CloseEvent) => void
+  pong: () => void
+}
+
+type NodeWebSocketListeners = {
+  runtime: 'node'
+  open: () => void
+  message: (data: Buffer) => void
+  error: (err: Error) => void
+  close: (code: number, reason: Buffer) => void
+  pong: () => void
+}
+
+type WebSocketListeners = BunWebSocketListeners | NodeWebSocketListeners
+
 export class WebSocketTransport implements Transport {
   private ws: WebSocketLike | null = null
   private lastSentId: string | null = null
@@ -105,17 +125,17 @@ export class WebSocketTransport implements Transport {
 
   // Message buffering for replay on reconnection
   private messageBuffer: CircularBuffer<StdoutMessage>
-  // Track which runtime's WS we're using so we can detach listeners
-  // with the matching API (removeEventListener vs. off).
-  private isBunWs = false
+  private wsListeners = new WeakMap<WebSocketLike, WebSocketListeners>()
 
-  // Captured at connect() time for handleOpenEvent timing. Stored as an
-  // instance field so the onOpen handler can be a stable class-property
-  // arrow function (removable in doDisconnect) instead of a closure over
-  // a local variable.
+  // Captured at connect() time for handleOpenEvent timing.
   private connectStartTime = 0
+  private connectAttempt = 0
 
   private refreshHeaders?: () => Record<string, string>
+
+  private ownsConnectAttempt(attempt: number): boolean {
+    return this.connectAttempt === attempt && this.state === 'reconnecting'
+  }
 
   constructor(
     url: URL,
@@ -134,7 +154,8 @@ export class WebSocketTransport implements Transport {
   }
 
   public async connect(): Promise<void> {
-    if (this.state !== 'idle' && this.state !== 'reconnecting') {
+    const isInitialConnect = this.state === 'idle'
+    if (!isInitialConnect && this.state !== 'reconnecting') {
       logForDebugging(
         `WebSocketTransport: Cannot connect, current state is ${this.state}`,
         { level: 'error' },
@@ -143,6 +164,7 @@ export class WebSocketTransport implements Transport {
       return
     }
     this.state = 'reconnecting'
+    const attempt = ++this.connectAttempt
 
     this.connectStartTime = Date.now()
     logForDebugging(`WebSocketTransport: Opening ${this.url.href}`)
@@ -157,141 +179,177 @@ export class WebSocketTransport implements Transport {
       )
     }
 
-    if (typeof Bun !== 'undefined') {
-      // Bun's WebSocket supports headers/proxy options but the DOM typings don't
-      // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-      const ws = new globalThis.WebSocket(this.url.href, {
-        headers,
-        proxy: getWebSocketProxyUrl(this.url.href),
-        tls: getWebSocketTLSOptions() || undefined,
-      } as unknown as string[])
-      this.ws = ws
-      this.isBunWs = true
-
-      ws.addEventListener('open', this.onBunOpen)
-      ws.addEventListener('message', this.onBunMessage)
-      ws.addEventListener('error', this.onBunError)
-      // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-      ws.addEventListener('close', this.onBunClose)
-      // 'pong' is Bun-specific — not in DOM typings.
-      ws.addEventListener('pong', this.onPong)
-    } else {
-      const { default: WS } = await import('ws')
-      const ws = new WS(this.url.href, {
-        headers,
-        agent: getWebSocketProxyAgent(this.url.href),
-        ...getWebSocketTLSOptions(),
-      })
-      this.ws = ws
-      this.isBunWs = false
-
-      ws.on('open', this.onNodeOpen)
-      ws.on('message', this.onNodeMessage)
-      ws.on('error', this.onNodeError)
-      ws.on('close', this.onNodeClose)
-      ws.on('pong', this.onPong)
+    let setupWs: WebSocketLike | null = null
+    try {
+      if (typeof Bun !== 'undefined') {
+        // close() may race after state='reconnecting'
+        if (!this.ownsConnectAttempt(attempt)) return
+        // Bun's WebSocket supports headers/proxy options but the DOM typings don't
+        // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+        const ws = new globalThis.WebSocket(this.url.href, {
+          headers,
+          proxy: getWebSocketProxyUrl(this.url.href),
+          tls: getWebSocketTLSOptions() || undefined,
+        } as unknown as string[])
+        setupWs = ws
+        if (!this.ownsConnectAttempt(attempt)) {
+          ws.close()
+          return
+        }
+        const previousWs = this.ws
+        this.addBunListeners(ws)
+        this.ws = ws
+        if (previousWs && previousWs !== ws) {
+          try {
+            this.closeWebSocket(previousWs)
+          } catch {
+            // The new socket already owns the transport.
+          }
+        }
+      } else {
+        const { default: WS } = await import('ws')
+        // Await yield: close() may have won the race
+        if (!this.ownsConnectAttempt(attempt)) return
+        const ws = new WS(this.url.href, {
+          headers,
+          agent: getWebSocketProxyAgent(this.url.href),
+          ...getWebSocketTLSOptions(),
+        })
+        setupWs = ws
+        if (!this.ownsConnectAttempt(attempt)) {
+          ws.close()
+          return
+        }
+        const previousWs = this.ws
+        this.addNodeListeners(ws)
+        this.ws = ws
+        if (previousWs && previousWs !== ws) {
+          try {
+            this.closeWebSocket(previousWs)
+          } catch {
+            // The new socket already owns the transport.
+          }
+        }
+      }
+    } catch (error) {
+      if (setupWs && this.ws === setupWs) this.ws = null
+      try {
+        if (setupWs) this.closeWebSocket(setupWs)
+      } catch {
+        // Preserve the setup error.
+      }
+      if (this.ownsConnectAttempt(attempt)) {
+        if (isInitialConnect) this.state = 'idle'
+        else this.handleConnectionError()
+      }
+      throw error
     }
   }
 
-  // --- Bun (native WebSocket) event handlers ---
-  // Stored as class-property arrow functions so they can be removed in
-  // doDisconnect(). Without removal, each reconnect orphans the old WS
-  // object + its 5 closures until GC, which accumulates under network
-  // instability. Mirrors the pattern in src/utils/mcpWebSocketTransport.ts.
-
-  private onBunOpen = () => {
-    this.handleOpenEvent()
-    // Bun's WebSocket doesn't expose upgrade response headers,
-    // so replay all buffered messages. The server deduplicates by UUID.
-    if (this.lastSentId) {
-      this.replayBufferedMessages('')
+  private addBunListeners(ws: globalThis.WebSocket): void {
+    const listeners: BunWebSocketListeners = {
+      runtime: 'bun',
+      open: () => {
+        if (this.ws !== ws) return
+        this.handleOpenEvent()
+        if (this.ws === ws && this.lastSentId) {
+          this.replayBufferedMessages('')
+        }
+      },
+      message: event => {
+        if (this.ws !== ws) return
+        const message =
+          typeof event.data === 'string' ? event.data : String(event.data)
+        this.lastActivityTime = Date.now()
+        logForDiagnosticsNoPII('info', 'cli_websocket_message_received', {
+          length: message.length,
+        })
+        this.onData?.(message)
+      },
+      error: () => {
+        if (this.ws !== ws) return
+        logForDebugging('WebSocketTransport: Error', {
+          level: 'error',
+        })
+        logForDiagnosticsNoPII('error', 'cli_websocket_connect_error')
+      },
+      close: event => {
+        if (this.ws !== ws) return
+        const isClean = event.code === 1000 || event.code === 1001
+        logForDebugging(
+          `WebSocketTransport: Closed: ${event.code}`,
+          isClean ? undefined : { level: 'error' },
+        )
+        logForDiagnosticsNoPII('error', 'cli_websocket_connect_closed')
+        this.handleConnectionError(event.code)
+      },
+      pong: () => {
+        if (this.ws === ws) this.pongReceived = true
+      },
     }
+
+    this.wsListeners.set(ws, listeners)
+    ws.addEventListener('open', listeners.open)
+    ws.addEventListener('message', listeners.message)
+    ws.addEventListener('error', listeners.error)
+    // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+    ws.addEventListener('close', listeners.close)
+    // 'pong' is Bun-specific — not in DOM typings.
+    ws.addEventListener('pong', listeners.pong)
   }
 
-  private onBunMessage = (event: MessageEvent) => {
-    const message =
-      typeof event.data === 'string' ? event.data : String(event.data)
-    this.lastActivityTime = Date.now()
-    logForDiagnosticsNoPII('info', 'cli_websocket_message_received', {
-      length: message.length,
-    })
-    if (this.onData) {
-      this.onData(message)
+  private addNodeListeners(ws: WsWebSocket): void {
+    const listeners: NodeWebSocketListeners = {
+      runtime: 'node',
+      open: () => {
+        if (this.ws !== ws) return
+        this.handleOpenEvent()
+        if (this.ws !== ws) return
+        const upgradeResponse = (
+          ws as WsWebSocket & {
+            upgradeReq?: { headers?: Record<string, string> }
+          }
+        ).upgradeReq
+        const serverLastId = upgradeResponse?.headers?.['x-last-request-id']
+        if (serverLastId) this.replayBufferedMessages(serverLastId)
+      },
+      message: data => {
+        if (this.ws !== ws) return
+        const message = data.toString()
+        this.lastActivityTime = Date.now()
+        logForDiagnosticsNoPII('info', 'cli_websocket_message_received', {
+          length: message.length,
+        })
+        this.onData?.(message)
+      },
+      error: err => {
+        if (this.ws !== ws) return
+        logForDebugging(`WebSocketTransport: Error: ${err.message}`, {
+          level: 'error',
+        })
+        logForDiagnosticsNoPII('error', 'cli_websocket_connect_error')
+      },
+      close: code => {
+        if (this.ws !== ws) return
+        const isClean = code === 1000 || code === 1001
+        logForDebugging(
+          `WebSocketTransport: Closed: ${code}`,
+          isClean ? undefined : { level: 'error' },
+        )
+        logForDiagnosticsNoPII('error', 'cli_websocket_connect_closed')
+        this.handleConnectionError(code)
+      },
+      pong: () => {
+        if (this.ws === ws) this.pongReceived = true
+      },
     }
-  }
 
-  private onBunError = () => {
-    logForDebugging('WebSocketTransport: Error', {
-      level: 'error',
-    })
-    logForDiagnosticsNoPII('error', 'cli_websocket_connect_error')
-    // close event fires after error — let it call handleConnectionError
-  }
-
-  // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-  private onBunClose = (event: CloseEvent) => {
-    const isClean = event.code === 1000 || event.code === 1001
-    logForDebugging(
-      `WebSocketTransport: Closed: ${event.code}`,
-      isClean ? undefined : { level: 'error' },
-    )
-    logForDiagnosticsNoPII('error', 'cli_websocket_connect_closed')
-    this.handleConnectionError(event.code)
-  }
-
-  // --- Node (ws package) event handlers ---
-
-  private onNodeOpen = () => {
-    // Capture ws before handleOpenEvent() invokes onConnectCallback — if the
-    // callback synchronously closes the transport, this.ws becomes null.
-    // The old inline-closure code had this safety implicitly via closure capture.
-    const ws = this.ws
-    this.handleOpenEvent()
-    if (!ws) return
-    // Check for last-id in upgrade response headers (ws package only)
-    const nws = ws as unknown as WsWebSocket & {
-      upgradeReq?: { headers?: Record<string, string> }
-    }
-    const upgradeResponse = nws.upgradeReq
-    if (upgradeResponse?.headers?.['x-last-request-id']) {
-      const serverLastId = upgradeResponse.headers['x-last-request-id']
-      this.replayBufferedMessages(serverLastId)
-    }
-  }
-
-  private onNodeMessage = (data: Buffer) => {
-    const message = data.toString()
-    this.lastActivityTime = Date.now()
-    logForDiagnosticsNoPII('info', 'cli_websocket_message_received', {
-      length: message.length,
-    })
-    if (this.onData) {
-      this.onData(message)
-    }
-  }
-
-  private onNodeError = (err: Error) => {
-    logForDebugging(`WebSocketTransport: Error: ${err.message}`, {
-      level: 'error',
-    })
-    logForDiagnosticsNoPII('error', 'cli_websocket_connect_error')
-    // close event fires after error — let it call handleConnectionError
-  }
-
-  private onNodeClose = (code: number, _reason: Buffer) => {
-    const isClean = code === 1000 || code === 1001
-    logForDebugging(
-      `WebSocketTransport: Closed: ${code}`,
-      isClean ? undefined : { level: 'error' },
-    )
-    logForDiagnosticsNoPII('error', 'cli_websocket_connect_closed')
-    this.handleConnectionError(code)
-  }
-
-  // --- Shared handlers ---
-
-  private onPong = () => {
-    this.pongReceived = true
+    this.wsListeners.set(ws, listeners)
+    ws.on('open', listeners.open)
+    ws.on('message', listeners.message)
+    ws.on('error', listeners.error)
+    ws.on('close', listeners.close)
+    ws.on('pong', listeners.pong)
   }
 
   private handleOpenEvent(): void {
@@ -359,23 +417,47 @@ export class WebSocketTransport implements Transport {
    * pattern in src/utils/mcpWebSocketTransport.ts.
    */
   private removeWsListeners(ws: WebSocketLike): void {
-    if (this.isBunWs) {
+    const listeners = this.wsListeners.get(ws)
+    if (!listeners) return
+
+    this.wsListeners.delete(ws)
+    if (listeners.runtime === 'bun') {
       const nws = ws as unknown as globalThis.WebSocket
-      nws.removeEventListener('open', this.onBunOpen)
-      nws.removeEventListener('message', this.onBunMessage)
-      nws.removeEventListener('error', this.onBunError)
+      nws.removeEventListener('open', listeners.open)
+      nws.removeEventListener('message', listeners.message)
+      nws.removeEventListener('error', listeners.error)
       // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-      nws.removeEventListener('close', this.onBunClose)
+      nws.removeEventListener('close', listeners.close)
       // 'pong' is Bun-specific — not in DOM typings
-      nws.removeEventListener('pong' as 'message', this.onPong)
+      nws.removeEventListener('pong' as 'message', listeners.pong)
     } else {
       const nws = ws as unknown as WsWebSocket
-      nws.off('open', this.onNodeOpen)
-      nws.off('message', this.onNodeMessage)
-      nws.off('error', this.onNodeError)
-      nws.off('close', this.onNodeClose)
-      nws.off('pong', this.onPong)
+      nws.off('open', listeners.open)
+      nws.off('message', listeners.message)
+      nws.off('error', listeners.error)
+      nws.off('close', listeners.close)
+      nws.off('pong', listeners.pong)
     }
+  }
+
+  private closeWebSocket(ws: WebSocketLike): void {
+    const runtime = this.wsListeners.get(ws)?.runtime
+    this.removeWsListeners(ws)
+
+    if (runtime === 'node') {
+      const nws = ws as WsWebSocket
+      const ignoreExpectedCloseError = () => {}
+      nws.once('error', ignoreExpectedCloseError)
+      try {
+        nws.close()
+      } catch (error) {
+        nws.off('error', ignoreExpectedCloseError)
+        throw error
+      }
+      return
+    }
+
+    ws.close()
   }
 
   protected doDisconnect(): void {
@@ -387,11 +469,9 @@ export class WebSocketTransport implements Transport {
     unregisterSessionActivityCallback()
 
     if (this.ws) {
-      // Remove listeners BEFORE close() so the old WS + closures can be
-      // GC'd promptly instead of lingering until the next mark-and-sweep.
-      this.removeWsListeners(this.ws)
-      this.ws.close()
+      const ws = this.ws
       this.ws = null
+      this.closeWebSocket(ws)
     }
   }
 
@@ -541,7 +621,12 @@ export class WebSocketTransport implements Transport {
 
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null
-        void this.connect()
+        void this.connect().catch(err => {
+          logForDebugging(
+            `WebSocketTransport: Reconnect failed: ${err instanceof Error ? err.message : String(err)}`,
+            { level: 'error' },
+          )
+        })
       }, delay)
     } else {
       logForDebugging(
@@ -562,6 +647,8 @@ export class WebSocketTransport implements Transport {
   }
 
   close(): void {
+    this.connectAttempt++
+
     // Clear any pending reconnection timer
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
@@ -577,6 +664,7 @@ export class WebSocketTransport implements Transport {
 
     this.state = 'closing'
     this.doDisconnect()
+    this.state = 'closed'
   }
 
   private replayBufferedMessages(lastId: string): void {

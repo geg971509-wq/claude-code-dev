@@ -3,7 +3,9 @@ import { ProviderAPIError } from '@ant/model-provider'
 import { calculateCacheHitRate } from '../../../../utils/cacheWarning.js'
 import {
   adaptResponsesStreamToAnthropic,
-  buildResponsesRequest,
+  buildChatGPTResponsesRequest,
+  buildOfficialResponsesRequest,
+  createOfficialResponsesStream,
   extractUsage,
   parseSSE,
 } from '../responsesAdapter.js'
@@ -40,11 +42,11 @@ async function collectStopReason(
   return stopReason
 }
 
-describe('buildResponsesRequest', () => {
+describe('buildChatGPTResponsesRequest', () => {
   const promptCacheKey = formatOpenAIPromptCacheKey('session-abc-123')
 
   test('includes max reasoning effort for ChatGPT Responses requests', () => {
-    const request = buildResponsesRequest({
+    const request = buildChatGPTResponsesRequest({
       model: 'gpt-5.6-sol',
       messages: [{ role: 'user', content: 'hello' }],
       tools: [],
@@ -57,7 +59,7 @@ describe('buildResponsesRequest', () => {
   })
 
   test('includes reasoning effort for ChatGPT Responses requests', () => {
-    const request = buildResponsesRequest({
+    const request = buildChatGPTResponsesRequest({
       model: 'gpt-5.5',
       messages: [{ role: 'user', content: 'hello' }],
       tools: [],
@@ -70,7 +72,7 @@ describe('buildResponsesRequest', () => {
   })
 
   test('user content is input_text parts; assistant text is output_text parts', () => {
-    const request = buildResponsesRequest({
+    const request = buildChatGPTResponsesRequest({
       model: 'gpt-5',
       messages: [
         { role: 'user', content: 'hello' },
@@ -108,7 +110,7 @@ describe('buildResponsesRequest', () => {
   })
 
   test('omits max_output_tokens when not provided (Codex path)', () => {
-    const request = buildResponsesRequest({
+    const request = buildChatGPTResponsesRequest({
       model: 'gpt-5.5',
       messages: [{ role: 'user', content: 'hello' }],
       tools: [],
@@ -120,7 +122,7 @@ describe('buildResponsesRequest', () => {
   })
 
   test('includes stable prompt_cache_key for session-sticky cache routing', () => {
-    const request = buildResponsesRequest({
+    const request = buildChatGPTResponsesRequest({
       model: 'gpt-5.6-sol',
       messages: [{ role: 'user', content: 'hello' }],
       tools: [],
@@ -133,14 +135,14 @@ describe('buildResponsesRequest', () => {
 
   test('prompt_cache_key is stable across turns (not derived from messages)', () => {
     const key = formatOpenAIPromptCacheKey('same-session')
-    const turn1 = buildResponsesRequest({
+    const turn1 = buildChatGPTResponsesRequest({
       model: 'gpt-5.5',
       messages: [{ role: 'user', content: 'first' }],
       tools: [],
       toolChoice: undefined,
       promptCacheKey: key,
     })
-    const turn2 = buildResponsesRequest({
+    const turn2 = buildChatGPTResponsesRequest({
       model: 'gpt-5.5',
       messages: [
         { role: 'user', content: 'first' },
@@ -243,21 +245,115 @@ describe('extractUsage (OpenAI Responses → Anthropic usage)', () => {
   })
 })
 
-describe('buildResponsesRequest protocol fields', () => {
-  test('includes max_output_tokens for official Responses when provided', () => {
-    const request = buildResponsesRequest({
-      model: 'o3',
+describe('Responses request route contracts', () => {
+  const tool = {
+    type: 'function',
+    function: {
+      name: 'lookup',
+      description: 'Look up a value',
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string' } },
+      },
+    },
+  }
+  const toolChoice = {
+    type: 'function',
+    function: { name: 'lookup' },
+  }
+  const outputFormat = {
+    type: 'json_schema' as const,
+    schema: { type: 'object', properties: { ok: { type: 'boolean' } } },
+  }
+
+  test('keeps the private ChatGPT/Codex request contract', () => {
+    const request = buildChatGPTResponsesRequest({
+      model: 'gpt-5.6-sol',
       messages: [{ role: 'user', content: 'hello' }],
-      tools: [],
-      toolChoice: undefined,
-      maxOutputTokens: 64000,
+      tools: [tool],
+      toolChoice,
+      reasoningEffort: 'max',
+      promptCacheKey: 'ccb:session-abc',
+      sessionId: 'session-abc',
+      store: true,
+      outputFormat,
     }) as Record<string, unknown>
 
-    expect(request.max_output_tokens).toBe(64000)
+    expect(request).toMatchObject({
+      store: true,
+      include: ['reasoning.encrypted_content'],
+      prompt_cache_key: 'ccb:session-abc',
+      client_metadata: {
+        session_id: 'session-abc',
+        thread_id: 'session-abc',
+      },
+      reasoning: { effort: 'max' },
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup',
+          description: 'Look up a value',
+          strict: false,
+        },
+      ],
+      tool_choice: { type: 'function', name: 'lookup' },
+      parallel_tool_calls: true,
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'side_query_output',
+          schema: outputFormat.schema,
+          strict: true,
+        },
+      },
+    })
+    expect('max_output_tokens' in request).toBe(false)
+  })
+
+  test('uses the public OpenAI/Azure SDK request contract', () => {
+    const request = buildOfficialResponsesRequest({
+      model: 'gpt-5.6-sol',
+      messages: [{ role: 'user', content: 'hello' }],
+      tools: [tool],
+      toolChoice,
+      reasoningEffort: 'max',
+      maxOutputTokens: 4096,
+      promptCacheKey: 'ccb:session-abc',
+      sessionId: 'session-abc',
+      store: true,
+      outputFormat,
+    }) as unknown as Record<string, unknown>
+
+    expect(request).toMatchObject({
+      store: true,
+      include: ['reasoning.encrypted_content'],
+      max_output_tokens: 4096,
+      prompt_cache_key: 'ccb:session-abc',
+      reasoning: { effort: 'xhigh' },
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup',
+          description: 'Look up a value',
+          strict: false,
+        },
+      ],
+      tool_choice: { type: 'function', name: 'lookup' },
+      parallel_tool_calls: true,
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'side_query_output',
+          schema: outputFormat.schema,
+          strict: true,
+        },
+      },
+    })
+    expect(request).not.toHaveProperty('client_metadata')
   })
 
   test('includes encrypted reasoning by default; store false unless Azure', () => {
-    const request = buildResponsesRequest({
+    const request = buildChatGPTResponsesRequest({
       model: 'gpt-5',
       messages: [{ role: 'user', content: 'hello' }],
       tools: [],
@@ -267,10 +363,12 @@ describe('buildResponsesRequest protocol fields', () => {
 
     expect(request.include).toEqual(['reasoning.encrypted_content'])
     expect(request.store).toBe(false)
+    expect(request).not.toHaveProperty('tools')
+    expect(request).not.toHaveProperty('tool_choice')
   })
 
   test('store true when explicitly set (Azure Responses)', () => {
-    const request = buildResponsesRequest({
+    const request = buildChatGPTResponsesRequest({
       model: 'gpt-5',
       messages: [{ role: 'user', content: 'hello' }],
       tools: [],
@@ -282,7 +380,7 @@ describe('buildResponsesRequest protocol fields', () => {
   })
 
   test('includes prompt_cache_key when provided', () => {
-    const request = buildResponsesRequest({
+    const request = buildChatGPTResponsesRequest({
       model: 'gpt-5',
       messages: [{ role: 'user', content: 'hello' }],
       tools: [],
@@ -294,7 +392,7 @@ describe('buildResponsesRequest protocol fields', () => {
   })
 
   test('maps JSON schema output to Responses text.format', () => {
-    const request = buildResponsesRequest({
+    const request = buildChatGPTResponsesRequest({
       model: 'gpt-5',
       messages: [{ role: 'user', content: 'hello' }],
       tools: [],
@@ -319,7 +417,7 @@ describe('buildResponsesRequest protocol fields', () => {
   })
 
   test('omits prompt_cache_key entirely when promptCacheKey is not provided', () => {
-    const request = buildResponsesRequest({
+    const request = buildChatGPTResponsesRequest({
       model: 'gpt-5',
       messages: [{ role: 'user', content: 'hello' }],
       tools: [],
@@ -332,7 +430,7 @@ describe('buildResponsesRequest protocol fields', () => {
   })
 
   test('replays encrypted reasoning from prior assistant message', () => {
-    const request = buildResponsesRequest({
+    const request = buildChatGPTResponsesRequest({
       model: 'gpt-5',
       messages: [
         { role: 'user', content: 'hi' },
@@ -444,23 +542,86 @@ describe('adaptResponsesStreamToAnthropic stop_reason', () => {
     })
   })
 
-  test('incomplete_details.max_output_tokens maps to max_tokens', async () => {
-    const stopReason = await collectStopReason([
-      {
-        type: 'response.output_text.delta',
-        delta: 'partial',
-      },
-      {
-        type: 'response.incomplete',
-        response: {
-          status: 'incomplete',
-          incomplete_details: { reason: 'max_output_tokens' },
-          usage: { input_tokens: 3, output_tokens: 1 },
+  test('incomplete_details.max_output_tokens is retryable like Codex', async () => {
+    await expect(
+      collectStopReason([
+        {
+          type: 'response.output_text.delta',
+          delta: 'partial',
         },
-      },
-    ])
+        {
+          type: 'response.incomplete',
+          response: {
+            status: 'incomplete',
+            incomplete_details: { reason: 'max_output_tokens' },
+            usage: { input_tokens: 3, output_tokens: 1 },
+          },
+        },
+      ]),
+    ).rejects.toMatchObject({
+      name: 'ProviderStreamError',
+      kind: 'incomplete',
+      retryable: true,
+      incompleteReason: 'max_output_tokens',
+    })
+  })
+})
 
-    expect(stopReason).toBe('max_tokens')
+describe('createOfficialResponsesStream request contract', () => {
+  test('sends Responses endpoint and session identity headers', async () => {
+    let capturedURL = ''
+    let capturedHeaders = new Headers()
+    let capturedBody: unknown
+    const fetchOverride = Object.assign(
+      async (input: URL | RequestInfo, init?: RequestInit) => {
+        capturedURL =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url
+        capturedHeaders = new Headers(init?.headers)
+        capturedBody =
+          typeof init?.body === 'string' ? JSON.parse(init.body) : undefined
+        return new Response('', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      },
+      { preconnect: () => {} },
+    )
+    const request = buildOfficialResponsesRequest({
+      model: 'gpt-5.6-sol',
+      messages: [{ role: 'user', content: 'hello' }],
+      tools: [],
+      toolChoice: undefined,
+      reasoningEffort: 'max',
+      maxOutputTokens: 2048,
+      promptCacheKey: 'ccb:session-abc',
+    })
+
+    const attempt = await createOfficialResponsesStream({
+      request,
+      signal: new AbortController().signal,
+      apiKey: 'test-key',
+      baseURL: 'https://example.test/v1',
+      sessionId: 'session-abc',
+      fetchOverride,
+    })
+
+    expect(capturedURL).toBe('https://example.test/v1/responses')
+    expect(capturedHeaders.get('session-id')).toBe('session-abc')
+    expect(capturedHeaders.get('thread-id')).toBe('session-abc')
+    expect(capturedHeaders.get('x-client-request-id')).toBe('session-abc')
+    expect(capturedHeaders.get('originator')).toBe('claude-code-best')
+    expect(capturedBody).toMatchObject({
+      max_output_tokens: 2048,
+      reasoning: { effort: 'xhigh' },
+    })
+    expect(capturedBody).not.toHaveProperty('client_metadata')
+    expect(capturedBody).not.toHaveProperty('tools')
+    expect(capturedBody).not.toHaveProperty('tool_choice')
+    attempt.cleanup()
   })
 })
 
@@ -535,7 +696,7 @@ describe('adaptResponsesStreamToAnthropic item_id tool deltas', () => {
 })
 
 describe('adaptResponsesStreamToAnthropic tool JSON + encrypted reasoning', () => {
-  test('rejects invalid tool arguments at finish', async () => {
+  test('soft-fails invalid tool arguments at finish', async () => {
     async function* stream() {
       yield {
         type: 'response.output_item.added',
@@ -561,13 +722,18 @@ describe('adaptResponsesStreamToAnthropic tool JSON + encrypted reasoning', () =
           arguments: '{not-json',
         },
       }
+      yield {
+        type: 'response.completed',
+        response: { status: 'completed' },
+      }
     }
 
-    await expect(async () => {
-      for await (const _ of adaptResponsesStreamToAnthropic(stream(), 'o3')) {
-        // drain
-      }
-    }).toThrow(/invalid JSON arguments/)
+    const events: Array<{ type: string }> = []
+    for await (const event of adaptResponsesStreamToAnthropic(stream(), 'o3')) {
+      events.push(event as { type: string })
+    }
+    // The execution boundary handles invalid arguments without killing the stream.
+    expect(events.some(e => e.type === 'message_stop')).toBe(true)
   })
 
   test('maps reasoning_tokens and encrypted signature', async () => {
@@ -1072,7 +1238,7 @@ describe('formatOpenAIErrorStack / withStack', () => {
 })
 
 describe('formatOpenAIAssistantAPIError (kimi-style 5xx surface)', () => {
-  test('empty-body 502 is server_error without transport stack', () => {
+  test('empty-body 502 is concise by default with diagnostics', () => {
     const err = Object.assign(new Error('502 status code (no body)'), {
       status: 502,
       requestID: null,
@@ -1086,15 +1252,20 @@ describe('formatOpenAIAssistantAPIError (kimi-style 5xx surface)', () => {
       stack:
         'Error: 502 status code (no body)\n    at generate (/$bunfs/root/cli.js:1)\n    at makeRequest (/$bunfs/root/cli.js:2)',
     })
-    const surface = formatOpenAIAssistantAPIError(err, 8)
-    expect(surface.content).toBe('API Error: 502 status code (no body)')
-    expect(surface.content).not.toContain('/$bunfs/root/cli.js')
+    const surface = formatOpenAIAssistantAPIError(err)
+    expect(surface.content).toContain('API Error: ')
+    expect(surface.content).toContain('502 status code (no body)')
     expect(surface.content).not.toContain('at generate')
+    expect(surface.content).not.toContain('at makeRequest')
     expect(surface.apiError).toBe('api_error')
     expect(surface.error).toBe('server_error')
     expect(surface.errorDetails).toContain('status=502')
     expect(surface.errorDetails).toContain('retry_after_ms=60000')
     expect(surface.errorDetails).toContain('trace_id=abc123-SJC')
+
+    const verboseSurface = formatOpenAIAssistantAPIError(err, true, 8)
+    expect(verboseSurface.content).toContain('at generate')
+    expect(verboseSurface.content).toContain('at makeRequest')
   })
 
   test('collects request id and code for 5xx diagnostics', () => {
@@ -1116,25 +1287,30 @@ describe('formatOpenAIAssistantAPIError (kimi-style 5xx surface)', () => {
     )
   })
 
-  test('non-5xx still keeps short stack on user surface', () => {
+  test('non-5xx includes a stack only when explicitly requested', () => {
     const err = Object.assign(new Error('permission denied'), {
       status: 403,
       stack:
         'Error: permission denied\n    at a (a.ts:1)\n    at b (b.ts:2)\n    at c (c.ts:3)',
     })
-    const surface = formatOpenAIAssistantAPIError(err, 8)
+    const surface = formatOpenAIAssistantAPIError(err)
     expect(surface.error).toBe('unknown')
     expect(surface.content).toContain('403')
-    expect(surface.content).toContain('at a')
+    expect(surface.content).not.toContain('at a')
+    expect(formatOpenAIAssistantAPIError(err, true, 8).content).toContain(
+      'at a',
+    )
   })
 
   test('parses status from empty-body message when status field missing', () => {
     const err = new Error('502 status code (no body)')
     err.stack =
       'Error: 502 status code (no body)\n    at generate (/$bunfs/root/cli.js:1)'
-    const surface = formatOpenAIAssistantAPIError(err, 8)
+    const surface = formatOpenAIAssistantAPIError(err)
     expect(surface.error).toBe('server_error')
-    expect(surface.content).toBe('API Error: 502 status code (no body)')
+    expect(surface.content).toContain('API Error: ')
+    expect(surface.content).toContain('502 status code (no body)')
+    expect(surface.content).not.toContain('at generate')
     expect(surface.content).not.toContain('cli.js')
   })
 })

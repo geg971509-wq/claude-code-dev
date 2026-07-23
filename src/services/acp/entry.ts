@@ -3,6 +3,7 @@ import type { Stream } from '@agentclientprotocol/sdk'
 import { Readable, Writable } from 'node:stream'
 import { AcpAgent } from './agent.js'
 import { enableConfigs } from '../../utils/config.js'
+import { isAbortError } from '../../utils/errors.js'
 import { applySafeConfigEnvironmentVariables } from '../../utils/managedEnv.js'
 
 /**
@@ -47,26 +48,48 @@ export async function runAcpAgent(): Promise<void> {
   console.warn = console.error
   console.debug = console.error
 
-  async function shutdown(): Promise<void> {
-    // Clean up all active sessions
-    for (const [sessionId] of agent.sessions) {
+  let finalExitCode = 0
+  let shutdownPromise: Promise<void> | undefined
+
+  function shutdown(exitCode = 0): Promise<void> {
+    finalExitCode = Math.max(finalExitCode, exitCode)
+    shutdownPromise ??= (async () => {
       try {
-        await agent.unstable_closeSession({ sessionId })
+        // Clean up all active sessions
+        for (const [sessionId] of agent.sessions) {
+          try {
+            await agent.unstable_closeSession({ sessionId })
+          } catch {
+            // Best-effort cleanup
+          }
+        }
       } catch {
-        // Best-effort cleanup
+        finalExitCode = 1
       }
-    }
-    process.exit(0)
+      process.exit(finalExitCode)
+    })()
+    return shutdownPromise
   }
 
   // Exit cleanly when the ACP connection closes
-  connection.closed.then(shutdown).catch(shutdown)
+  connection.closed.then(
+    () => shutdown(0),
+    () => shutdown(0),
+  )
 
-  process.on('SIGTERM', shutdown)
-  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', () => {
+    void shutdown(0)
+  })
+  process.on('SIGINT', () => {
+    void shutdown(0)
+  })
 
   process.on('unhandledRejection', (reason, promise) => {
+    // Match gracefulShutdown: cancelled work is not fatal.
+    if (isAbortError(reason)) return
     console.error('Unhandled Rejection at:', promise, 'reason:', reason)
+    // Listener suppresses Node default crash — wait for ordered cleanup.
+    void shutdown(1)
   })
 
   // Keep process alive while connection is open

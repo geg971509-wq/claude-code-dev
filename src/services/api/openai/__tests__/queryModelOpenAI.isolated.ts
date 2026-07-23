@@ -136,6 +136,7 @@ type AttemptPlan = {
   handshakeError?: unknown
   streamError?: unknown
   requestId?: string
+  retryAfter?: string
 }
 
 /** Async generator from a fixed array of events */
@@ -334,7 +335,12 @@ mock.module('../client.js', () => ({
                 data,
                 response: {
                   status: 200,
-                  headers: new Headers({ 'x-request-id': requestId }),
+                  headers: new Headers({
+                    'x-request-id': requestId,
+                    ...(plan.retryAfter && {
+                      'retry-after': plan.retryAfter,
+                    }),
+                  }),
                   body: null,
                 },
                 request_id: requestId,
@@ -706,6 +712,38 @@ describe('queryModelOpenAI — retry boundaries', () => {
     })
   })
 
+  test('honors explicit 502 delay and keeps retry UI concise by default', async () => {
+    const empty502 = Object.assign(new Error('502 status code (no body)'), {
+      status: 502,
+      headers: new Headers({ 'retry-after': '0' }),
+    })
+    empty502.stack =
+      'Error: 502 status code (no body)\n    at generate (/$bunfs/root/cli.js:1)\n    at makeRequest (/$bunfs/root/cli.js:2)'
+
+    const { assistantMessages, otherOutputs } = await runQueryModel(
+      [],
+      { OPENAI_REQUEST_MAX_RETRIES: '1' },
+      [
+        { handshakeError: empty502 },
+        { events: completedEvents('recovered'), requestId: 'req_recovered' },
+      ],
+    )
+
+    expect(_createCalls).toBe(2)
+    expect(assistantMessages).toHaveLength(1)
+    expect(assistantMessages[0]!.requestId).toBe('req_recovered')
+    expect(otherOutputs).toHaveLength(1)
+    expect(otherOutputs[0]).toMatchObject({
+      type: 'system',
+      subtype: 'api_error',
+      retryAttempt: 1,
+      maxRetries: 1,
+      retryInMs: 0,
+    })
+    expect(otherOutputs[0].error.message).not.toContain('at generate')
+    expect(otherOutputs[0].error.message).not.toContain('at makeRequest')
+  })
+
   test('retries a pre-semantic stream failure without leaking its prelude', async () => {
     const { assistantMessages, streamEvents, otherOutputs } =
       await runQueryModel([], { OPENAI_STREAM_MAX_RETRIES: '1' }, [
@@ -726,6 +764,37 @@ describe('queryModelOpenAI — retry boundaries', () => {
       subtype: 'api_error',
       retryAttempt: 1,
       maxRetries: 1,
+    })
+  })
+
+  test('uses response-level Retry-After for a pre-semantic stream retry', async () => {
+    const streamError = new realModelProvider.ProviderStreamError(
+      'stream disconnected',
+      {
+        kind: 'provider',
+        retryable: true,
+        terminal: false,
+      },
+    )
+    const { assistantMessages, otherOutputs } = await runQueryModel(
+      [],
+      { OPENAI_STREAM_MAX_RETRIES: '1' },
+      [
+        {
+          events: [makeMessageStart()],
+          streamError,
+          retryAfter: '0',
+        },
+        { events: completedEvents('recovered') },
+      ],
+    )
+
+    expect(assistantMessages).toHaveLength(1)
+    expect(otherOutputs[0]).toMatchObject({
+      type: 'system',
+      subtype: 'api_error',
+      retryInMs: 0,
+      retryAttempt: 1,
     })
   })
 

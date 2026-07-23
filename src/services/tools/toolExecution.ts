@@ -77,6 +77,7 @@ import {
   createStopHookSummaryMessage,
   createToolResultStopMessage,
   createUserMessage,
+  isMalformedToolInput,
   withMemoryCorrectionHint,
 } from '../../utils/messages.js'
 import type {
@@ -467,6 +468,26 @@ export async function* runToolUse(
           },
         ],
         toolUseResult: `Error: No such tool available: ${toolName}`,
+        sourceToolAssistantUUID: assistantMessage.uuid,
+      }),
+    }
+    return
+  }
+
+  if (isMalformedToolInput(toolUse.input)) {
+    const detail = 'InputValidationError: Tool input is not valid JSON'
+    logForDebugging(`${tool.name} tool input error: ${detail}`)
+    yield {
+      message: createUserMessage({
+        content: [
+          {
+            type: 'tool_result',
+            content: `<tool_use_error>${detail}</tool_use_error>`,
+            is_error: true,
+            tool_use_id: toolUse.id,
+          },
+        ],
+        toolUseResult: detail,
         sourceToolAssistantUUID: assistantMessage.uuid,
       }),
     }

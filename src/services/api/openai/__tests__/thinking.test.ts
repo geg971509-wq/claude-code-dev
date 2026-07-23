@@ -395,7 +395,7 @@ describe('isOpenAIReasoningChatModel / shouldUseOpenAIResponsesAPI', () => {
     expect(isOpenAIReasoningChatModel('openai')).toBe(false)
   })
 
-  test('auto-routes reasoning models only on official OpenAI/Azure bases', () => {
+  test('auto-routes reasoning models only on known Responses endpoints', () => {
     delete process.env.OPENAI_USE_RESPONSES
     delete process.env.OPENAI_BASE_URL
     expect(shouldUseOpenAIResponsesAPI('o3')).toBe(true)
@@ -407,6 +407,7 @@ describe('isOpenAIReasoningChatModel / shouldUseOpenAIResponsesAPI', () => {
     expect(isOpenAIResponsesCapableBaseURL()).toBe(false)
     expect(shouldUseOpenAIResponsesAPI('o3')).toBe(false)
     expect(shouldUseOpenAIResponsesAPI('gpt-5')).toBe(false)
+    expect(shouldUseOpenAIResponsesAPI('gpt-5-chat')).toBe(false)
 
     process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
     expect(shouldUseOpenAIResponsesAPI('o3')).toBe(true)
@@ -426,6 +427,7 @@ describe('isOpenAIReasoningChatModel / shouldUseOpenAIResponsesAPI', () => {
     process.env.OPENAI_BASE_URL = 'http://192.168.8.2:8080/v1'
     process.env.OPENAI_USE_RESPONSES = '1'
     expect(shouldUseOpenAIResponsesAPI('gpt-4o')).toBe(true)
+    expect(shouldUseOpenAIResponsesAPI('o3')).toBe(true)
 
     process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
     process.env.OPENAI_USE_RESPONSES = '0'

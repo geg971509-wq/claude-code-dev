@@ -73,8 +73,6 @@ import { APIConnectionError as OpenAIAPIConnectionError } from 'openai'
 import { shortErrorStack } from '../../../utils/errors.js'
 import { sleep } from '../../../utils/sleep.js'
 
-export { assertValidToolArgumentsJson } from '@ant/model-provider'
-
 export type OpenAIUsageCounters = {
   input_tokens: number
   output_tokens: number
@@ -319,7 +317,7 @@ export function formatOpenAIErrorStack(error: unknown, maxFrames = 12): string {
   return chunks.join('\nCaused by:\n')
 }
 
-/** User-visible error body: message + short stack (for REPL / transcripts). */
+/** Error body with a bounded stack for explicit verbose/debug surfaces. */
 export function formatOpenAIErrorWithStack(
   error: unknown,
   maxFrames = 8,
@@ -437,7 +435,7 @@ export function formatOpenAIErrorDetails(
 }
 
 export type OpenAIAssistantAPIErrorFields = {
-  /** Full `API Error: …` user content (no stack for HTTP 5xx). */
+  /** Full `API Error: …` user content. */
   content: string
   apiError: 'api_error'
   /** SDK classification — 5xx → server_error (kimi normalizeAPIStatusError). */
@@ -449,34 +447,30 @@ export type OpenAIAssistantAPIErrorFields = {
  * Build the assistant API-error message fields for OpenAI/Grok catch paths.
  *
  * Mirrors kimi's convertOpenAIError + normalizeAPIStatusError intent:
- * typed status classification, allowlisted diagnostics, short user surface.
- * HTTP 5xx never include transport stacks (those look like local crashes in
- * bundled `/$bunfs/root/cli.js`). Non-5xx keep a short stack for diagnosis
- * (historical 403 allowlist work). Retry policy is unchanged.
+ * typed status classification + allowlisted diagnostics. The default user
+ * surface is concise; callers may explicitly include a bounded stack in
+ * verbose/debug mode. Full stack/cause still goes to debug logs at the catch site.
  */
 export function formatOpenAIAssistantAPIError(
   error: unknown,
+  includeStack = false,
   maxStackFrames = 8,
 ): OpenAIAssistantAPIErrorFields {
   const message = formatOpenAIErrorMessage(error)
   const diagnostics = collectOpenAIErrorDiagnostics(error)
   const errorDetails = formatOpenAIErrorDetails(diagnostics)
   const status = diagnostics.status
-
-  if (status != null && status >= 500) {
-    return {
-      content: `API Error: ${message}`,
-      apiError: 'api_error',
-      error: 'server_error',
-      errorDetails: errorDetails ?? message,
-    }
-  }
+  const isServerError = status != null && status >= 500
 
   return {
-    content: `API Error: ${formatOpenAIErrorWithStack(error, maxStackFrames)}`,
+    content: `API Error: ${includeStack ? formatOpenAIErrorWithStack(error, maxStackFrames) : message}`,
     apiError: 'api_error',
-    error: 'unknown',
-    ...(errorDetails ? { errorDetails } : {}),
+    error: isServerError ? 'server_error' : 'unknown',
+    ...(isServerError
+      ? { errorDetails: errorDetails ?? message }
+      : errorDetails
+        ? { errorDetails }
+        : {}),
   }
 }
 
@@ -532,6 +526,10 @@ export function toProviderHttpError(error: unknown): ProviderAPIError | null {
 
 const TRANSIENT_RETRY_BASE_DELAY_MS = 500
 const TRANSIENT_RETRY_MAX_DELAY_MS = 30_000
+/** Empty-body gateway 5xx fallback backoff stays short without server guidance. */
+const EMPTY_BODY_5XX_MAX_DELAY_MS = 2_000
+/** Non-empty 5xx fallback backoff stays below the global explicit-delay ceiling. */
+const SERVER_ERROR_MAX_DELAY_MS = 8_000
 const DEFAULT_TRANSIENT_MAX_RETRIES = 5
 const DEFAULT_OPENAI_REQUEST_MAX_RETRIES = 4
 const DEFAULT_OPENAI_STREAM_MAX_RETRIES = 5
@@ -606,9 +604,33 @@ export function getTransientOpenAIMaxRetries(): number {
   return DEFAULT_TRANSIENT_MAX_RETRIES
 }
 
-export function getOpenAIRetryDelayMs(error: unknown, attempt: number): number {
-  // Server-directed delay first: layered ProviderAPIError.retryAfterMs,
-  // then a raw Retry-After header on SDK errors.
+function isEmptyBodyHttpStatusError(error: unknown): boolean {
+  return /\b[45]\d\d\s+status code\s*\(no body\)/i.test(
+    formatOpenAIErrorMessage(error),
+  )
+}
+
+/**
+ * Cap for exponential fallback when the provider supplied no retry delay.
+ * Explicit provider/header delays use the shared 30-second ceiling instead.
+ */
+function getOpenAIFallbackRetryMaxDelayMs(error: unknown): number {
+  const message = formatOpenAIErrorMessage(error)
+  const status =
+    getProviderErrorStatus(error) ?? statusFromOpenAIErrorMessage(message)
+  if (status != null && status >= 500) {
+    return isEmptyBodyHttpStatusError(error)
+      ? EMPTY_BODY_5XX_MAX_DELAY_MS
+      : SERVER_ERROR_MAX_DELAY_MS
+  }
+  return TRANSIENT_RETRY_MAX_DELAY_MS
+}
+
+export function getOpenAIRetryDelayMs(
+  error: unknown,
+  attempt: number,
+  responseRetryAfterMs?: number | null,
+): number {
   const fromProvider = getProviderRetryAfterMs(error)
   if (fromProvider !== null) {
     return Math.min(fromProvider, TRANSIENT_RETRY_MAX_DELAY_MS)
@@ -622,10 +644,58 @@ export function getOpenAIRetryDelayMs(error: unknown, attempt: number): number {
   if (fromHeader !== null) {
     return Math.min(fromHeader, TRANSIENT_RETRY_MAX_DELAY_MS)
   }
+  if (responseRetryAfterMs != null && responseRetryAfterMs >= 0) {
+    return Math.min(responseRetryAfterMs, TRANSIENT_RETRY_MAX_DELAY_MS)
+  }
+  const fallbackMaxDelay = getOpenAIFallbackRetryMaxDelayMs(error)
   return Math.min(
     TRANSIENT_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1),
-    TRANSIENT_RETRY_MAX_DELAY_MS,
+    fallbackMaxDelay,
   )
+}
+
+/**
+ * Error payload for mid-retry SystemAPIErrorMessage UI. The default message is
+ * concise; verbose/debug callers may include a bounded stack. The original
+ * error remains as `cause` for debug logs. Status/headers are copied so a future
+ * misuse of the wrapped error still classifies as transient.
+ */
+export function asOpenAIRetryError(
+  error: unknown,
+  includeStack = false,
+  maxStackFrames = 8,
+): Error {
+  const message = includeStack
+    ? formatOpenAIErrorWithStack(error, maxStackFrames)
+    : formatOpenAIErrorMessage(error)
+  const wrapped =
+    error instanceof Error
+      ? Object.assign(new Error(message, { cause: error }), {
+          name: error.name,
+        })
+      : new Error(message)
+  if (error != null && typeof error === 'object') {
+    const src = error as {
+      status?: unknown
+      statusCode?: unknown
+      headers?: unknown
+      requestID?: unknown
+      requestId?: unknown
+    }
+    const dest = wrapped as Error & {
+      status?: unknown
+      statusCode?: unknown
+      headers?: unknown
+      requestID?: unknown
+      requestId?: unknown
+    }
+    if (src.status !== undefined) dest.status = src.status
+    if (src.statusCode !== undefined) dest.statusCode = src.statusCode
+    if (src.headers !== undefined) dest.headers = src.headers
+    if (src.requestID !== undefined) dest.requestID = src.requestID
+    if (src.requestId !== undefined) dest.requestId = src.requestId
+  }
+  return wrapped
 }
 
 export type TransientRetryInfo = {

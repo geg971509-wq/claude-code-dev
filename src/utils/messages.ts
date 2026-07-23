@@ -152,6 +152,7 @@ import { hasEmbeddedSearchTools } from './embeddedTools.js'
 import { formatFileSize } from './format.js'
 import { validateImagesForAPI } from './imageValidation.js'
 import { safeParseJSON } from './json.js'
+import { stripBOM } from './jsonRead.js'
 import { logError, logMCPDebug } from './log.js'
 import { normalizeLegacyToolName } from './permissions/permissionRuleParser.js'
 import {
@@ -2977,6 +2978,25 @@ export function mergeUserContentBlocks(
   return [...a.slice(0, -1), smooshed, ...toolResults]
 }
 
+const MALFORMED_TOOL_INPUT = Symbol('malformedToolInput')
+type MalformedToolInput = Record<string, unknown> & {
+  [MALFORMED_TOOL_INPUT]?: true
+}
+
+function createMalformedToolInput(): Record<string, unknown> {
+  const input: MalformedToolInput = {}
+  Object.defineProperty(input, MALFORMED_TOOL_INPUT, { value: true })
+  return input
+}
+
+export function isMalformedToolInput(input: unknown): boolean {
+  return (
+    typeof input === 'object' &&
+    input !== null &&
+    (input as MalformedToolInput)[MALFORMED_TOOL_INPUT] === true
+  )
+}
+
 // Sometimes the API returns empty messages (eg. "\n\n"). We need to filter these out,
 // otherwise they will give an API error when we send them to the API next time we call query().
 export function normalizeContentFromAPI(
@@ -3005,30 +3025,35 @@ export function normalizeContentFromAPI(
         // TODO: This needs patching as recursive fields can still be stringified
         let normalizedInput: unknown
         if (typeof contentBlock.input === 'string') {
-          const parsed = safeParseJSON(contentBlock.input)
-          if (parsed === null && contentBlock.input.length > 0) {
-            // TET/FC-v3 diagnostic: the streamed tool input JSON failed to
-            // parse. We fall back to {} which means downstream validation
-            // sees empty input. The raw prefix goes to debug log only — no
-            // PII-tagged proto column exists for it yet.
-            logEvent('tengu_tool_input_json_parse_fail', {
-              toolName: sanitizeToolNameForAnalytics(contentBlock.name),
-              inputLen: contentBlock.input.length,
-            })
-            if (process.env.USER_TYPE === 'ant') {
-              logForDebugging(
-                `tool input JSON parse fail: ${contentBlock.input.slice(0, 200)}`,
-                { level: 'warn' },
-              )
+          if (contentBlock.input.trim() === '') {
+            normalizedInput = {}
+          } else {
+            try {
+              normalizedInput = JSON.parse(stripBOM(contentBlock.input))
+            } catch {
+              normalizedInput = createMalformedToolInput()
+              logEvent('tengu_tool_input_json_parse_fail', {
+                toolName: sanitizeToolNameForAnalytics(contentBlock.name),
+                inputLen: contentBlock.input.length,
+              })
+              if (process.env.USER_TYPE === 'ant') {
+                logForDebugging(
+                  `tool input JSON parse fail: ${contentBlock.input.slice(0, 200)}`,
+                  { level: 'warn' },
+                )
+              }
             }
           }
-          normalizedInput = parsed ?? {}
         } else {
           normalizedInput = contentBlock.input
         }
 
         // Then apply tool-specific corrections
-        if (typeof normalizedInput === 'object' && normalizedInput !== null) {
+        if (
+          typeof normalizedInput === 'object' &&
+          normalizedInput !== null &&
+          !isMalformedToolInput(normalizedInput)
+        ) {
           const tool = findToolByName(tools, contentBlock.name)
           if (tool) {
             try {

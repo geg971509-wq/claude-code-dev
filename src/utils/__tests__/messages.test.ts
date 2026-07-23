@@ -32,6 +32,8 @@ import {
   buildMessageLookups,
   updateMessageLookupsIncremental,
   computeMessageStructureKey,
+  isMalformedToolInput,
+  normalizeContentFromAPI,
 } from '../messages'
 import type {
   Message,
@@ -498,6 +500,48 @@ describe('normalizeMessages', () => {
     const msg = makeAssistantMsg([{ type: 'text', text: 'hello' }])
     const normalized = normalizeMessages([msg])
     expect(normalized.length).toBe(1)
+  })
+})
+
+describe('normalizeContentFromAPI tool input JSON', () => {
+  function normalizeInput(input: string): unknown {
+    const [block] = normalizeContentFromAPI(
+      [
+        {
+          type: 'tool_use',
+          id: 'toolu_test',
+          name: 'ProbeTool',
+          input,
+        },
+      ] as any,
+      [],
+    )
+    return (block as { input: unknown }).input
+  }
+
+  test('marks malformed JSON without serializing the marker', () => {
+    const input = normalizeInput('{bad')
+
+    expect(isMalformedToolInput(input)).toBe(true)
+    expect(Object.keys(input as object)).toEqual([])
+    expect(JSON.stringify(input)).toBe('{}')
+  })
+
+  test('preserves valid null without marking it malformed', () => {
+    const input = normalizeInput('null')
+
+    expect(input).toBeNull()
+    expect(isMalformedToolInput(input)).toBe(false)
+  })
+
+  test('keeps empty and valid object inputs unmarked', () => {
+    const empty = normalizeInput('  ')
+    const valid = normalizeInput('{"value":1}')
+
+    expect(empty).toEqual({})
+    expect(isMalformedToolInput(empty)).toBe(false)
+    expect(valid).toEqual({ value: 1 })
+    expect(isMalformedToolInput(valid)).toBe(false)
   })
 })
 

@@ -15,6 +15,7 @@ import type {
 import type { AgentId } from '../../../types/ids.js'
 import type { Tools } from '../../../Tool.js'
 import {
+  asOpenAIRetryError,
   formatOpenAIAssistantAPIError,
   formatOpenAIErrorMessage,
   formatOpenAIErrorStack,
@@ -62,7 +63,7 @@ import {
   getEmptyToolPermissionContext,
   toolMatchesName,
 } from '../../../Tool.js'
-import { logForDebugging } from '../../../utils/debug.js'
+import { isDebugMode, logForDebugging } from '../../../utils/debug.js'
 import { addToTotalSessionCost } from '../../../cost-tracker.js'
 import { calculateUSDCost } from '../../../utils/modelCost.js'
 import {
@@ -191,10 +192,8 @@ function isSemanticOpenAIEvent(event: BetaRawMessageStreamEvent): boolean {
   return true
 }
 
-function asRetryError(error: unknown): Error {
-  return error instanceof Error
-    ? error
-    : new Error(formatOpenAIErrorMessage(error))
+function asRetryError(error: unknown, includeStack: boolean): Error {
+  return asOpenAIRetryError(error, includeStack)
 }
 
 /**
@@ -279,6 +278,7 @@ export async function* queryModelOpenAI(
   StreamEvent | AssistantMessage | SystemAPIErrorMessage,
   void
 > {
+  const includeErrorStack = options.verbose === true || isDebugMode()
   try {
     // 1. Resolve model name
     const openaiModel = resolveOpenAIModel(options.model)
@@ -405,9 +405,9 @@ export async function* queryModelOpenAI(
 
     // 11. Call OpenAI API with streaming.
     // - ChatGPT subscription auth → Codex Responses (no max_output_tokens).
-    // - API-key + capable base + o*/gpt-5* (or OPENAI_USE_RESPONSES=1) →
-    //   official /v1/responses (with max_output_tokens).
-    // - API-key otherwise → Chat Completions (custom proxies stay here by default).
+    // - API-key + o*/gpt-5* (or OPENAI_USE_RESPONSES=1) → official
+    //   OpenAI/Azure /v1/responses (with max_output_tokens).
+    // - API-key otherwise → Chat Completions.
     const preparedRequest = prepareOpenAIStreamRequest({
       model: openaiModel,
       messages: openaiMessages,
@@ -491,7 +491,7 @@ export async function* queryModelOpenAI(
           error,
         })
         yield createSystemAPIErrorMessage(
-          asRetryError(error),
+          asRetryError(error, includeErrorStack),
           delayMs,
           requestRetries,
           requestMaxRetries,
@@ -700,7 +700,11 @@ export async function* queryModelOpenAI(
         }
 
         streamRetries++
-        const delayMs = getOpenAIRetryDelayMs(streamError, streamRetries)
+        const delayMs = getOpenAIRetryDelayMs(
+          streamError,
+          streamRetries,
+          attempt.retryAfterMs,
+        )
         logOpenAIRawLifecycle({
           lifecycle: 'retry',
           route: openaiRoute,
@@ -718,7 +722,7 @@ export async function* queryModelOpenAI(
           error: streamError,
         })
         yield createSystemAPIErrorMessage(
-          asRetryError(streamError),
+          asRetryError(streamError, includeErrorStack),
           delayMs,
           streamRetries,
           streamMaxRetries,
@@ -776,13 +780,12 @@ export async function* queryModelOpenAI(
       return
     }
     const errorMessage = formatOpenAIErrorMessage(error)
-    // Full stack + cause chain in debug only; user surface is kimi-style
-    // short message (5xx) or short stack (non-5xx).
+    // Full stack + cause chain stays in debug logs.
     logForDebugging(
       `[OpenAI] Error: ${errorMessage}\n${formatOpenAIErrorStack(error, 16)}`,
       { level: 'error' },
     )
-    const surface = formatOpenAIAssistantAPIError(error, 8)
+    const surface = formatOpenAIAssistantAPIError(error, includeErrorStack, 8)
     yield createAssistantAPIErrorMessage({
       content: surface.content,
       apiError: surface.apiError,
