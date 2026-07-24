@@ -1,3 +1,4 @@
+import { APIUserAbortError } from '@anthropic-ai/sdk'
 import type {
   BetaToolUnion,
   BetaMessage,
@@ -41,6 +42,7 @@ import {
   isProviderRequestTooLargeError,
 } from '@ant/model-provider'
 import { getAssistantMessageFromError } from '../errors.js'
+import { isOpenAIUserAbortError } from '../openai/openaiShared.js'
 
 export async function* queryModelGemini(
   messages: Message[],
@@ -261,6 +263,11 @@ export async function* queryModelGemini(
           : undefined,
     })
   } catch (error) {
+    if (signal.aborted || isOpenAIUserAbortError(error)) {
+      if (error instanceof APIUserAbortError) throw error
+      throw new APIUserAbortError()
+    }
+
     const errorMessage = error instanceof Error ? error.message : String(error)
     logForDebugging(`[Gemini] Error: ${errorMessage}`, { level: 'error' })
     // Lift HTTP-status-shaped Gemini/SDK errors into layered types.

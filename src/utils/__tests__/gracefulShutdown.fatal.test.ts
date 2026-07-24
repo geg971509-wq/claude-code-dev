@@ -173,17 +173,40 @@ describe('gracefulShutdown fatal handlers', () => {
     }
   }, 30_000)
 
-  test('shared abort values are ignored', async () => {
+  test('shared AbortError exits 0 after one ordered cleanup', async () => {
     const { code, output } = await runScript(`
       import { AbortError } from './src/utils/errors.ts'
       ${setup}
-      Promise.reject(new AbortError('cancelled'))
+      setTimeout(() => { throw new AbortError('cancelled') }, 0)
+    `)
+
+    expect(code).toBe(0)
+    expect(output).toContain('cleanup-runs:1')
+    expect(output).not.toContain('diagnostic:')
+  })
+
+  test('named AbortError exits 0 after one ordered cleanup', async () => {
+    const { code, output } = await runScript(`
+      ${setup}
       const namedAbort = new Error('cancelled')
       namedAbort.name = 'AbortError'
       setTimeout(() => { throw namedAbort }, 0)
     `)
 
     expect(code).toBe(0)
+    expect(output).toContain('cleanup-runs:1')
+    expect(output).not.toContain('diagnostic:')
+  })
+
+  test('rejected abort remains silent and non-fatal', async () => {
+    const { code, output } = await runScript(`
+      import { AbortError } from './src/utils/errors.ts'
+      ${setup}
+      Promise.reject(new AbortError('cancelled'))
+    `)
+
+    expect(code).toBe(0)
+    expect(output).toContain('cleanup-runs:0')
     expect(output).not.toContain('diagnostic:')
   })
 })

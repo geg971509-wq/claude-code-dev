@@ -59,6 +59,7 @@ class McpSocketClient {
   private maxReconnectAttempts = 10
   private reconnectDelay = 1000
   private reconnectTimer: NodeJS.Timeout | null = null
+  private requestQueue: Promise<void> = Promise.resolve()
   private context: ClaudeForChromeContext
   // When true, disables automatic reconnection. Used by McpSocketPool which
   // manages reconnection externally by rescanning available sockets.
@@ -345,7 +346,14 @@ class McpSocketClient {
       },
     }
 
-    return this.sendRequestWithRetry(request)
+    const result = this.requestQueue.then(() =>
+      this.sendRequestWithRetry(request),
+    )
+    this.requestQueue = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    return result
   }
 
   /**

@@ -37,12 +37,49 @@ import {
 // Minimal WSContext mock
 function createMockWs(readyState = 1) {
   const sent: string[] = []
+  const closes: Array<{ code?: number; reason?: string }> = []
   return {
     readyState,
     send: (data: string) => sent.push(data),
-    close: (_code?: number, _reason?: string) => {},
+    close: (code?: number, reason?: string) => closes.push({ code, reason }),
     getSentData: () => sent,
+    getCloseCalls: () => closes,
   } as any
+}
+
+function withFakeClock(
+  run: (clock: { advanceTo(timeMs: number): void }) => void,
+): void {
+  const originalNow = Date.now
+  const originalSetInterval = globalThis.setInterval
+  const originalClearInterval = globalThis.clearInterval
+  const intervals = new Map<number, () => void>()
+  let now = 0
+  let nextId = 1
+
+  Date.now = () => now
+  globalThis.setInterval = ((callback: () => void) => {
+    const id = nextId++
+    intervals.set(id, callback)
+    return id
+  }) as unknown as typeof setInterval
+  globalThis.clearInterval = ((id: ReturnType<typeof setInterval>) => {
+    intervals.delete(id as unknown as number)
+  }) as typeof clearInterval
+
+  try {
+    run({
+      advanceTo(timeMs) {
+        now = timeMs
+        for (const callback of [...intervals.values()]) callback()
+      },
+    })
+  } finally {
+    closeAllConnections()
+    Date.now = originalNow
+    globalThis.setInterval = originalSetInterval
+    globalThis.clearInterval = originalClearInterval
+  }
 }
 
 describe('ws-handler', () => {
@@ -247,6 +284,34 @@ describe('ws-handler', () => {
       })
       expect(ws2.getSentData().length).toBeGreaterThanOrEqual(1)
     })
+
+    test('allows the normal client keepalive interval', () => {
+      withFakeClock(clock => {
+        const ws = createMockWs()
+        handleWebSocketOpen(ws, 'idle-session')
+
+        clock.advanceTo(120_000)
+
+        expect(ws.getCloseCalls()).toHaveLength(0)
+      })
+    })
+
+    test('uses the latest client activity for inactivity timeout', () => {
+      withFakeClock(clock => {
+        const ws = createMockWs()
+        handleWebSocketOpen(ws, 'active-session')
+
+        clock.advanceTo(120_000)
+        handleWebSocketMessage(ws, 'active-session', '{"type":"keep_alive"}\n')
+        clock.advanceTo(420_000)
+        expect(ws.getCloseCalls()).toHaveLength(0)
+
+        clock.advanceTo(420_001)
+        expect(ws.getCloseCalls()).toEqual([
+          { code: 1000, reason: 'client inactive' },
+        ])
+      })
+    })
   })
 
   describe('handleWebSocketMessage', () => {
@@ -256,6 +321,7 @@ describe('ws-handler', () => {
       bus.subscribe(e => events.push(e))
 
       const ws = createMockWs()
+      handleWebSocketOpen(ws, 's1')
       const data =
         JSON.stringify({
           type: 'user',
@@ -277,8 +343,48 @@ describe('ws-handler', () => {
       bus.subscribe(e => events.push(e))
 
       const ws = createMockWs()
+      handleWebSocketOpen(ws, 's1')
       handleWebSocketMessage(ws, 's1', 'not json\n')
       expect(events).toHaveLength(0)
+    })
+
+    test('ignores messages from a replaced socket', () => {
+      const bus = getEventBus('stale-message')
+      const events: unknown[] = []
+      bus.subscribe(event => events.push(event))
+      const stale = createMockWs()
+      const active = createMockWs()
+      handleWebSocketOpen(stale, 'stale-message')
+      handleWebSocketOpen(active, 'stale-message')
+
+      handleWebSocketMessage(
+        stale,
+        'stale-message',
+        '{"type":"user","message":{"role":"user","content":"stale"}}\n',
+      )
+
+      expect(events).toHaveLength(0)
+    })
+
+    test('does not let a replaced socket refresh the active timeout', () => {
+      withFakeClock(clock => {
+        const stale = createMockWs()
+        const active = createMockWs()
+        handleWebSocketOpen(stale, 'stale-activity')
+        clock.advanceTo(10_000)
+        handleWebSocketOpen(active, 'stale-activity')
+        clock.advanceTo(310_000)
+        handleWebSocketMessage(
+          stale,
+          'stale-activity',
+          '{"type":"keep_alive"}\n',
+        )
+
+        clock.advanceTo(310_001)
+        expect(active.getCloseCalls()).toEqual([
+          { code: 1000, reason: 'client inactive' },
+        ])
+      })
     })
   })
 
@@ -299,6 +405,43 @@ describe('ws-handler', () => {
           direction: 'outbound',
         }),
       ).not.toThrow()
+    })
+
+    test('does not let a replaced socket close the active subscription', () => {
+      const stale = createMockWs()
+      const active = createMockWs()
+      handleWebSocketOpen(stale, 'stale-close')
+      handleWebSocketOpen(active, 'stale-close')
+
+      handleWebSocketClose(stale, 'stale-close', 1000, 'late close')
+      getEventBus('stale-close').publish({
+        id: 'after-stale-close',
+        sessionId: 'stale-close',
+        type: 'user',
+        payload: { content: 'still active' },
+        direction: 'outbound',
+      })
+
+      expect(active.getSentData()).toHaveLength(1)
+    })
+
+    test('still cleans up when the active replacement closes', () => {
+      const stale = createMockWs()
+      const active = createMockWs()
+      handleWebSocketOpen(stale, 'active-close')
+      handleWebSocketOpen(active, 'active-close')
+      handleWebSocketClose(stale, 'active-close', 1000, 'late close')
+      handleWebSocketClose(active, 'active-close', 1000, 'done')
+
+      getEventBus('active-close').publish({
+        id: 'after-active-close',
+        sessionId: 'active-close',
+        type: 'user',
+        payload: { content: 'closed' },
+        direction: 'outbound',
+      })
+
+      expect(active.getSentData()).toHaveLength(0)
     })
   })
 

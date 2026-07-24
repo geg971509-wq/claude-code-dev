@@ -39,6 +39,29 @@ function eventSequence(events: any[]) {
 }
 
 describe('adaptGeminiStreamToAnthropic', () => {
+  test('rejects an empty stream without emitting protocol events', async () => {
+    const events: Array<{ type: string }> = []
+    const consume = async () => {
+      for await (const event of adaptGeminiStreamToAnthropic(
+        mockStream([]),
+        'gemini-2.5-flash',
+      )) {
+        events.push(event)
+      }
+    }
+
+    const error = await consume().catch(error => error)
+    expect(error).toBeInstanceOf(ProviderStreamError)
+    expect(error).toMatchObject({
+      kind: 'premature_eof',
+      retryable: true,
+      terminal: false,
+      completionState: 'incomplete',
+      incompleteReason: 'empty_stream',
+    })
+    expect(events).toEqual([])
+  })
+
   test('converts text chunks', async () => {
     const events = await collectEvents([
       {

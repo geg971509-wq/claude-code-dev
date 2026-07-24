@@ -16,16 +16,24 @@ interface CleanupEntry {
 }
 const cleanupBySession = new Map<string, CleanupEntry>()
 
+function webSocketIdentity(ws: WSContext): unknown {
+  return ws.raw ?? ws
+}
+
+function isSameWebSocket(left: WSContext, right: WSContext): boolean {
+  return webSocketIdentity(left) === webSocketIdentity(right)
+}
+
 // Track all active WS connections for graceful shutdown
-const activeConnections = new Set<WSContext>()
+const activeConnections = new Map<unknown, WSContext>()
 
 // Server-side keepalive interval (configurable via RCS_WS_KEEPALIVE_INTERVAL).
 // Sends data frames to keep reverse proxies from closing idle connections.
 const SERVER_KEEPALIVE_INTERVAL_MS = (config.wsKeepaliveInterval || 20) * 1000
 
-// If no client data received within this threshold, the connection is
-// considered dead. Set to 3x keepalive to tolerate one missed interval.
-const CLIENT_ACTIVITY_TIMEOUT_MS = SERVER_KEEPALIVE_INTERVAL_MS * 3
+// Reuse the agent disconnect window so the normal 120s client heartbeat has
+// enough headroom before an otherwise healthy idle connection is closed.
+const CLIENT_ACTIVITY_TIMEOUT_MS = config.disconnectTimeout * 1000
 
 /**
  * Convert internal EventBus event -> SDK message for bridge client.
@@ -41,7 +49,7 @@ export function handleWebSocketOpen(ws: WSContext, sessionId: string) {
   const openTime = Date.now()
   const lastClientActivity = Date.now()
   log(`[RC-DEBUG] [WS] Open session=${sessionId}`)
-  activeConnections.add(ws)
+  activeConnections.set(webSocketIdentity(ws), ws)
 
   // If there's an existing connection for this session, clean it up first
   const existing = cleanupBySession.get(sessionId)
@@ -49,7 +57,7 @@ export function handleWebSocketOpen(ws: WSContext, sessionId: string) {
     log(`[WS] Replacing existing connection for session=${sessionId}`)
     existing.unsub()
     clearInterval(existing.keepalive)
-    activeConnections.delete(existing.ws)
+    activeConnections.delete(webSocketIdentity(existing.ws))
   }
 
   const bus = getEventBus(sessionId)
@@ -84,12 +92,13 @@ export function handleWebSocketOpen(ws: WSContext, sessionId: string) {
   })
 
   const keepalive = setInterval(() => {
-    if (ws.readyState !== 1) {
+    const current = cleanupBySession.get(sessionId)
+    if (!current || !isSameWebSocket(current.ws, ws) || ws.readyState !== 1) {
       clearInterval(keepalive)
       return
     }
     // Check if client is still alive — close if no data received for too long
-    const silenceMs = Date.now() - lastClientActivity
+    const silenceMs = Date.now() - current.lastClientActivity
     if (silenceMs > CLIENT_ACTIVITY_TIMEOUT_MS) {
       log(
         `[WS] Client inactive for ${Math.round(silenceMs / 1000)}s on session=${sessionId}, closing dead connection`,
@@ -127,9 +136,9 @@ export function handleWebSocketMessage(
 ) {
   // Track client activity for dead-connection detection
   const entry = cleanupBySession.get(sessionId)
-  if (entry) {
-    entry.lastClientActivity = Date.now()
-  }
+  if (!entry || !isSameWebSocket(entry.ws, ws)) return
+  entry.lastClientActivity = Date.now()
+
   const lines = data.split('\n').filter(l => l.trim())
   for (const line of lines) {
     try {
@@ -147,16 +156,19 @@ export function handleWebSocketClose(
   code?: number,
   reason?: string,
 ) {
-  activeConnections.delete(ws)
+  activeConnections.delete(webSocketIdentity(ws))
 
   const entry = cleanupBySession.get(sessionId)
-  const duration = entry ? Math.round((Date.now() - entry.openTime) / 1000) : -1
+  const ownsEntry = entry !== undefined && isSameWebSocket(entry.ws, ws)
+  const duration = ownsEntry
+    ? Math.round((Date.now() - entry.openTime) / 1000)
+    : -1
 
   log(
     `[WS] Close session=${sessionId} code=${code ?? 'none'} reason=${reason || '(none)'} duration=${duration}s`,
   )
 
-  if (entry) {
+  if (ownsEntry) {
     entry.unsub()
     clearInterval(entry.keepalive)
     cleanupBySession.delete(sessionId)

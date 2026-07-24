@@ -1,10 +1,13 @@
-import { describe, expect, mock, test } from 'bun:test'
+import { APIUserAbortError } from '@anthropic-ai/sdk'
+import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import type { AssistantMessage } from '../../../../types/message.js'
 import type { GeminiStreamChunk } from '../../../../../packages/@ant/model-provider/src/index.js'
 import * as realModelProvider from '../../../../../packages/@ant/model-provider/src/index.js'
 import { debugMock } from '../../../../../tests/mocks/debug'
 
 mock.module('src/utils/debug.ts', debugMock)
+
+let streamError: unknown
 
 const chunks: GeminiStreamChunk[] = [
   {
@@ -52,6 +55,7 @@ mock.module('@ant/model-provider', () => ({
 mock.module('src/services/api/gemini/client.ts', () => ({
   streamGeminiGenerateContent: () => ({
     async *[Symbol.asyncIterator]() {
+      if (streamError !== undefined) throw streamError
       yield* chunks
     },
   }),
@@ -98,6 +102,38 @@ mock.module('src/services/langfuse/convert.ts', () => ({
 }))
 
 describe('queryModelGemini final message state', () => {
+  beforeEach(() => {
+    streamError = undefined
+  })
+
+  test('rethrows user cancellation without yielding an API error message', async () => {
+    streamError = Object.assign(new Error('operation was aborted'), {
+      name: 'AbortError',
+    })
+    const { queryModelGemini } = await import('../index.js')
+    const items: unknown[] = []
+    const consume = async () => {
+      for await (const item of queryModelGemini(
+        [],
+        [] as never,
+        [],
+        new AbortController().signal,
+        {
+          model: 'gemini-test',
+          tools: [],
+          agents: [],
+          querySource: 'main_loop',
+        } as never,
+        { type: 'disabled' },
+      )) {
+        items.push(item)
+      }
+    }
+
+    await expect(consume()).rejects.toBeInstanceOf(APIUserAbortError)
+    expect(items).toEqual([])
+  })
+
   test('writes final usage and stop reason to the last content message', async () => {
     recordedUsage = undefined
     const { queryModelGemini } = await import('../index.js')

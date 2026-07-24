@@ -4,6 +4,54 @@ import type { ConnectedMCPServer } from '../types.js'
 import type { McpClientDependencies } from '../interfaces.js'
 import { McpAuthError, McpToolCallError } from '../errors.js'
 
+type TimeoutSpy = {
+  scheduled: number
+  cleared: unknown[]
+  fire(): void
+}
+
+async function withTimeoutSpy(
+  run: (spy: TimeoutSpy) => Promise<void>,
+): Promise<void> {
+  const originalSetTimeout = globalThis.setTimeout
+  const originalClearTimeout = globalThis.clearTimeout
+  const callbacks: Array<() => void> = []
+  const handle = { unref() {} } as unknown as ReturnType<typeof setTimeout>
+  const spy: TimeoutSpy = {
+    scheduled: 0,
+    cleared: [],
+    fire() {
+      callbacks.at(-1)?.()
+    },
+  }
+
+  globalThis.setTimeout = ((callback: () => void) => {
+    spy.scheduled++
+    callbacks.push(callback)
+    return handle
+  }) as typeof setTimeout
+  globalThis.clearTimeout = ((timeout: unknown) => {
+    spy.cleared.push(timeout)
+  }) as typeof clearTimeout
+
+  try {
+    await run(spy)
+  } finally {
+    globalThis.setTimeout = originalSetTimeout
+    globalThis.clearTimeout = originalClearTimeout
+  }
+}
+
+function createMockConnection(
+  callTool: (...args: any[]) => any,
+): ConnectedMCPServer {
+  return {
+    name: 'test-server',
+    client: { callTool },
+    type: 'connected' as const,
+  } as unknown as ConnectedMCPServer
+}
+
 function createMockDeps(): McpClientDependencies {
   return {
     logger: {
@@ -19,6 +67,147 @@ function createMockDeps(): McpClientDependencies {
 }
 
 describe('callMcpTool', () => {
+  test('clears the race timeout after success', async () => {
+    await withTimeoutSpy(async spy => {
+      const connection = createMockConnection(() =>
+        Promise.resolve({ content: [{ type: 'text', text: 'ok' }] }),
+      )
+
+      await callMcpTool(
+        {
+          client: connection,
+          tool: 'success',
+          args: {},
+          signal: new AbortController().signal,
+        },
+        createMockDeps(),
+      )
+
+      expect(spy.scheduled).toBe(1)
+      expect(spy.cleared).toHaveLength(1)
+    })
+  })
+
+  test('clears the race timeout after client rejection', async () => {
+    await withTimeoutSpy(async spy => {
+      const connection = createMockConnection(() =>
+        Promise.reject(new Error('client failed')),
+      )
+
+      await expect(
+        callMcpTool(
+          {
+            client: connection,
+            tool: 'reject',
+            args: {},
+            signal: new AbortController().signal,
+          },
+          createMockDeps(),
+        ),
+      ).rejects.toThrow('client failed')
+      expect(spy.scheduled).toBe(1)
+      expect(spy.cleared).toHaveLength(1)
+    })
+  })
+
+  test('clears the race timeout after a synchronous client throw', async () => {
+    await withTimeoutSpy(async spy => {
+      const connection = createMockConnection(() => {
+        throw new Error('sync failed')
+      })
+
+      await expect(
+        callMcpTool(
+          {
+            client: connection,
+            tool: 'sync-throw',
+            args: {},
+            signal: new AbortController().signal,
+          },
+          createMockDeps(),
+        ),
+      ).rejects.toThrow('sync failed')
+      expect(spy.scheduled).toBe(1)
+      expect(spy.cleared).toHaveLength(1)
+    })
+  })
+
+  test('clears the race timeout when isError is converted', async () => {
+    await withTimeoutSpy(async spy => {
+      const connection = createMockConnection(() =>
+        Promise.resolve({
+          isError: true,
+          content: [{ type: 'text', text: 'tool failed' }],
+        }),
+      )
+
+      await expect(
+        callMcpTool(
+          {
+            client: connection,
+            tool: 'is-error',
+            args: {},
+            signal: new AbortController().signal,
+          },
+          createMockDeps(),
+        ),
+      ).rejects.toBeInstanceOf(McpToolCallError)
+      expect(spy.scheduled).toBe(1)
+      expect(spy.cleared).toHaveLength(1)
+    })
+  })
+
+  test('clears the race timeout after timeout', async () => {
+    await withTimeoutSpy(async spy => {
+      const connection = createMockConnection(() => new Promise(() => {}))
+      const call = callMcpTool(
+        {
+          client: connection,
+          tool: 'timeout',
+          args: {},
+          signal: new AbortController().signal,
+          timeoutMs: 500,
+        },
+        createMockDeps(),
+      )
+
+      spy.fire()
+      await expect(call).rejects.toThrow('timed out after 0s')
+      expect(spy.scheduled).toBe(1)
+      expect(spy.cleared).toHaveLength(1)
+    })
+  })
+
+  test('clears the race timeout after abort', async () => {
+    await withTimeoutSpy(async spy => {
+      const controller = new AbortController()
+      const connection = createMockConnection(
+        (_request, _schema, options: { signal: AbortSignal }) =>
+          new Promise((_, reject) => {
+            options.signal.addEventListener('abort', () => {
+              const error = new Error('aborted')
+              error.name = 'AbortError'
+              reject(error)
+            })
+          }),
+      )
+      const call = callMcpTool(
+        {
+          client: connection,
+          tool: 'abort',
+          args: {},
+          signal: controller.signal,
+        },
+        createMockDeps(),
+      )
+
+      controller.abort()
+      await expect(call).rejects.toMatchObject({ name: 'AbortError' })
+      expect(spy.scheduled).toBe(1)
+      expect(spy.cleared).toHaveLength(1)
+    })
+  })
+
   test('calls tool and returns result', async () => {
     const mockResult = {
       content: [{ type: 'text', text: 'result data' }],

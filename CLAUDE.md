@@ -56,9 +56,6 @@ bun run format            # format all (全项目)
 bun run check             # lint + format check (全项目)
 bun run check:fix         # lint + format auto-fix
 
-# Health check
-bun run health
-
 # Check unused exports
 bun run check:unused
 

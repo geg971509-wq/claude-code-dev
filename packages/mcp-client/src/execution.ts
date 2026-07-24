@@ -62,6 +62,7 @@ export async function callMcpTool(
   const effectiveTimeout = timeoutMs ?? getMcpToolTimeoutMs()
 
   let progressInterval: ReturnType<typeof setInterval> | undefined
+  let clearToolTimeout: (() => void) | undefined
 
   try {
     deps.logger.debug(`[${serverName}] Calling MCP tool: ${tool}`)
@@ -71,6 +72,8 @@ export async function callMcpTool(
       deps.logger.debug(`[${serverName}] Tool '${tool}' still running`)
     }, 30_000)
 
+    const timeout = createTimeoutPromise(serverName, tool, effectiveTimeout)
+    clearToolTimeout = timeout.clear
     const result = await Promise.race([
       mcpClient.callTool(
         {
@@ -85,7 +88,7 @@ export async function callMcpTool(
           onprogress: onProgress,
         },
       ),
-      createTimeoutPromise(serverName, tool, effectiveTimeout),
+      timeout.promise,
     ])
 
     // Handle isError in result
@@ -138,6 +141,7 @@ export async function callMcpTool(
 
     throw e
   } finally {
+    clearToolTimeout?.()
     if (progressInterval !== undefined) {
       clearInterval(progressInterval)
     }
@@ -159,9 +163,10 @@ function createTimeoutPromise(
   serverName: string,
   tool: string,
   timeoutMs: number,
-): Promise<never> {
-  return new Promise((_, reject) => {
-    const timeoutId = setTimeout(() => {
+): { promise: Promise<never>; clear: () => void } {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined
+  const promise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
       reject(
         new Error(
           `MCP server "${serverName}" tool "${tool}" timed out after ${Math.floor(timeoutMs / 1000)}s`,
@@ -170,4 +175,11 @@ function createTimeoutPromise(
     }, timeoutMs)
     timeoutId.unref?.()
   })
+
+  return {
+    promise,
+    clear: () => {
+      if (timeoutId !== undefined) clearTimeout(timeoutId)
+    },
+  }
 }

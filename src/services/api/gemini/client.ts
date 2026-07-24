@@ -1,15 +1,17 @@
 import { parseSSEFrames } from 'src/cli/transports/SSETransport.js'
 import { errorMessage } from 'src/utils/errors.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
-import type {
-  GeminiGenerateContentRequest,
-  GeminiStreamChunk,
+import {
+  ProviderStreamError,
+  type GeminiGenerateContentRequest,
+  type GeminiStreamChunk,
 } from '@ant/model-provider'
 
 const DEFAULT_GEMINI_BASE_URL =
   'https://generativelanguage.googleapis.com/v1beta'
 
 const STREAM_DECODE_OPTS: TextDecodeOptions = { stream: true }
+const MAX_RETAINED_SSE_BUFFER_BYTES = 1024 * 1024
 
 function getGeminiBaseUrl(): string {
   return (process.env.GEMINI_BASE_URL || DEFAULT_GEMINI_BASE_URL).replace(
@@ -21,6 +23,35 @@ function getGeminiBaseUrl(): string {
 function getGeminiModelPath(model: string): string {
   const normalized = model.replace(/^\/+/, '')
   return normalized.startsWith('models/') ? normalized : `models/${normalized}`
+}
+
+function parseGeminiPayload(
+  data: string | undefined,
+  trailing: boolean,
+): GeminiStreamChunk | undefined {
+  if (!data || data === '[DONE]') return undefined
+
+  try {
+    return JSON.parse(data) as GeminiStreamChunk
+  } catch (error) {
+    const location = trailing ? 'trailing Gemini' : 'Gemini'
+    throw new Error(
+      `Failed to parse ${location} SSE payload: ${errorMessage(error)}`,
+    )
+  }
+}
+
+function assertRetainedBufferWithinLimit(buffer: string): void {
+  if (buffer.length <= MAX_RETAINED_SSE_BUFFER_BYTES) return
+
+  throw new ProviderStreamError(
+    `Gemini SSE retained buffer exceeded ${MAX_RETAINED_SSE_BUFFER_BYTES} bytes`,
+    {
+      kind: 'protocol',
+      retryable: true,
+      terminal: false,
+    },
+  )
 }
 
 export async function* streamGeminiGenerateContent(params: {
@@ -68,27 +99,26 @@ export async function* streamGeminiGenerateContent(params: {
       buffer = remaining
 
       for (const frame of frames) {
-        if (!frame.data || frame.data === '[DONE]') continue
-        try {
-          yield JSON.parse(frame.data) as GeminiStreamChunk
-        } catch (error) {
-          throw new Error(
-            `Failed to parse Gemini SSE payload: ${errorMessage(error)}`,
-          )
-        }
+        const chunk = parseGeminiPayload(frame.data, false)
+        if (chunk) yield chunk
       }
+      assertRetainedBufferWithinLimit(buffer)
     }
 
     buffer += decoder.decode()
-    const { frames } = parseSSEFrames(buffer)
-    for (const frame of frames) {
-      if (!frame.data || frame.data === '[DONE]') continue
-      try {
-        yield JSON.parse(frame.data) as GeminiStreamChunk
-      } catch (error) {
-        throw new Error(
-          `Failed to parse trailing Gemini SSE payload: ${errorMessage(error)}`,
-        )
+    const parsed = parseSSEFrames(buffer)
+    buffer = parsed.remaining
+    for (const frame of parsed.frames) {
+      const chunk = parseGeminiPayload(frame.data, true)
+      if (chunk) yield chunk
+    }
+    assertRetainedBufferWithinLimit(buffer)
+
+    if (buffer.trim()) {
+      const trailing = parseSSEFrames(`${buffer}\n\n`)
+      for (const frame of trailing.frames) {
+        const chunk = parseGeminiPayload(frame.data, true)
+        if (chunk) yield chunk
       }
     }
   } finally {

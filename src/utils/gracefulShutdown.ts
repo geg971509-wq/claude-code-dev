@@ -296,7 +296,10 @@ export const setupGracefulShutdown = memoize(() => {
   // default crash — swallow-only left the process half-alive. Always ordered
   // exit (not sole-listener): coexisting handlers must not restore swallow.
   process.on('uncaughtException', (error: unknown) => {
-    if (isAbortError(error)) return
+    if (isAbortError(error)) {
+      void gracefulShutdown(0)
+      return
+    }
     const errorName = error instanceof Error ? error.name : typeof error
     logForDiagnosticsNoPII('error', 'uncaught_exception', {
       error_name: errorName,

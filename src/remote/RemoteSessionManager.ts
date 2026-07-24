@@ -130,14 +130,22 @@ export class RemoteSessionManager {
       },
     }
 
-    this.websocket = new SessionsWebSocket(
+    const websocket = new SessionsWebSocket(
       this.config.sessionId,
       this.config.orgUuid,
       this.config.getAccessToken,
       wsCallbacks,
     )
+    this.websocket = websocket
 
-    void this.websocket.connect()
+    void websocket.connect().catch(error => {
+      if (this.websocket !== websocket) return
+      const normalizedError =
+        error instanceof Error ? error : new Error(String(error))
+      logError(normalizedError)
+      this.callbacks.onError?.(normalizedError)
+      this.callbacks.onDisconnected?.()
+    })
   }
 
   /**

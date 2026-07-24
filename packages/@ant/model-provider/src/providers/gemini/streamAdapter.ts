@@ -222,7 +222,16 @@ export async function* adaptGeminiStreamToAnthropic(
   }
 
   if (!started) {
-    return
+    throw new ProviderStreamError(
+      'Gemini stream ended before yielding a chunk',
+      {
+        kind: 'premature_eof',
+        retryable: true,
+        terminal: false,
+        completionState: 'incomplete',
+        incompleteReason: 'empty_stream',
+      },
+    )
   }
 
   const normalizedFinishReason = normalizeGeminiFinishReason(finishReason)
