@@ -4,6 +4,7 @@ import {
   finishReasonToAnthropicStopReason,
   normalizeGeminiFinishReason,
 } from '../../types/finishReason.js'
+import { ProviderStreamError } from '../../types/providerErrors.js'
 import type { GeminiPart, GeminiStreamChunk } from './types.js'
 
 export async function* adaptGeminiStreamToAnthropic(
@@ -16,6 +17,21 @@ export async function* adaptGeminiStreamToAnthropic(
   let nextContentIndex = 0
   let openTextLikeBlock: { index: number; type: 'text' | 'thinking' } | null =
     null
+  let buffering = false
+  const pendingEvents: BetaRawMessageStreamEvent[] = []
+  const emit = (
+    event: BetaRawMessageStreamEvent,
+  ): BetaRawMessageStreamEvent[] => {
+    if (buffering) {
+      pendingEvents.push(event)
+      return []
+    }
+    return [event]
+  }
+  const defer = (event: BetaRawMessageStreamEvent) => {
+    buffering = true
+    pendingEvents.push(event)
+  }
   let sawToolUse = false
   let finishReason: string | undefined
   let inputTokens = 0
@@ -58,17 +74,17 @@ export async function* adaptGeminiStreamToAnthropic(
     for (const part of parts) {
       if (part.functionCall) {
         if (openTextLikeBlock) {
-          yield {
+          defer({
             type: 'content_block_stop',
             index: openTextLikeBlock.index,
-          } as BetaRawMessageStreamEvent
+          } as BetaRawMessageStreamEvent)
           openTextLikeBlock = null
         }
 
         sawToolUse = true
         const toolIndex = nextContentIndex++
         const toolId = `toolu_${randomUUID().replace(/-/g, '').slice(0, 24)}`
-        yield {
+        for (const event of emit({
           type: 'content_block_start',
           index: toolIndex,
           content_block: {
@@ -77,37 +93,43 @@ export async function* adaptGeminiStreamToAnthropic(
             name: part.functionCall.name || '',
             input: {},
           },
-        } as BetaRawMessageStreamEvent
+        } as BetaRawMessageStreamEvent)) {
+          yield event
+        }
 
         if (part.thoughtSignature) {
-          yield {
+          for (const event of emit({
             type: 'content_block_delta',
             index: toolIndex,
             delta: {
               type: 'signature_delta',
               signature: part.thoughtSignature,
             },
-          } as BetaRawMessageStreamEvent
+          } as BetaRawMessageStreamEvent)) {
+            yield event
+          }
         }
 
         if (
           part.functionCall.args &&
           Object.keys(part.functionCall.args).length > 0
         ) {
-          yield {
+          for (const event of emit({
             type: 'content_block_delta',
             index: toolIndex,
             delta: {
               type: 'input_json_delta',
               partial_json: JSON.stringify(part.functionCall.args),
             },
-          } as BetaRawMessageStreamEvent
+          } as BetaRawMessageStreamEvent)) {
+            yield event
+          }
         }
 
-        yield {
+        defer({
           type: 'content_block_stop',
           index: toolIndex,
-        } as BetaRawMessageStreamEvent
+        } as BetaRawMessageStreamEvent)
         continue
       }
 
@@ -115,10 +137,10 @@ export async function* adaptGeminiStreamToAnthropic(
       if (textLikeType) {
         if (!openTextLikeBlock || openTextLikeBlock.type !== textLikeType) {
           if (openTextLikeBlock) {
-            yield {
+            defer({
               type: 'content_block_stop',
               index: openTextLikeBlock.index,
-            } as BetaRawMessageStreamEvent
+            } as BetaRawMessageStreamEvent)
           }
 
           openTextLikeBlock = {
@@ -126,7 +148,7 @@ export async function* adaptGeminiStreamToAnthropic(
             type: textLikeType,
           }
 
-          yield {
+          for (const event of emit({
             type: 'content_block_start',
             index: openTextLikeBlock.index,
             content_block:
@@ -140,11 +162,13 @@ export async function* adaptGeminiStreamToAnthropic(
                     type: 'text',
                     text: '',
                   },
-          } as BetaRawMessageStreamEvent
+          } as BetaRawMessageStreamEvent)) {
+            yield event
+          }
         }
 
         if (part.text) {
-          yield {
+          for (const event of emit({
             type: 'content_block_delta',
             index: openTextLikeBlock.index,
             delta:
@@ -157,32 +181,38 @@ export async function* adaptGeminiStreamToAnthropic(
                     type: 'text_delta',
                     text: part.text,
                   },
-          } as BetaRawMessageStreamEvent
+          } as BetaRawMessageStreamEvent)) {
+            yield event
+          }
         }
 
         if (part.thoughtSignature) {
-          yield {
+          for (const event of emit({
             type: 'content_block_delta',
             index: openTextLikeBlock.index,
             delta: {
               type: 'signature_delta',
               signature: part.thoughtSignature,
             },
-          } as BetaRawMessageStreamEvent
+          } as BetaRawMessageStreamEvent)) {
+            yield event
+          }
         }
 
         continue
       }
 
       if (part.thoughtSignature && openTextLikeBlock) {
-        yield {
+        for (const event of emit({
           type: 'content_block_delta',
           index: openTextLikeBlock.index,
           delta: {
             type: 'signature_delta',
             signature: part.thoughtSignature,
           },
-        } as BetaRawMessageStreamEvent
+        } as BetaRawMessageStreamEvent)) {
+          yield event
+        }
       }
     }
 
@@ -195,11 +225,34 @@ export async function* adaptGeminiStreamToAnthropic(
     return
   }
 
+  const normalizedFinishReason = normalizeGeminiFinishReason(finishReason)
+  if (normalizedFinishReason.finishReason === null) {
+    throw new ProviderStreamError(
+      'Gemini stream ended before a valid finishReason was received',
+      {
+        kind: 'premature_eof',
+        retryable: true,
+        terminal: false,
+        completionState: 'incomplete',
+        incompleteReason: 'missing_finish_reason',
+      },
+    )
+  }
+
   if (openTextLikeBlock) {
-    yield {
+    const stopEvent = {
       type: 'content_block_stop',
       index: openTextLikeBlock.index,
     } as BetaRawMessageStreamEvent
+    if (buffering) {
+      pendingEvents.push(stopEvent)
+    } else {
+      yield stopEvent
+    }
+  }
+
+  for (const event of pendingEvents) {
+    yield event
   }
 
   if (!stopped) {

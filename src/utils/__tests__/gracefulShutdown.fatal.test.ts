@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { readFileSync } from 'fs'
 import { resolve } from 'path'
 
 const PROJECT_ROOT = resolve(__dirname, '..', '..', '..')
@@ -86,6 +87,28 @@ const setup = `
 `
 
 describe('gracefulShutdown fatal handlers', () => {
+  test('main does not register a duplicate SIGINT process.exit handler', () => {
+    const source = readFileSync(resolve(PROJECT_ROOT, 'src/main.tsx'), 'utf8')
+    expect(source).not.toContain("process.on('SIGINT'")
+  })
+
+  test('failsafe still exits when hook timeout lookup fails', async () => {
+    const { code, output } = await runScript(`
+      process.env.SHUTDOWN_TEST_MODE = 'sync-rejection'
+      ${setup}
+      const keepAlive = setInterval(() => {}, 1000)
+      process.on('exit', () => clearInterval(keepAlive))
+      void gracefulShutdown(1).catch(error => {
+        console.error('rejection:' + error.message)
+      })
+      setTimeout(() => process.exit(9), 6500)
+    `)
+
+    expect(code).toBe(1)
+    expect(output).toContain('rejection:hook timeout lookup failed')
+    expect(output).toContain('cleanup-runs:0')
+  }, 15_000)
+
   test('clean shutdown escalates when a fatal error arrives during cleanup', async () => {
     const { code, output } = await runScript(`
       process.env.SHUTDOWN_TEST_MODE = 'fatal-race'

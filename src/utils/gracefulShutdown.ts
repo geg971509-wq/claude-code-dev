@@ -370,6 +370,18 @@ let failsafeTimer: ReturnType<typeof setTimeout> | undefined
 let orphanCheckInterval: ReturnType<typeof setInterval> | undefined
 let pendingShutdown: Promise<void> | undefined
 
+function armFailsafeTimer(timeoutMs: number): void {
+  if (failsafeTimer !== undefined) {
+    clearTimeout(failsafeTimer)
+  }
+  failsafeTimer = setTimeout(() => {
+    cleanupTerminalModes()
+    printResumeHint()
+    forceExit(finalExitCode)
+  }, timeoutMs)
+  failsafeTimer.unref()
+}
+
 /** Check if graceful shutdown is in progress */
 export function isShuttingDown(): boolean {
   return shutdownInProgress
@@ -425,26 +437,16 @@ async function runGracefulShutdown(
     finalMessage?: string
   },
 ): Promise<void> {
-  // Resolve the SessionEnd hook budget before arming the failsafe so the
-  // failsafe can scale with it. Without this, a user-configured 10s hook
-  // budget is silently truncated by the 5s failsafe (gh-32712 follow-up).
+  // Failsafe: guarantee process exits even if cleanup hangs (e.g., MCP connections).
+  // Arm it before fallible hook initialization so shutdown never gets stuck with
+  // only a rejected pendingShutdown promise.
+  armFailsafeTimer(5000)
+
   const { executeSessionEndHooks, getSessionEndHookTimeoutMs } = await import(
     './hooks.js'
   )
   const sessionEndTimeoutMs = getSessionEndHookTimeoutMs()
-
-  // Failsafe: guarantee process exits even if cleanup hangs (e.g., MCP connections).
-  // Runs cleanupTerminalModes first so a hung cleanup doesn't leave the terminal dirty.
-  // Budget = max(5s, hook budget + 3.5s headroom for cleanup + analytics flush).
-  failsafeTimer = setTimeout(
-    () => {
-      cleanupTerminalModes()
-      printResumeHint()
-      forceExit(finalExitCode)
-    },
-    Math.max(5000, sessionEndTimeoutMs + 3500),
-  )
-  failsafeTimer.unref()
+  armFailsafeTimer(Math.max(5000, sessionEndTimeoutMs + 3500))
 
   // Exit alt screen and print resume hint FIRST, before any async operations.
   // This ensures the hint is visible even if the process is killed during
