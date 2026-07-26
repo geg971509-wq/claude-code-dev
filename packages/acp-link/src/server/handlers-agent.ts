@@ -4,6 +4,7 @@ import * as acp from '@agentclientprotocol/sdk'
 import type { WSContext } from 'hono/ws'
 import { send, sendJsonRpcError } from './client-send.js'
 import { cancelPendingPermissions, createClient } from './acp-client.js'
+import { currentJsonRpcId } from './jsonrpc-context.js'
 import { buildAgentEnv } from './permission-mode.js'
 import { clients, getAgentConfig, logAgent } from './runtime-state.js'
 import {
@@ -136,7 +137,7 @@ export async function handleConnect(ws: WSContext): Promise<void> {
     sendJsonRpcError(
       ws,
       state,
-      null,
+      currentJsonRpcId(state),
       JSONRPC_INTERNAL_ERROR,
       `Failed to connect: ${(error as Error).message}`,
     )

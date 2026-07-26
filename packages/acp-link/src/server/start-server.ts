@@ -15,6 +15,7 @@ import { cancelPendingPermissions } from './acp-client.js'
 import { sendJsonRpcError } from './client-send.js'
 import { dispatchClientMessage, dispatchJsonRpcMessage } from './dispatch.js'
 import { handleDisconnect } from './handlers-agent.js'
+import { currentJsonRpcId } from './jsonrpc-context.js'
 import { decodeClientMessage } from './payload-decode.js'
 import {
   HEARTBEAT_INTERVAL_MS,
@@ -165,7 +166,7 @@ export async function startServer(config: ServerConfig): Promise<void> {
             sendJsonRpcError(
               ws,
               state,
-              state?.pendingJsonRpc?.id ?? null,
+              currentJsonRpcId(state),
               JSONRPC_PARSE_ERROR,
               `Error: ${(error as Error).message}`,
             )

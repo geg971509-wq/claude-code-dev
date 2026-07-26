@@ -382,6 +382,60 @@ describe('JSON-RPC 2.0 routing (audit §8.1-8.5)', () => {
     }
   })
 
+  test('handler-level error response carries the request id, not null', async () => {
+    const sent: unknown[] = []
+    // No connection → handleNewSession takes its "Not connected to agent"
+    // error path, which resolves the id from the in-flight request context.
+    const { ws, unregister } = setupJsonRpcClient(sent, { connection: null })
+    try {
+      await __testing.dispatchJsonRpcMessage(ws, {
+        jsonrpc: '2.0',
+        id: 'req-99',
+        method: 'session/new',
+        params: { cwd: '/tmp' },
+      })
+      const errorFrame = sent.find(
+        (frame): frame is { id: unknown; error: unknown } =>
+          typeof frame === 'object' &&
+          frame !== null &&
+          'error' in frame &&
+          'jsonrpc' in frame,
+      )
+      expect(errorFrame).toBeDefined()
+      expect(errorFrame!.id).toBe('req-99')
+    } finally {
+      unregister()
+      delete process.env.ACP_LINK_TEST_INTERNALS
+    }
+  })
+
+  test('initialize failure error response carries the request id, not null', async () => {
+    const sent: unknown[] = []
+    const { ws, unregister } = setupJsonRpcClient(sent)
+    try {
+      // No agent command configured in tests → spawn throws → handleConnect
+      // takes its catch path, which must still answer under the request id.
+      await __testing.dispatchJsonRpcMessage(ws, {
+        jsonrpc: '2.0',
+        id: 'init-77',
+        method: 'initialize',
+        params: {},
+      })
+      const errorFrame = sent.find(
+        (frame): frame is { id: unknown; error: unknown } =>
+          typeof frame === 'object' &&
+          frame !== null &&
+          'error' in frame &&
+          'jsonrpc' in frame,
+      )
+      expect(errorFrame).toBeDefined()
+      expect(errorFrame!.id).toBe('init-77')
+    } finally {
+      unregister()
+      delete process.env.ACP_LINK_TEST_INTERNALS
+    }
+  })
+
   test('$/cancel_request is handled and forwards to session/cancel (§8.5)', async () => {
     const sent: unknown[] = []
     const cancel = mock(async () => {})

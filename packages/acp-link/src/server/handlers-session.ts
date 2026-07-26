@@ -2,6 +2,7 @@ import * as acp from '@agentclientprotocol/sdk'
 import type { WSContext } from 'hono/ws'
 import { cancelPendingPermissions } from './acp-client.js'
 import { send, sendJsonRpcError } from './client-send.js'
+import { currentJsonRpcId } from './jsonrpc-context.js'
 import { resolveNewSessionPermissionMode } from './permission-mode.js'
 import {
   clients,
@@ -38,7 +39,7 @@ export async function handleNewSession(
     sendJsonRpcError(
       ws,
       state,
-      state?.pendingJsonRpc?.id ?? null,
+      currentJsonRpcId(state),
       JSONRPC_INVALID_REQUEST,
       'Not connected to agent',
     )
@@ -59,7 +60,7 @@ export async function handleNewSession(
       sendJsonRpcError(
         ws,
         state,
-        state.pendingJsonRpc?.id ?? null,
+        currentJsonRpcId(state),
         JSONRPC_INVALID_PARAMS,
         (error as Error).message,
       )
@@ -92,7 +93,7 @@ export async function handleNewSession(
     sendJsonRpcError(
       ws,
       state,
-      state.pendingJsonRpc?.id ?? null,
+      currentJsonRpcId(state),
       JSONRPC_INTERNAL_ERROR,
       `Failed to create session: ${(error as Error).message}`,
     )
@@ -122,7 +123,7 @@ export async function handleListSessions(
     sendJsonRpcError(
       ws,
       state,
-      state?.pendingJsonRpc?.id ?? null,
+      currentJsonRpcId(state),
       JSONRPC_INVALID_REQUEST,
       'Not connected to agent',
     )
@@ -133,7 +134,7 @@ export async function handleListSessions(
     sendJsonRpcError(
       ws,
       state,
-      state.pendingJsonRpc?.id ?? null,
+      currentJsonRpcId(state),
       JSONRPC_METHOD_NOT_FOUND,
       'Listing sessions is not supported by this agent',
     )
@@ -173,7 +174,7 @@ export async function handleListSessions(
     sendJsonRpcError(
       ws,
       state,
-      state.pendingJsonRpc?.id ?? null,
+      currentJsonRpcId(state),
       JSONRPC_INTERNAL_ERROR,
       `Failed to list sessions: ${(error as Error).message}`,
     )
@@ -198,7 +199,7 @@ export async function handleLoadSession(
     sendJsonRpcError(
       ws,
       state,
-      state?.pendingJsonRpc?.id ?? null,
+      currentJsonRpcId(state),
       JSONRPC_INVALID_REQUEST,
       'Not connected to agent',
     )
@@ -209,7 +210,7 @@ export async function handleLoadSession(
     sendJsonRpcError(
       ws,
       state,
-      state.pendingJsonRpc?.id ?? null,
+      currentJsonRpcId(state),
       JSONRPC_METHOD_NOT_FOUND,
       'Loading sessions is not supported by this agent',
     )
@@ -241,7 +242,7 @@ export async function handleLoadSession(
     sendJsonRpcError(
       ws,
       state,
-      state.pendingJsonRpc?.id ?? null,
+      currentJsonRpcId(state),
       JSONRPC_INTERNAL_ERROR,
       `Failed to load session: ${(error as Error).message}`,
     )
@@ -266,7 +267,7 @@ export async function handleResumeSession(
     sendJsonRpcError(
       ws,
       state,
-      state?.pendingJsonRpc?.id ?? null,
+      currentJsonRpcId(state),
       JSONRPC_INVALID_REQUEST,
       'Not connected to agent',
     )
@@ -277,7 +278,7 @@ export async function handleResumeSession(
     sendJsonRpcError(
       ws,
       state,
-      state.pendingJsonRpc?.id ?? null,
+      currentJsonRpcId(state),
       JSONRPC_METHOD_NOT_FOUND,
       'Resuming sessions is not supported by this agent',
     )
@@ -308,7 +309,7 @@ export async function handleResumeSession(
     sendJsonRpcError(
       ws,
       state,
-      state.pendingJsonRpc?.id ?? null,
+      currentJsonRpcId(state),
       JSONRPC_INTERNAL_ERROR,
       `Failed to resume session: ${(error as Error).message}`,
     )
@@ -325,7 +326,7 @@ export async function handlePrompt(
     sendJsonRpcError(
       ws,
       state,
-      state?.pendingJsonRpc?.id ?? null,
+      currentJsonRpcId(state),
       JSONRPC_INVALID_REQUEST,
       'No active session',
     )
@@ -356,7 +357,7 @@ export async function handlePrompt(
     sendJsonRpcError(
       ws,
       state,
-      state.pendingJsonRpc?.id ?? null,
+      currentJsonRpcId(state),
       JSONRPC_INTERNAL_ERROR,
       `Prompt failed: ${(error as Error).message}`,
     )
@@ -392,7 +393,7 @@ export async function handleSetSessionModel(
     sendJsonRpcError(
       ws,
       state,
-      state?.pendingJsonRpc?.id ?? null,
+      currentJsonRpcId(state),
       JSONRPC_INVALID_REQUEST,
       'No active session',
     )
@@ -403,7 +404,7 @@ export async function handleSetSessionModel(
     sendJsonRpcError(
       ws,
       state,
-      state.pendingJsonRpc?.id ?? null,
+      currentJsonRpcId(state),
       JSONRPC_METHOD_NOT_FOUND,
       'Model selection not supported by this agent',
     )
@@ -427,7 +428,7 @@ export async function handleSetSessionModel(
     sendJsonRpcError(
       ws,
       state,
-      state.pendingJsonRpc?.id ?? null,
+      currentJsonRpcId(state),
       JSONRPC_INTERNAL_ERROR,
       `Failed to set model: ${(error as Error).message}`,
     )

@@ -4,6 +4,7 @@ import {
   toJsonRpcErrorData,
   type WireErrorBody,
 } from '@claude-code-best/wire-types'
+import { jsonRpcContextStorage } from './jsonrpc-context.js'
 import { clients, getRcsUpstream } from './runtime-state.js'
 import {
   JSONRPC_INVALID_PARAMS,
@@ -43,7 +44,12 @@ export const LEGACY_NOTIFICATION_TO_JSONRPC: Record<string, string> = {
 // request's expected response type (audit §8.2). Agent→client notifications
 // (`session_update`, `permission_request`) are emitted as JSON-RPC
 // notifications without an id.
-export function send(ws: WSContext, type: string, payload?: unknown): void {
+export function send(
+  ws: WSContext,
+  type: string,
+  payload?: unknown,
+  jsonRpcContext?: { id: string | number; responseType: string },
+): void {
   if (ws.readyState === 1) {
     // WebSocket.OPEN
     ws.send(JSON.stringify({ type, payload }))
@@ -57,15 +63,19 @@ export function send(ws: WSContext, type: string, payload?: unknown): void {
   const state = clients.get(ws)
   if (!state?.jsonRpc) return
 
-  // If this is the response to an in-flight JSON-RPC request, emit the
-  // standard JSON-RPC result with the preserved id.
-  if (state.pendingJsonRpc?.responseType === type) {
+  // Retrieve context from AsyncLocalStorage (primary) or fallback to parameter/slot.
+  const requestContext =
+    jsonRpcContext ?? jsonRpcContextStorage.getStore() ?? state.pendingJsonRpc
+  if (requestContext?.responseType === type) {
     sendJsonRpcRaw(ws, {
       jsonrpc: '2.0',
-      id: state.pendingJsonRpc.id,
+      id: requestContext.id,
       result: payload ?? {},
     })
-    state.pendingJsonRpc = null
+    // Only clear the slot if we read from it (legacy fallback path)
+    if (!jsonRpcContext && !jsonRpcContextStorage.getStore()) {
+      state.pendingJsonRpc = null
+    }
     return
   }
 

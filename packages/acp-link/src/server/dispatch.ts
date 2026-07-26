@@ -2,6 +2,7 @@ import type { WSContext } from 'hono/ws'
 import type { JsonRpc2ClientMessage } from '../ws-message.js'
 import { handlePermissionResponse } from './acp-client.js'
 import { send, sendJsonRpcError, sendJsonRpcRaw } from './client-send.js'
+import { jsonRpcContextStorage } from './jsonrpc-context.js'
 import {
   handleCancel,
   handleListSessions,
@@ -25,6 +26,7 @@ import { clients, logWs } from './runtime-state.js'
 import {
   JSONRPC_INTERNAL_ERROR,
   JSONRPC_INVALID_PARAMS,
+  JSONRPC_INVALID_REQUEST,
   JSONRPC_METHOD_NOT_FOUND,
   type ProxyMessage,
 } from './types.js'
@@ -310,26 +312,38 @@ export async function dispatchJsonRpcMessage(
     return
   }
 
-  // Track the in-flight request so the handler's send() emits a JSON-RPC
-  // response with the echoed id (audit §8.2).
-  if (state)
-    state.pendingJsonRpc = { id: msg.id, responseType: entry.responseType }
-  try {
-    await entry.handle(ws, msg.params)
-    // If the handler did not emit the expected response (e.g. it short
-    // circuited with an error already), still clear the pending slot.
-    if (state?.pendingJsonRpc) {
-      sendJsonRpcRaw(ws, {
-        jsonrpc: '2.0',
-        id: msg.id,
-        result: {},
-      })
-      state.pendingJsonRpc = null
-    }
-  } catch (error) {
-    const code = (error as Error).message.startsWith('Invalid ')
-      ? JSONRPC_INVALID_PARAMS
-      : JSONRPC_INTERNAL_ERROR
-    sendJsonRpcError(ws, state, msg.id, code, (error as Error).message)
+  // Run the handler inside AsyncLocalStorage context so send() can retrieve
+  // the request ID and response type without a shared slot (prevents races).
+  const requestId = msg.id
+  if (requestId === null) {
+    // JSON-RPC 2.0 allows null id for notifications, but method handlers expect responses
+    sendJsonRpcError(
+      ws,
+      state,
+      null,
+      JSONRPC_INVALID_REQUEST,
+      'Request id cannot be null',
+    )
+    return
   }
+  const responseType = entry.responseType
+  const jsonRpcContext = { id: requestId, responseType }
+
+  await jsonRpcContextStorage.run(jsonRpcContext, async () => {
+    try {
+      await entry.handle(ws, msg.params)
+      // AsyncLocalStorage context is available to send() during handler execution.
+      // send() will automatically emit the JSON-RPC response when it sees the
+      // matching responseType. If the handler doesn't call send() with the
+      // expected type, we rely on the handler's own error handling or the
+      // catch block below. We cannot reliably detect missing responses without
+      // runtime module replacement (ESM exports are readonly), so handlers
+      // must ensure they call send() exactly once with the expected type.
+    } catch (error) {
+      const code = (error as Error).message.startsWith('Invalid ')
+        ? JSONRPC_INVALID_PARAMS
+        : JSONRPC_INTERNAL_ERROR
+      sendJsonRpcError(ws, state, requestId, code, (error as Error).message)
+    }
+  })
 }
