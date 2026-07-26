@@ -64,6 +64,16 @@ export class RcsUpstreamClient {
 
   /** Register via REST API before establishing WS connection */
   private async registerViaRest(): Promise<string> {
+    // If already registered, reuse the existing agent ID to avoid leaking
+    // environment and bus records on every reconnect.
+    if (this.agentId) {
+      RcsUpstreamClient.log.info(
+        { agentId: this.agentId },
+        'reusing existing agent ID',
+      )
+      return this.agentId
+    }
+
     const baseUrl = this.config.rcsUrl
       .replace(/^ws:\/\//, 'http://')
       .replace(/^wss:\/\//, 'https://')
@@ -206,7 +216,13 @@ export class RcsUpstreamClient {
               'server error',
             )
             if (!this.registered) {
-              reject(new Error(data.message as string))
+              // Clear cached agentId on identify failure so next reconnect re-registers
+              const errorMsg = data.message as string
+              if (errorMsg?.includes('not found')) {
+                RcsUpstreamClient.log.warn('clearing stale agentId')
+                this.agentId = null
+              }
+              reject(new Error(errorMsg))
             }
           } else if (data.type === 'keep_alive') {
             // ignore keepalive

@@ -10,6 +10,7 @@ class FakeWebSocket {
   private readonly listeners = new Map<string, Listener[]>()
   readonly sent: string[] = []
   closed = false
+  sendError: Error | null = null
 
   constructor(_url: string, _options?: unknown) {
     FakeWebSocket.instances.push(this)
@@ -31,6 +32,7 @@ class FakeWebSocket {
   }
 
   send(data: string): void {
+    if (this.sendError) throw this.sendError
     this.sent.push(data)
   }
 
@@ -38,6 +40,66 @@ class FakeWebSocket {
 }
 
 describe('SessionsWebSocket stale callbacks', () => {
+  test('reports whether a control response was accepted', async () => {
+    const originalWebSocket = globalThis.WebSocket
+    FakeWebSocket.instances = []
+    FakeWebSocket.constructorHook = null
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
+
+    const client = new SessionsWebSocket('session-1', 'org-1', () => 'token', {
+      onMessage: () => {},
+    })
+    const response = {
+      type: 'control_response',
+      response: { subtype: 'success' },
+    } as any
+
+    try {
+      expect(client.sendControlResponse(response)).toBe(false)
+
+      await client.connect()
+      const socket = FakeWebSocket.instances[0]!
+      socket.emit('open')
+      expect(client.sendControlResponse(response)).toBe(true)
+
+      socket.sendError = new Error('send failed')
+      expect(client.sendControlResponse(response)).toBe(false)
+      expect(socket.sent).toHaveLength(1)
+    } finally {
+      client.close()
+      globalThis.WebSocket = originalWebSocket
+    }
+  })
+
+  test('close before open uses the bounded reconnect policy', async () => {
+    const originalWebSocket = globalThis.WebSocket
+    FakeWebSocket.instances = []
+    FakeWebSocket.constructorHook = null
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
+
+    let closed = 0
+    let reconnecting = 0
+    const client = new SessionsWebSocket('session-1', 'org-1', () => 'token', {
+      onMessage: () => {},
+      onClose: () => closed++,
+      onReconnecting: () => reconnecting++,
+    })
+
+    try {
+      await client.connect()
+      FakeWebSocket.instances[0]!.emit('close', { code: 1006, reason: '' })
+
+      expect((client as any).state).toBe('closed')
+      expect((client as any).reconnectAttempts).toBe(1)
+      expect((client as any).reconnectTimer).not.toBeNull()
+      expect(reconnecting).toBe(1)
+      expect(closed).toBe(0)
+    } finally {
+      client.close()
+      globalThis.WebSocket = originalWebSocket
+    }
+  })
+
   test('late events from an old socket do not disturb the current connection', async () => {
     const originalWebSocket = globalThis.WebSocket
     FakeWebSocket.instances = []

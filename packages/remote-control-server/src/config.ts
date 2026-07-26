@@ -18,10 +18,8 @@ export const config = {
   wsIdleTimeout: parseInt(process.env.RCS_WS_IDLE_TIMEOUT || '30', 10),
   /** Server→client keep_alive data-frame interval (seconds). Keeps reverse
    *  proxies from closing idle connections. Default 20s. */
-  wsKeepaliveInterval: parseInt(
-    process.env.RCS_WS_KEEPALIVE_INTERVAL || '20',
-    10,
-  ),
+  wsKeepaliveInterval:
+    parseInt(process.env.RCS_WS_KEEPALIVE_INTERVAL || '20', 10) || 20,
 } as const
 
 export function getBaseUrl(): string {

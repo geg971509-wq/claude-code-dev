@@ -7,6 +7,50 @@ import {
 } from '../bridgeResultScheduling.js'
 
 describe('bridgeResultScheduling', () => {
+  test('treats normal completion and session replacement as terminal', async () => {
+    const replBridge = (await import('../replBridge.js')) as Record<
+      string,
+      unknown
+    >
+    const isTerminalBridgeClose = replBridge.isTerminalBridgeClose
+
+    expect(typeof isTerminalBridgeClose).toBe('function')
+    expect(
+      (isTerminalBridgeClose as (code: number | undefined) => boolean)(1000),
+    ).toBe(true)
+    expect(
+      (isTerminalBridgeClose as (code: number | undefined) => boolean)(4004),
+    ).toBe(true)
+    expect(
+      (isTerminalBridgeClose as (code: number | undefined) => boolean)(1006),
+    ).toBe(false)
+  })
+
+  test('keeps shared server state when a newer bridge replaces this one', async () => {
+    const replBridge = (await import('../replBridge.js')) as Record<
+      string,
+      unknown
+    >
+    const shouldTeardownSharedBridgeSession =
+      replBridge.shouldTeardownSharedBridgeSession
+
+    expect(typeof shouldTeardownSharedBridgeSession).toBe('function')
+    expect(
+      (
+        shouldTeardownSharedBridgeSession as (
+          code: number | undefined,
+        ) => boolean
+      )(1000),
+    ).toBe(true)
+    expect(
+      (
+        shouldTeardownSharedBridgeSession as (
+          code: number | undefined,
+        ) => boolean
+      )(4004),
+    ).toBe(false)
+  })
+
   test('detects pending mirrored messages', () => {
     expect(hasPendingBridgeMessages(2, 3)).toBe(true)
     expect(hasPendingBridgeMessages(3, 3)).toBe(false)

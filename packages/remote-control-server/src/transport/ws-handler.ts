@@ -1,4 +1,5 @@
 import type { WSContext } from 'hono/ws'
+import { WsCloseCode } from '@claude-code-best/wire-types'
 import { getEventBus } from './event-bus'
 import type { SessionEvent } from './event-bus'
 import { publishSessionEvent } from '../services/transport'
@@ -15,6 +16,9 @@ interface CleanupEntry {
   lastClientActivity: number
 }
 const cleanupBySession = new Map<string, CleanupEntry>()
+
+const SESSION_REPLACED_CLOSE_CODE = WsCloseCode.SESSION_REPLACED
+const SESSION_REPLACED_CLOSE_REASON = 'session_replaced'
 
 function webSocketIdentity(ws: WSContext): unknown {
   return ws.raw ?? ws
@@ -57,7 +61,16 @@ export function handleWebSocketOpen(ws: WSContext, sessionId: string) {
     log(`[WS] Replacing existing connection for session=${sessionId}`)
     existing.unsub()
     clearInterval(existing.keepalive)
+    cleanupBySession.delete(sessionId)
     activeConnections.delete(webSocketIdentity(existing.ws))
+    try {
+      existing.ws.close(
+        SESSION_REPLACED_CLOSE_CODE,
+        SESSION_REPLACED_CLOSE_REASON,
+      )
+    } catch {
+      // The replacement already owns the session.
+    }
   }
 
   const bus = getEventBus(sessionId)

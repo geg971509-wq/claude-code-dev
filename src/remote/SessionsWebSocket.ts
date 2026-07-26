@@ -326,9 +326,9 @@ export class SessionsWebSocket {
       return
     }
 
-    // Attempt reconnection if we were connected
+    // Attempt reconnection if the owned socket closed while connecting or connected
     if (
-      previousState === 'connected' &&
+      (previousState === 'connecting' || previousState === 'connected') &&
       this.reconnectAttempts < MAX_RECONNECT_ATTEMPTS
     ) {
       this.reconnectAttempts++
@@ -408,14 +408,24 @@ export class SessionsWebSocket {
   /**
    * Send a control response back to the session
    */
-  sendControlResponse(response: SDKControlResponse): void {
+  sendControlResponse(response: SDKControlResponse): boolean {
     if (!this.ws || this.state !== 'connected') {
       logError(new Error('[SessionsWebSocket] Cannot send: not connected'))
-      return
+      return false
     }
 
     logForDebugging('[SessionsWebSocket] Sending control response')
-    this.ws.send(jsonStringify(response))
+    try {
+      this.ws.send(jsonStringify(response))
+      return true
+    } catch (error) {
+      logError(
+        error instanceof Error
+          ? error
+          : new Error(`[SessionsWebSocket] Failed to send: ${String(error)}`),
+      )
+      return false
+    }
   }
 
   /**

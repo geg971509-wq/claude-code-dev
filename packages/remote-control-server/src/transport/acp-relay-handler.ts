@@ -1,4 +1,5 @@
 import type { WSContext } from 'hono/ws'
+import { WsCloseCode } from '@claude-code-best/wire-types'
 import { findAcpConnectionByAgentId, sendToAgentWs } from './acp-ws-handler'
 import { getAcpEventBus } from './event-bus'
 import type { SessionEvent } from './event-bus'
@@ -16,6 +17,16 @@ interface RelayConnectionEntry {
 const relayConnections = new Map<string, RelayConnectionEntry>() // key: relayWsId
 
 const RELAY_KEEPALIVE_INTERVAL_MS = 20_000
+
+/**
+ * Code sent when the requested agent is offline.
+ *
+ * Collides with `WsCloseCode.SESSION_REPLACED`: every other layer reads 4004 as
+ * "session replaced by a newer connection". Kept as-is because changing an
+ * emitted close code is a wire behavior change — deployed acp-link clients may
+ * already branch on 4004 here.
+ */
+const AGENT_NOT_FOUND_CLOSE_CODE: number = WsCloseCode.SESSION_REPLACED
 
 /** Send a JSON message to relay WS */
 function sendToRelayWs(ws: WSContext, msg: object): void {
@@ -42,7 +53,7 @@ export function handleRelayOpen(
   if (!agentConn) {
     log(`[ACP-Relay] Agent ${agentId} not found or offline`)
     sendToRelayWs(ws, { type: 'error', message: 'Agent not found or offline' })
-    ws.close(4004, 'agent not found')
+    ws.close(AGENT_NOT_FOUND_CLOSE_CODE, 'agent not found')
     return
   }
 

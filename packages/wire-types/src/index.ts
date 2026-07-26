@@ -1,3 +1,5 @@
+export { WsCloseCode } from './closeCodes.js'
+
 export {
   WireErrorCode,
   isWireErrorCode,

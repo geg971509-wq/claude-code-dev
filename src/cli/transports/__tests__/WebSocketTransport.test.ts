@@ -10,6 +10,8 @@ class FakeWebSocket {
 
   private readonly listeners = new Map<string, Listener[]>()
   closed = false
+  sendCalls = 0
+  sendError: Error | null = null
 
   constructor(_url: string, _options?: unknown) {
     FakeWebSocket.instances.push(this)
@@ -45,7 +47,10 @@ class FakeWebSocket {
     this.closed = true
   }
 
-  send(_data: string): void {}
+  send(_data: string): void {
+    this.sendCalls++
+    if (this.sendError) throw this.sendError
+  }
 
   ping(): void {}
 }
@@ -70,6 +75,64 @@ class FakeNodeWebSocket extends EventEmitter {
 }
 
 describe('WebSocketTransport setup ownership', () => {
+  test('replay send failure schedules one reconnect and retains the message', async () => {
+    const originalWebSocket = globalThis.WebSocket
+    FakeWebSocket.instances = []
+    FakeWebSocket.constructorHook = null
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
+    const transport = createTransport()
+
+    try {
+      await transport.write({
+        type: 'user',
+        uuid: 'message-1',
+        message: { role: 'user', content: 'hello' },
+        parent_tool_use_id: null,
+        session_id: 'session-1',
+      } as any)
+      await transport.connect()
+      const socket = FakeWebSocket.instances[0]!
+      socket.sendError = new Error('replay failed')
+      socket.emit('open')
+
+      expect(socket.sendCalls).toBe(1)
+      expect((transport as any).reconnectAttempts).toBe(1)
+      expect((transport as any).reconnectTimer).not.toBeNull()
+      expect(transport.getStateLabel()).toBe('reconnecting')
+      expect((transport as any).messageBuffer.toArray()).toHaveLength(1)
+    } finally {
+      transport.close()
+      globalThis.WebSocket = originalWebSocket
+    }
+  })
+
+  test('session replacement close is permanent', async () => {
+    const originalWebSocket = globalThis.WebSocket
+    FakeWebSocket.instances = []
+    FakeWebSocket.constructorHook = null
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
+    const transport = createTransport()
+    let closedCode: number | undefined
+    transport.setOnClose(code => {
+      closedCode = code
+    })
+
+    try {
+      await transport.connect()
+      const socket = FakeWebSocket.instances[0]!
+      socket.emit('open')
+      socket.emit('close', { code: 4004 })
+
+      expect(transport.getStateLabel()).toBe('closed')
+      expect((transport as any).reconnectAttempts).toBe(0)
+      expect((transport as any).reconnectTimer).toBeNull()
+      expect(closedCode).toBe(4004)
+    } finally {
+      transport.close()
+      globalThis.WebSocket = originalWebSocket
+    }
+  })
+
   test('initial setup failure returns to idle and can be retried', async () => {
     const originalWebSocket = globalThis.WebSocket
     FakeWebSocket.instances = []

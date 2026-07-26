@@ -97,6 +97,16 @@ export type ReplBridgeHandle = {
 
 export type BridgeState = 'ready' | 'connected' | 'reconnecting' | 'failed'
 
+export function isTerminalBridgeClose(closeCode: number | undefined): boolean {
+  return closeCode === 1000 || closeCode === 4004
+}
+
+export function shouldTeardownSharedBridgeSession(
+  closeCode: number | undefined,
+): boolean {
+  return closeCode !== 4004
+}
+
 /**
  * Explicit-param input to initBridgeCore. Everything initReplBridge reads
  * from bootstrap state (cwd, session ID, git, OAuth) becomes a field here.
@@ -901,6 +911,7 @@ export async function initBridgeCore(
   // Teardown reference — set after definition below. All callers are async
   // callbacks that run after assignment, so the reference is always valid.
   let doTeardownImpl: (() => Promise<void>) | null = null
+  let localReplacementTeardown: (() => void) | null = null
   function triggerTeardown(): void {
     void doTeardownImpl?.()
   }
@@ -911,7 +922,7 @@ export async function initBridgeCore(
    * a stale-transport guard; debugFireClose calls it bare.
    *
    * With autoReconnect:true, this only fires on: clean close (1000),
-   * permanent server rejection (4001/1002/4003), or 10-min budget
+   * session replacement (4004), permanent server rejection (4001/1002/4003), or 10-min budget
    * exhaustion. Transient drops are retried internally by the transport.
    */
   function handleTransportPermanentClose(closeCode: number | undefined): void {
@@ -953,11 +964,17 @@ export async function initBridgeCore(
       )
     }
 
-    if (closeCode === 1000) {
-      // Clean close — session ended normally. Tear down the bridge.
-      onStateChange?.('failed', 'session ended')
-      pollController.abort()
-      triggerTeardown()
+    if (isTerminalBridgeClose(closeCode)) {
+      onStateChange?.(
+        'failed',
+        closeCode === 4004 ? 'session replaced' : 'session ended',
+      )
+      if (shouldTeardownSharedBridgeSession(closeCode)) {
+        pollController.abort()
+        triggerTeardown()
+      } else {
+        localReplacementTeardown?.()
+      }
       return
     }
 
@@ -1603,6 +1620,23 @@ export async function initBridgeCore(
   // Shared teardown sequence used by both cleanup registration and
   // the explicit teardown() method on the returned handle.
   let teardownStarted = false
+  let unregister: (() => void) | null = null
+  localReplacementTeardown = () => {
+    if (teardownStarted) return
+    teardownStarted = true
+    if (pointerRefreshTimer !== null) clearInterval(pointerRefreshTimer)
+    if (keepAliveTimer !== null) clearInterval(keepAliveTimer)
+    if (sigusr2Handler) process.off('SIGUSR2', sigusr2Handler)
+    if (process.env.USER_TYPE === 'ant') {
+      clearBridgeDebugHandle()
+      debugFireClose = null
+    }
+    pollController.abort()
+    transport?.close()
+    transport = null
+    flushGate.drop()
+    unregister?.()
+  }
   doTeardownImpl = async (): Promise<void> => {
     if (teardownStarted) {
       logForDebugging(
@@ -1725,7 +1759,7 @@ export async function initBridgeCore(
   }
 
   // 8. Register cleanup for graceful shutdown
-  const unregister = registerCleanup(() => doTeardownImpl?.())
+  unregister = registerCleanup(() => doTeardownImpl?.())
 
   logForDebugging(
     `[bridge:repl] Ready: env=${environmentId} session=${currentSessionId}`,

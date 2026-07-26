@@ -2,6 +2,7 @@ import type { StdoutMessage } from 'src/entrypoints/sdk/controlTypes.js'
 import type WsWebSocket from 'ws'
 import { logEvent } from '../../services/analytics/index.js'
 import { CircularBuffer } from '../../utils/CircularBuffer.js'
+import { addJitter } from '../../utils/backoff.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { rcLog } from '../../bridge/rcDebugLog.js'
 import { logForDiagnosticsNoPII } from '../../utils/diagLogs.js'
@@ -44,6 +45,7 @@ const PERMANENT_CLOSE_CODES = new Set([
   1002, // protocol error — server rejected handshake (e.g. session reaped)
   4001, // session expired / not found
   4003, // unauthorized
+  4004, // session replaced by a newer connection
 ])
 
 export type WebSocketTransportOptions = {
@@ -600,10 +602,7 @@ export class WebSocketTransport implements Transport {
         DEFAULT_MAX_RECONNECT_DELAY,
       )
       // Add ±25% jitter to avoid thundering herd
-      const delay = Math.max(
-        0,
-        baseDelay + baseDelay * 0.25 * (2 * Math.random() - 1),
-      )
+      const delay = addJitter(baseDelay)
 
       logForDebugging(
         `WebSocketTransport: Reconnecting in ${Math.round(delay)}ms (attempt ${this.reconnectAttempts}, ${Math.round(elapsed / 1000)}s elapsed)`,
@@ -717,11 +716,7 @@ export class WebSocketTransport implements Transport {
 
     for (const message of messagesToReplay) {
       const line = jsonStringify(message) + '\n'
-      const success = this.sendLine(line)
-      if (!success) {
-        this.handleConnectionError()
-        break
-      }
+      if (!this.sendLine(line)) break
     }
     // Do NOT clear the buffer after replay — messages remain buffered until
     // the server confirms receipt on the next reconnection. This prevents

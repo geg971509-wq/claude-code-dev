@@ -1,4 +1,5 @@
 import { log, error as logError } from '../../logger'
+import { WsCloseCode } from '@claude-code-best/wire-types'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import type { WSContext, WSMessageReceive } from 'hono/ws'
@@ -103,7 +104,7 @@ app.get(
     if (!authenticateRequest(c, `WS ${sessionId}`, sessionId)) {
       return {
         onOpen(_evt: Event, ws: WSContext) {
-          ws.close(4003, 'unauthorized')
+          ws.close(WsCloseCode.UNAUTHORIZED, 'unauthorized')
         },
       }
     }
@@ -113,7 +114,7 @@ app.get(
       log(`[WS] Upgrade rejected: session ${sessionId} not found`)
       return {
         onOpen(_evt: Event, ws: WSContext) {
-          ws.close(4001, 'session not found')
+          ws.close(WsCloseCode.SESSION_NOT_FOUND, 'session not found')
         },
       }
     }

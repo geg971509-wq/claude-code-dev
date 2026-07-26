@@ -267,13 +267,18 @@ describe('ws-handler', () => {
       expect(msg.isSynthetic).toBe(true)
     })
 
-    test('replaces existing connection for same session', () => {
+    test('replaces and closes the existing connection for same session', () => {
       const ws1 = createMockWs()
       const ws2 = createMockWs()
       handleWebSocketOpen(ws1, 's2')
       handleWebSocketOpen(ws2, 's2')
 
-      // ws2 should be the active connection
+      expect(ws1.getCloseCalls()).toEqual([
+        { code: 4004, reason: 'session_replaced' },
+      ])
+      expect(ws2.getCloseCalls()).toHaveLength(0)
+
+      handleWebSocketClose(ws1, 's2', 4004, 'session_replaced')
       const bus = getEventBus('s2')
       bus.publish({
         id: 'e1',
@@ -282,7 +287,32 @@ describe('ws-handler', () => {
         payload: { content: 'test' },
         direction: 'outbound',
       })
-      expect(ws2.getSentData().length).toBeGreaterThanOrEqual(1)
+      expect(ws2.getSentData()).toHaveLength(1)
+    })
+
+    test('detaches an old session before closing it', () => {
+      const oldSocket = createMockWs()
+      const close = oldSocket.close
+      oldSocket.close = (code?: number, reason?: string) => {
+        close(code, reason)
+        handleWebSocketMessage(
+          oldSocket,
+          'reentrant-replacement',
+          '{"type":"user","message":{"role":"user","content":"stale"}}\n',
+        )
+      }
+      const replacement = createMockWs()
+      const bus = getEventBus('reentrant-replacement')
+      const events: unknown[] = []
+      bus.subscribe(event => events.push(event))
+
+      handleWebSocketOpen(oldSocket, 'reentrant-replacement')
+      handleWebSocketOpen(replacement, 'reentrant-replacement')
+
+      expect(events).toHaveLength(0)
+      expect(oldSocket.getCloseCalls()).toEqual([
+        { code: 4004, reason: 'session_replaced' },
+      ])
     })
 
     test('allows the normal client keepalive interval', () => {

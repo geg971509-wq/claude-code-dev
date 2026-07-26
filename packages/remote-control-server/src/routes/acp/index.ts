@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { randomUUID } from 'node:crypto'
+import { WsCloseCode } from '@claude-code-best/wire-types'
 import type { Context } from 'hono'
 import type { WSContext, WSMessageReceive } from 'hono/ws'
 import { upgradeWebSocket } from '../../transport/ws-shared'
@@ -154,7 +155,7 @@ app.get(
       log('[ACP-WS] Upgrade rejected: unauthorized')
       return {
         onOpen(_evt: Event, ws: WSContext) {
-          ws.close(4003, 'unauthorized')
+          ws.close(WsCloseCode.UNAUTHORIZED, 'unauthorized')
         },
       }
     }
@@ -191,7 +192,7 @@ app.get(
       log('[ACP-Relay] Upgrade rejected: unauthorized')
       return {
         onOpen(_evt: Event, ws: WSContext) {
-          ws.close(4003, 'unauthorized')
+          ws.close(WsCloseCode.UNAUTHORIZED, 'unauthorized')
         },
       }
     }

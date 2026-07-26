@@ -1,6 +1,6 @@
 import type { WSContext } from 'hono/ws'
 import { randomUUID } from 'node:crypto'
-import { getAcpEventBus } from './event-bus'
+import { getAcpEventBus, removeAcpEventBus } from './event-bus'
 import type { SessionEvent } from './event-bus'
 import {
   storeCreateEnvironment,
@@ -293,6 +293,17 @@ export function handleAcpWsClose(
         payload: { agentId: entry.agentId },
         direction: 'inbound',
       })
+
+      // Clean up the bus if no other connection uses this channel group.
+      // Check both agent connections and the bus subscriber count (includes relays/SSE).
+      const stillInUse =
+        Array.from(connections.values()).some(
+          conn =>
+            conn.channelGroupId === entry.channelGroupId && conn !== entry,
+        ) || bus.subscriberCount() > 0
+      if (!stillInUse) {
+        removeAcpEventBus(entry.channelGroupId)
+      }
     }
   }
 
