@@ -360,6 +360,31 @@ function spawnWorker(
 
   worker.process = child
 
+  // Handle spawn errors (ENOENT, EACCES, EAGAIN) before they crash the supervisor
+  child.on('error', err => {
+    console.error(`[daemon] worker '${worker.kind}' spawn error:`, err.message)
+    worker.process = null
+    if (signal.aborted) return
+
+    // Treat spawn failure like a rapid crash — increment failure count and park if needed
+    worker.failureCount++
+    if (worker.failureCount >= MAX_RAPID_FAILURES) {
+      console.error(
+        `[daemon] worker '${worker.kind}' failed to spawn ${worker.failureCount} times — parking`,
+      )
+      worker.parked = true
+      return
+    }
+
+    console.log(
+      `[daemon] worker '${worker.kind}' spawn failed, retrying in ${worker.backoffMs}ms`,
+    )
+    worker.restartTimer = setTimeout(() => {
+      spawnWorker(worker, dir, config, signal)
+    }, worker.backoffMs)
+    worker.backoffMs = Math.min(worker.backoffMs * 2, BACKOFF_CAP_MS)
+  })
+
   // Pipe worker stdout/stderr to supervisor with prefix
   child.stdout?.on('data', (data: Buffer) => {
     const lines = data.toString().trimEnd().split('\n')

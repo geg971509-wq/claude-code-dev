@@ -376,9 +376,13 @@ export async function ripGrepStream(
     child.on('close', code => {
       if (settled) return
       // Abort races close — don't flush a torn tail from a killed process.
-      // Promise still settles: spawn's signal option fires 'error' with
-      // AbortError → reject below.
-      if (abortSignal.aborted) return
+      // When the child has already exited naturally, abort() won't fire 'error',
+      // so we must settle here to prevent a leaked promise.
+      if (abortSignal.aborted) {
+        settled = true
+        resolve()
+        return
+      }
       settled = true
       if (code === 0 || code === 1) {
         if (remainder) onLines([stripCR(remainder)])

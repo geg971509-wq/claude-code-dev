@@ -37,17 +37,35 @@ export class DetachedEngine implements BgEngine {
       cwd: opts.cwd,
     })
 
-    child.unref()
-    closeSync(logFd)
+    // Capture spawn errors before unref so start() can reject instead of crashing
+    return new Promise<BgStartResult>((resolve, reject) => {
+      let settled = false
 
-    const pid = child.pid ?? 0
+      child.on('error', err => {
+        if (settled) return
+        settled = true
+        closeSync(logFd)
+        reject(new Error(`Failed to spawn background session: ${err.message}`))
+      })
 
-    return {
-      pid,
-      sessionName: opts.sessionName,
-      logPath: opts.logPath,
-      engineUsed: 'detached',
-    }
+      // Wait for spawn event to ensure spawn errors are catchable
+      child.on('spawn', () => {
+        if (settled) return
+        settled = true
+        closeSync(logFd)
+
+        const pid = child.pid ?? 0
+
+        resolve({
+          pid,
+          sessionName: opts.sessionName,
+          logPath: opts.logPath,
+          engineUsed: 'detached',
+        })
+      })
+
+      child.unref()
+    })
   }
 
   async attach(session: SessionEntry): Promise<void> {
