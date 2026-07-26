@@ -56,8 +56,12 @@ export function modelSupportsEffort(model: string): boolean {
   ) {
     return true
   }
-  // Exclude any other known legacy models (haiku, older opus/sonnet variants)
-  if (m.includes('haiku') || m.includes('sonnet') || m.includes('opus')) {
+  // Exclude known legacy models: Claude 3.x, plus the Claude 4.x variants not
+  // allowlisted above. Matched by generation rather than by bare family name —
+  // a bare `includes('opus')` also swallows families *newer* than the
+  // allowlist (e.g. a pinned `claude-opus-5`), denying them the 1P default
+  // below, which inverts the intended fallback.
+  if (/claude-3-|-(?:opus|sonnet|haiku)-4(?:-|$)/.test(m)) {
     return false
   }
 

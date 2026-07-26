@@ -348,3 +348,41 @@ describe('modelSupportsXhighEffort', () => {
     expect(modelSupportsXhighEffort('some-random-model')).toBe(true)
   })
 })
+
+// ─── modelSupportsEffort ───────────────────────────────────────────────
+
+describe('modelSupportsEffort', () => {
+  test('returns true for allowlisted opus-4-7', async () => {
+    const { modelSupportsEffort } = await import('src/utils/effort.js')
+    expect(modelSupportsEffort('claude-opus-4-7')).toBe(true)
+  })
+
+  test.each([
+    'claude-3-7-sonnet-20250219',
+    'claude-3-5-haiku-20241022',
+    'claude-sonnet-4-20250514',
+    'claude-sonnet-4-5-20250929',
+    'claude-opus-4-20250514',
+    'claude-opus-4-1-20250805',
+    'claude-opus-4-5-20251101',
+    'claude-haiku-4-5-20251001',
+    'us.anthropic.claude-opus-4-v1:0',
+  ])('returns false for legacy model %s', async model => {
+    const { modelSupportsEffort } = await import('src/utils/effort.js')
+    expect(modelSupportsEffort(model)).toBe(false)
+  })
+
+  // Regression: the legacy exclusion used a bare `includes('opus')`, which also
+  // swallowed families newer than the allowlist and returned false instead of
+  // falling through to the 1P default below it. A pinned
+  // ANTHROPIC_MODEL=claude-opus-5 then rendered "Effort not supported" in
+  // /model and never sent output_config.effort.
+  test.each([
+    'claude-opus-5',
+    'claude-sonnet-5',
+    'claude-haiku-5',
+  ])('returns true for post-allowlist family %s on 1P', async model => {
+    const { modelSupportsEffort } = await import('src/utils/effort.js')
+    expect(modelSupportsEffort(model)).toBe(true)
+  })
+})

@@ -28,10 +28,12 @@ import {
 } from '../utils/effort.js';
 import {
   getDefaultMainLoopModel,
+  getDefaultMainLoopModelSetting,
   type ModelSetting,
   modelDisplayString,
   parseUserSpecifiedModel,
 } from '../utils/model/model.js';
+import { resolveDefaultOptionModel } from '../utils/model/defaultOption1M.js';
 import { getModelOptions } from '../utils/model/modelOptions.js';
 import { getSettingsForSource, updateSettingsForSource } from '../utils/settings/settings.js';
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
@@ -78,15 +80,23 @@ export function ModelPicker({
 
   const isFastMode = useAppState(s => (isFastModeEnabled() ? s.fastMode : false));
 
-  const [marked1MValues, setMarked1MValues] = useState<Set<string>>(
-    () => new Set(has1mContext(initialValue) ? [initialValue.replace(/\[1m\]/i, '')] : []),
-  );
+  // Baseline for the Default option's 1M toggle — see resolveDefaultOptionModel.
+  const defaultSetting = getDefaultMainLoopModelSetting();
+  const defaultHas1M = has1mContext(defaultSetting);
+
+  const [marked1MValues, setMarked1MValues] = useState<Set<string>>(() => {
+    if (initialValue === NO_PREFERENCE) {
+      return defaultHas1M ? new Set([NO_PREFERENCE]) : new Set();
+    }
+    return new Set(has1mContext(initialValue) ? [initialValue.replace(/\[1m\]/i, '')] : []);
+  });
 
   const handleToggle1M = useCallback(() => {
-    if (!focusedValue || focusedValue === NO_PREFERENCE) return;
+    if (!focusedValue) return;
     // Key on the base value so lookups in handleSelect / is1MMarked match the
     // initializer — predefined 1M options arrive with a `[1m]` suffix in
     // `focusedValue`, which would diverge from the base-value key set.
+    // NO_PREFERENCE carries no suffix, so it keys as itself.
     const baseKey = focusedValue.replace(/\[1m\]/i, '');
     setMarked1MValues(prev => {
       const next = new Set(prev);
@@ -142,10 +152,11 @@ export function ModelPicker({
 
   const focusedModelName = selectOptions.find(opt => opt.value === focusedValue)?.label;
   const focusedModel = resolveOptionModel(focusedValue);
-  const is1MMarked =
-    focusedValue !== undefined &&
-    focusedValue !== NO_PREFERENCE &&
-    marked1MValues.has(focusedValue.replace(/\[1m\]/i, ''));
+  const is1MMarked = focusedValue !== undefined && marked1MValues.has(focusedValue.replace(/\[1m\]/i, ''));
+  // Non-null means confirming Default would pin a concrete setting instead of
+  // storing `null`. Surfaced below so the trade-off isn't silent.
+  const defaultPinTarget =
+    focusedValue === NO_PREFERENCE ? resolveDefaultOptionModel(defaultSetting, is1MMarked, defaultHas1M) : null;
   const focusedSupportsEffort = focusedModel ? modelSupportsEffort(focusedModel) : false;
   const focusedSupportsXhigh = focusedModel ? modelSupportsXhighEffort(focusedModel) : false;
   const focusedSupportsMax = focusedModel ? modelSupportsMaxEffort(focusedModel) : false;
@@ -218,7 +229,10 @@ export function ModelPicker({
     const selectedModel = resolveOptionModel(value);
     const selectedEffort = hasToggledEffort && selectedModel && modelSupportsEffort(selectedModel) ? effort : undefined;
     if (value === NO_PREFERENCE) {
-      onSelect(null, selectedEffort);
+      onSelect(
+        resolveDefaultOptionModel(defaultSetting, marked1MValues.has(NO_PREFERENCE), defaultHas1M),
+        selectedEffort,
+      );
       return;
     }
     // Apply or strip [1m] suffix based on user toggle. marked1MValues is keyed
@@ -292,6 +306,11 @@ export function ModelPicker({
               {focusedModelName ? ` for ${focusedModelName}` : ''}
               <Text color="subtle"> · Space to toggle</Text>
             </Text>
+          )}
+          {defaultPinTarget !== null && (
+            <Box paddingLeft={2}>
+              <Text color="subtle">pins {defaultPinTarget} — no longer follows the default</Text>
+            </Box>
           )}
         </Box>
 
