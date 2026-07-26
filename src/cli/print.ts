@@ -61,6 +61,7 @@ import {
 import { externalMetadataToAppState } from 'src/state/onChangeAppState.js'
 import { getInMemoryErrors, logError, logMCPDebug } from 'src/utils/log.js'
 import {
+  waitForStdoutDrain,
   writeToStdout,
   registerProcessOutputErrorHandlers,
 } from 'src/utils/process.js'
@@ -501,7 +502,6 @@ export async function runHeadless(
     process.stderr.write(
       `\nStartup time: ${Math.round(process.uptime() * 1000)}ms\n`,
     )
-    // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(0)
   }
 
@@ -972,6 +972,13 @@ export async function runHeadless(
           )
       }
   }
+
+  // Flush the final result before shutdown. gracefulShutdownSync ends in
+  // process.exit(), which discards whatever stdout still has buffered — and the
+  // writes in the switch above are the largest of the run (`json` + `verbose`
+  // serialises the whole message array). A piped consumer otherwise receives a
+  // truncated document with no error.
+  await waitForStdoutDrain()
 
   // Log headless latency metrics for the final turn
   logHeadlessProfilerTurn()

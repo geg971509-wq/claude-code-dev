@@ -36,7 +36,7 @@ import type {
   PermissionDecisionReason,
 } from 'src/utils/permissions/PermissionResult.js'
 import { hasPermissionsToUseTool } from 'src/utils/permissions/permissions.js'
-import { writeToStdout } from 'src/utils/process.js'
+import { waitForStdoutDrain, writeToStdout } from 'src/utils/process.js'
 import { jsonStringify } from 'src/utils/slowOperations.js'
 import { z } from 'zod/v4'
 import { notifyCommandLifecycle } from '../utils/commandLifecycle.js'
@@ -480,13 +480,18 @@ export class StructuredIO {
       return message
     } catch (error) {
       console.error(`Error parsing streaming input line: ${line}: ${error}`)
-      // eslint-disable-next-line custom-rules/no-process-exit
       process.exit(1)
     }
   }
 
   async write(message: StdoutMessage): Promise<void> {
-    writeToStdout(ndjsonSafeStringify(message) + '\n')
+    // Await the drain when stdout buffered instead of accepting the write.
+    // Callers already await this method; without it a piped consumer that reads
+    // slower than we emit leaves frames buffered, and process.exit() at
+    // shutdown discards them.
+    if (!writeToStdout(ndjsonSafeStringify(message) + '\n')) {
+      await waitForStdoutDrain()
+    }
   }
 
   private async sendRequest<Response>(
@@ -800,7 +805,6 @@ export class StructuredIO {
 
 function exitWithMessage(message: string): never {
   console.error(message)
-  // eslint-disable-next-line custom-rules/no-process-exit
   process.exit(1)
 }
 
