@@ -13,7 +13,6 @@ import {
   useSetAppState,
 } from 'src/state/AppState.js'
 import { isVimModeEnabled } from '../components/PromptInput/utils.js'
-import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js'
 import type { SpinnerMode } from '../components/Spinner/types.js'
 import { useNotifications } from '../context/notifications.js'
 import { useIsOverlayActive } from '../context/overlayContext.js'
@@ -38,9 +37,6 @@ import { emitTaskTerminatedSdk } from '../utils/sdkEventQueue.js'
 const KILL_AGENTS_CONFIRM_WINDOW_MS = 3000
 
 type CancelRequestHandlerProps = {
-  setToolUseConfirmQueue: (
-    f: (toolUseConfirmQueue: ToolUseConfirm[]) => ToolUseConfirm[],
-  ) => void
   onCancel: () => void
   onAgentsKilled: () => void
   isMessageSelectorVisible: boolean
@@ -62,7 +58,6 @@ type CancelRequestHandlerProps = {
  */
 export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   const {
-    setToolUseConfirmQueue,
     onCancel,
     onAgentsKilled,
     isMessageSelectorVisible,
@@ -96,7 +91,6 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     // This takes precedence over queue management so users can always interrupt Claude
     if (abortSignal !== undefined && !abortSignal.aborted) {
       logEvent('tengu_cancel', cancelProps)
-      setToolUseConfirmQueue(() => [])
       onCancel()
       return
     }
@@ -111,15 +105,8 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
 
     // Fallback: nothing to cancel or pop (shouldn't reach here if isActive is correct)
     logEvent('tengu_cancel', cancelProps)
-    setToolUseConfirmQueue(() => [])
     onCancel()
-  }, [
-    abortSignal,
-    popCommandFromQueue,
-    setToolUseConfirmQueue,
-    onCancel,
-    streamMode,
-  ])
+  }, [abortSignal, popCommandFromQueue, onCancel, streamMode])
 
   // Determine if this handler should be active
   // Other contexts (Transcript, HistorySearch, Help) have their own escape handlers

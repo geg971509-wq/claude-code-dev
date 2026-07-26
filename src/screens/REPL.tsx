@@ -2614,9 +2614,11 @@ export function REPL({
     }
 
     if (focusedInputDialog === 'tool-permission') {
-      // Tool use confirm handles the abort signal itself
+      // Remote Control owns prompt removal so an unsent denial stays actionable.
       toolUseConfirmQueue[0]?.onAbort();
-      setToolUseConfirmQueue([]);
+      if (!remoteSession.isRemoteMode) {
+        setToolUseConfirmQueue([]);
+      }
     } else if (focusedInputDialog === 'prompt') {
       // Reject all pending prompts and clear the queue
       for (const item of promptQueue) {
@@ -2662,7 +2664,6 @@ export function REPL({
 
   // CancelRequestHandler props - rendered inside KeybindingSetup
   const cancelRequestProps = {
-    setToolUseConfirmQueue,
     onCancel,
     onAgentsKilled: () => setMessages(prev => [...prev, createAgentsKilledMessage()]),
     isMessageSelectorVisible: isMessageSelectorVisible || !!showBashesDialog,
@@ -5816,7 +5817,11 @@ export function REPL({
     focusedInputDialog === 'tool-permission' ? (
       <PermissionRequest
         key={toolUseConfirmQueue[0]?.toolUseID}
-        onDone={() => setToolUseConfirmQueue(([_, ...tail]) => tail)}
+        onDone={() => {
+          if (!remoteSession.isRemoteMode) {
+            setToolUseConfirmQueue(([_, ...tail]) => tail);
+          }
+        }}
         onReject={handleQueuedCommandOnCancel}
         toolUseConfirm={toolUseConfirmQueue[0]!}
         toolUseContext={getToolUseContext(

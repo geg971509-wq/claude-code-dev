@@ -256,7 +256,7 @@ export class RemoteSessionManager {
   respondToPermissionRequest(
     requestId: string,
     result: RemotePermissionResponse,
-  ): void {
+  ): boolean {
     const pendingRequest = this.pendingPermissionRequests.get(requestId)
     if (!pendingRequest) {
       logError(
@@ -264,10 +264,8 @@ export class RemoteSessionManager {
           `[RemoteSessionManager] No pending permission request with ID: ${requestId}`,
         ),
       )
-      return
+      return false
     }
-
-    this.pendingPermissionRequests.delete(requestId)
 
     const response: SDKControlResponse = {
       type: 'control_response',
@@ -287,7 +285,14 @@ export class RemoteSessionManager {
       `[RemoteSessionManager] Sending permission response: ${result.behavior}`,
     )
 
-    this.websocket?.sendControlResponse(response)
+    const accepted = this.websocket?.sendControlResponse(response) ?? false
+    if (
+      accepted &&
+      this.pendingPermissionRequests.get(requestId) === pendingRequest
+    ) {
+      this.pendingPermissionRequests.delete(requestId)
+    }
+    return accepted
   }
 
   /**

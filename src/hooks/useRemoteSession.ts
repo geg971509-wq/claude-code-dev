@@ -360,6 +360,27 @@ export function useRemoteSession({
           suggestions: request.permission_suggestions as PermissionUpdate[],
           blockedPath: request.blocked_path,
         }
+        let deliveryWarningShown = false
+        const respondToPermissionRequest = (
+          response: RemotePermissionResponse,
+        ): boolean => {
+          if (!manager.respondToPermissionRequest(requestId, response)) {
+            if (!deliveryWarningShown) {
+              deliveryWarningShown = true
+              const warningMessage = createSystemMessage(
+                'Permission decision was not sent while the remote session is reconnecting. Try again once connected.',
+                'warning',
+              )
+              setMessages(prev => [...prev, warningMessage])
+            }
+            return false
+          }
+
+          setToolUseConfirmQueue(queue =>
+            queue.filter(item => item.toolUseID !== request.tool_use_id),
+          )
+          return true
+        }
 
         const toolUseConfirm: ToolUseConfirm = {
           assistantMessage: syntheticMessage,
@@ -375,36 +396,26 @@ export function useRemoteSession({
             // No-op for remote — classifier runs on the container
           },
           onAbort() {
-            const response: RemotePermissionResponse = {
+            respondToPermissionRequest({
               behavior: 'deny',
               message: 'User aborted',
-            }
-            manager.respondToPermissionRequest(requestId, response)
-            setToolUseConfirmQueue(queue =>
-              queue.filter(item => item.toolUseID !== request.tool_use_id),
-            )
+            })
           },
           onAllow(updatedInput, _permissionUpdates, _feedback) {
-            const response: RemotePermissionResponse = {
-              behavior: 'allow',
-              updatedInput,
+            if (
+              respondToPermissionRequest({
+                behavior: 'allow',
+                updatedInput,
+              })
+            ) {
+              setIsLoading(true)
             }
-            manager.respondToPermissionRequest(requestId, response)
-            setToolUseConfirmQueue(queue =>
-              queue.filter(item => item.toolUseID !== request.tool_use_id),
-            )
-            // Resume loading indicator after approving
-            setIsLoading(true)
           },
           onReject(feedback?: string) {
-            const response: RemotePermissionResponse = {
+            respondToPermissionRequest({
               behavior: 'deny',
               message: feedback ?? 'User denied permission',
-            }
-            manager.respondToPermissionRequest(requestId, response)
-            setToolUseConfirmQueue(queue =>
-              queue.filter(item => item.toolUseID !== request.tool_use_id),
-            )
+            })
           },
           async recheckPermission() {
             // No-op for remote — permission state is on the container
