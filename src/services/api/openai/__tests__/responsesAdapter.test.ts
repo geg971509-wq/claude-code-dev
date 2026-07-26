@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { ProviderAPIError } from '@ant/model-provider'
+import { resolve } from 'path'
+import { ProviderAPIError, ProviderStreamError } from '@ant/model-provider'
 import { calculateCacheHitRate } from '../../../../utils/cacheWarning.js'
 import {
   adaptResponsesStreamToAnthropic,
@@ -648,6 +649,85 @@ describe('createOfficialResponsesStream request contract', () => {
     expect(capturedBody).not.toHaveProperty('tool_choice')
     attempt.cleanup()
   })
+
+  test('routes the default SDK response through the local SSE parser', async () => {
+    const source = `
+      import { createOfficialResponsesStream, buildOfficialResponsesRequest } from './src/services/api/openai/responsesAdapter.ts'
+
+      let fetchCalls = 0
+      const fetchOverride = Object.assign(
+        async () => {
+          fetchCalls++
+          return new Response(\`data: \${'界'.repeat(350_000)}\`, {
+            status: 200,
+            headers: {
+              'content-type': 'text/event-stream',
+              'x-request-id': 'req-sdk-parser',
+              'retry-after': '2',
+            },
+          })
+        },
+        { preconnect: () => {} },
+      )
+      const request = buildOfficialResponsesRequest({
+        model: 'gpt-5.6-sol',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+        toolChoice: undefined,
+        maxOutputTokens: 2048,
+      })
+      const attempt = await createOfficialResponsesStream({
+        request,
+        signal: new AbortController().signal,
+        sessionId: 'session-sdk-parser',
+        fetchOverride,
+      })
+      let error
+      try {
+        for await (const _ of attempt.stream) {
+          // drain
+        }
+      } catch (caught) {
+        error = caught
+      }
+      console.log(JSON.stringify({
+        status: attempt.status,
+        requestId: attempt.requestId,
+        retryAfterMs: attempt.retryAfterMs,
+        fetchCalls,
+        error: {
+          name: error?.name,
+          kind: error?.kind,
+          retryable: error?.retryable,
+        },
+      }))
+    `
+    const proc = Bun.spawn([process.execPath, '-e', source], {
+      cwd: resolve(import.meta.dir, '../../../../..'),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    const output = await new Response(proc.stdout).text()
+    const error = await new Response(proc.stderr).text()
+
+    expect({ exitCode: await proc.exited, error }).toEqual({
+      exitCode: 0,
+      error: '',
+    })
+    expect(output).toContain(
+      JSON.stringify({
+        status: 200,
+        requestId: 'req-sdk-parser',
+        retryAfterMs: 2_000,
+        fetchCalls: 1,
+        error: {
+          name: 'ProviderStreamError',
+          kind: 'protocol',
+          retryable: false,
+        },
+      }),
+    )
+  })
 })
 
 describe('adaptResponsesStreamToAnthropic errors', () => {
@@ -1011,7 +1091,7 @@ describe('adaptResponsesStreamToAnthropic terminal lifecycle', () => {
   })
 })
 
-function sseResponseFromChunks(chunks: string[]): Response {
+function sseResponseFromChunks(chunks: Array<string | Uint8Array>): Response {
   const encoder = new TextEncoder()
   let i = 0
   const stream = new ReadableStream<Uint8Array>({
@@ -1020,7 +1100,10 @@ function sseResponseFromChunks(chunks: string[]): Response {
         controller.close()
         return
       }
-      controller.enqueue(encoder.encode(chunks[i++]))
+      const chunk = chunks[i++]
+      controller.enqueue(
+        typeof chunk === 'string' ? encoder.encode(chunk) : chunk,
+      )
     },
   })
   return new Response(stream, {
@@ -1075,6 +1158,28 @@ describe('parseSSE framing', () => {
         // drain
       }
     }).toThrow(/Responses SSE JSON parse failed/)
+  })
+
+  test('bounds a multibyte retained delimiter-less frame split across small chunks', async () => {
+    const bytes = new TextEncoder().encode(`data: ${'界'.repeat(350_000)}`)
+    const response = sseResponseFromChunks(
+      Array.from({ length: Math.ceil(bytes.length / 1024) }, (_, index) =>
+        bytes.slice(index * 1024, (index + 1) * 1024),
+      ),
+    )
+
+    const consume = (async () => {
+      for await (const _ of parseSSE(response)) {
+        // drain
+      }
+    })()
+
+    await expect(consume).rejects.toMatchObject({
+      name: 'ProviderStreamError',
+      kind: 'protocol',
+      retryable: false,
+      terminal: false,
+    } satisfies Partial<ProviderStreamError>)
   })
 })
 

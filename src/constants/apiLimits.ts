@@ -92,3 +92,16 @@ export const PDF_AT_MENTION_INLINE_THRESHOLD = 10
  * We validate client-side to provide a clear error message.
  */
 export const API_MAX_MEDIA_PER_REQUEST = 100
+
+// =============================================================================
+// STREAMING LIMITS
+// =============================================================================
+
+/**
+ * Maximum bytes a provider SSE reader may retain in its unparsed tail buffer.
+ *
+ * A stream that never emits a frame terminator would otherwise grow this buffer
+ * without bound. Exceeding it is treated as a protocol fault, not a transient
+ * error: the provider adapters raise a non-retryable stream error.
+ */
+export const MAX_RETAINED_SSE_BUFFER_BYTES = 1024 * 1024 // 1 MiB

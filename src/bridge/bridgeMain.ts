@@ -11,6 +11,7 @@ import {
   logEvent,
   logEventAsync,
 } from '../services/analytics/index.js'
+import { addJitter } from '../utils/backoff.js'
 import { getBootstrapArgs, getScriptPath } from '../utils/cliLaunch.js'
 import { logForDebugging } from '../utils/debug.js'
 import { rcLog } from './rcDebugLog.js'
@@ -1631,11 +1632,6 @@ export function isServerError(err: unknown): boolean {
     typeof err.code === 'string' &&
     err.code === 'ERR_BAD_RESPONSE'
   )
-}
-
-/** Add ±25% jitter to a delay value. */
-function addJitter(ms: number): number {
-  return Math.max(0, ms + ms * 0.25 * (2 * Math.random() - 1))
 }
 
 function formatDelay(ms: number): string {

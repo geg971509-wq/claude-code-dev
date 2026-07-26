@@ -100,31 +100,20 @@ mock.module('src/services/api/openai/client.js', () => ({
         create: (args: Record<string, unknown>) => {
           responsesCreateCount++
           lastResponsesArgs = args
-          const data = asyncStream([
-            {
-              type: 'response.output_text.delta',
-              output_index: 0,
-              item_id: 'msg_responses_test',
-              delta: '{"selected_memories":[]}',
-            },
-            {
-              type: 'response.completed',
-              response: {
-                status: 'completed',
-                usage: { input_tokens: 12, output_tokens: 4 },
-              },
-            },
-          ])
           return {
-            withResponse: async () => ({
-              data,
-              response: {
-                status: 200,
-                headers: new Headers({ 'x-request-id': 'req_responses_test' }),
-                body: null,
-              },
-              request_id: 'req_responses_test',
-            }),
+            asResponse: async () =>
+              new Response(
+                [
+                  'data: {"type":"response.output_text.delta","output_index":0,"item_id":"msg_responses_test","delta":"{\\"selected_memories\\":[]}"}\n\n',
+                  'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":12,"output_tokens":4}}}\n\n',
+                ].join(''),
+                {
+                  status: 200,
+                  headers: new Headers({
+                    'x-request-id': 'req_responses_test',
+                  }),
+                },
+              ),
           }
         },
       },

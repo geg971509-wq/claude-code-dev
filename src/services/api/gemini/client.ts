@@ -1,4 +1,5 @@
-import { parseSSEFrames } from 'src/cli/transports/SSETransport.js'
+import { MAX_RETAINED_SSE_BUFFER_BYTES } from 'src/constants/apiLimits.js'
+import { parseSSEFrames } from 'src/utils/sse.js'
 import { errorMessage } from 'src/utils/errors.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
 import {
@@ -11,7 +12,7 @@ const DEFAULT_GEMINI_BASE_URL =
   'https://generativelanguage.googleapis.com/v1beta'
 
 const STREAM_DECODE_OPTS: TextDecodeOptions = { stream: true }
-const MAX_RETAINED_SSE_BUFFER_BYTES = 1024 * 1024
+const UTF8_ENCODER = new TextEncoder()
 
 function getGeminiBaseUrl(): string {
   return (process.env.GEMINI_BASE_URL || DEFAULT_GEMINI_BASE_URL).replace(
@@ -41,14 +42,16 @@ function parseGeminiPayload(
   }
 }
 
-function assertRetainedBufferWithinLimit(buffer: string): void {
-  if (buffer.length <= MAX_RETAINED_SSE_BUFFER_BYTES) return
+function assertRetainedBufferWithinLimit(byteLength: number): void {
+  if (byteLength <= MAX_RETAINED_SSE_BUFFER_BYTES) {
+    return
+  }
 
   throw new ProviderStreamError(
     `Gemini SSE retained buffer exceeded ${MAX_RETAINED_SSE_BUFFER_BYTES} bytes`,
     {
       kind: 'protocol',
-      retryable: true,
+      retryable: false,
       terminal: false,
     },
   )
@@ -88,31 +91,48 @@ export async function* streamGeminiGenerateContent(params: {
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let retainedByteLength = 0
 
   try {
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
 
-      buffer += decoder.decode(value, STREAM_DECODE_OPTS)
-      const { frames, remaining } = parseSSEFrames(buffer)
-      buffer = remaining
+      const decoded = decoder.decode(value, STREAM_DECODE_OPTS)
+      buffer += decoded
+      retainedByteLength += UTF8_ENCODER.encode(decoded).byteLength
+      const parsed = parseSSEFrames(buffer)
+      const consumedLength = buffer.length - parsed.remaining.length
+      if (consumedLength > 0) {
+        retainedByteLength -= UTF8_ENCODER.encode(
+          buffer.slice(0, consumedLength),
+        ).byteLength
+      }
+      buffer = parsed.remaining
 
-      for (const frame of frames) {
+      for (const frame of parsed.frames) {
         const chunk = parseGeminiPayload(frame.data, false)
         if (chunk) yield chunk
       }
-      assertRetainedBufferWithinLimit(buffer)
+      assertRetainedBufferWithinLimit(retainedByteLength)
     }
 
-    buffer += decoder.decode()
+    const decoded = decoder.decode()
+    buffer += decoded
+    retainedByteLength += UTF8_ENCODER.encode(decoded).byteLength
     const parsed = parseSSEFrames(buffer)
+    const consumedLength = buffer.length - parsed.remaining.length
+    if (consumedLength > 0) {
+      retainedByteLength -= UTF8_ENCODER.encode(
+        buffer.slice(0, consumedLength),
+      ).byteLength
+    }
     buffer = parsed.remaining
     for (const frame of parsed.frames) {
       const chunk = parseGeminiPayload(frame.data, true)
       if (chunk) yield chunk
     }
-    assertRetainedBufferWithinLimit(buffer)
+    assertRetainedBufferWithinLimit(retainedByteLength)
 
     if (buffer.trim()) {
       const trailing = parseSSEFrames(`${buffer}\n\n`)
@@ -122,6 +142,10 @@ export async function* streamGeminiGenerateContent(params: {
       }
     }
   } finally {
+    // Release the lock first, then cancel the body. cancel() throws while the
+    // stream is locked, and releaseLock() alone leaves the socket/TLS buffers
+    // pinned until GC on early exit (throw, or generator abandoned mid-stream).
     reader.releaseLock()
+    void response.body?.cancel().catch(() => {})
   }
 }

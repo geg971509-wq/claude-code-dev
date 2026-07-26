@@ -17,6 +17,7 @@ import {
   isAzureResponsesBaseURL,
   type OpenAIJSONOutputFormat,
 } from './requestBody.js'
+import { MAX_RETAINED_SSE_BUFFER_BYTES } from '../../../constants/apiLimits.js'
 import { createCombinedAbortSignal } from '../../../utils/combinedAbortSignal.js'
 import { getProxyFetchOptions } from '../../../utils/proxy.js'
 
@@ -24,6 +25,7 @@ import { getProxyFetchOptions } from '../../../utils/proxy.js'
 const X_CODEX_INSTALLATION_ID = 'x-codex-installation-id'
 /** Codex `X_CODEX_WINDOW_ID_HEADER` — body + HTTP compatibility projection. */
 const X_CODEX_WINDOW_ID = 'x-codex-window-id'
+const UTF8_ENCODER = new TextEncoder()
 
 type ResponsesInputItem = Record<string, unknown>
 type ResponsesTool = {
@@ -525,6 +527,21 @@ function parseSseDataFrame(frame: string): Record<string, unknown> | undefined {
   })
 }
 
+function assertRetainedSSEBufferWithinLimit(byteLength: number): void {
+  if (byteLength <= MAX_RETAINED_SSE_BUFFER_BYTES) {
+    return
+  }
+
+  throw new ProviderStreamError(
+    `Responses SSE retained buffer exceeded ${MAX_RETAINED_SSE_BUFFER_BYTES} bytes`,
+    {
+      kind: 'protocol',
+      retryable: false,
+      terminal: false,
+    },
+  )
+}
+
 /** Exported for focused framing tests (LF / CRLF / trailing frame). */
 export async function* parseSSE(
   response: Response,
@@ -539,24 +556,49 @@ export async function* parseSSE(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let retainedByteLength = 0
   try {
     while (true) {
       const { done, value } = await reader.read()
       if (done) {
         // Flush any multibyte char held by the decoder.
-        buffer += decoder.decode()
+        const decoded = decoder.decode()
+        buffer += decoded
+        retainedByteLength += UTF8_ENCODER.encode(decoded).byteLength
         break
       }
-      buffer += decoder.decode(value, { stream: true })
+      const decoded = decoder.decode(value, { stream: true })
+      buffer += decoded
+      retainedByteLength += UTF8_ENCODER.encode(decoded).byteLength
       let boundary = nextSseFrameBoundary(buffer)
       while (boundary) {
+        const consumedLength = boundary.at + boundary.sepLen
         const frame = buffer.slice(0, boundary.at)
-        buffer = buffer.slice(boundary.at + boundary.sepLen)
+        retainedByteLength -= UTF8_ENCODER.encode(
+          buffer.slice(0, consumedLength),
+        ).byteLength
+        buffer = buffer.slice(consumedLength)
         const event = parseSseDataFrame(frame)
         if (event) yield event
         boundary = nextSseFrameBoundary(buffer)
       }
+      assertRetainedSSEBufferWithinLimit(retainedByteLength)
     }
+
+    let boundary = nextSseFrameBoundary(buffer)
+    while (boundary) {
+      const consumedLength = boundary.at + boundary.sepLen
+      const frame = buffer.slice(0, boundary.at)
+      retainedByteLength -= UTF8_ENCODER.encode(
+        buffer.slice(0, consumedLength),
+      ).byteLength
+      buffer = buffer.slice(consumedLength)
+      const event = parseSseDataFrame(frame)
+      if (event) yield event
+      boundary = nextSseFrameBoundary(buffer)
+    }
+    assertRetainedSSEBufferWithinLimit(retainedByteLength)
+
     // Some proxies omit the final blank line before EOF; still accept a trailing frame.
     if (buffer.trim()) {
       const event = parseSseDataFrame(buffer)
@@ -1253,11 +1295,11 @@ export async function createOfficialResponsesStream(params: {
       signal: params.signal,
       headers: responsesIdentityHeaders(params.sessionId),
     })
-    const { data, response, request_id } = await promise.withResponse()
+    const response = await promise.asResponse()
     return {
-      stream: data as unknown as AsyncIterable<Record<string, unknown>>,
+      stream: parseSSE(response),
       status: response.status,
-      requestId: responseRequestId(response, request_id),
+      requestId: responseRequestId(response),
       retryAfterMs: responseRetryAfterMs(response),
       cleanup: () => {
         void response.body?.cancel().catch(() => {})

@@ -90,7 +90,24 @@ describe('streamGeminiGenerateContent', () => {
     expect(error).toBeInstanceOf(ProviderStreamError)
     expect(error).toMatchObject({
       kind: 'protocol',
-      retryable: true,
+      retryable: false,
+    })
+  })
+
+  test('bounds a multibyte retained frame split across small chunks', async () => {
+    const bytes = encoder.encode(`data: ${'界'.repeat(350_000)}`)
+    const chunks = Array.from(
+      { length: Math.ceil(bytes.length / 1024) },
+      (_, index) => bytes.slice(index * 1024, (index + 1) * 1024),
+    )
+    const consume = collectChunks(chunks)
+
+    const error = await consume.catch(error => error)
+    expect(error).toBeInstanceOf(ProviderStreamError)
+    expect(error).toMatchObject({
+      kind: 'protocol',
+      retryable: false,
+      terminal: false,
     })
   })
 
