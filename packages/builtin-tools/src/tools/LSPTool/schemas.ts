@@ -1,5 +1,5 @@
 import { z } from 'zod/v4'
-import { lazySchema } from 'src/utils/lazySchema.js'
+import { lazySchema } from '@claude-code-best/core-utils/lazySchema'
 
 /**
  * Discriminated union of all LSP operations

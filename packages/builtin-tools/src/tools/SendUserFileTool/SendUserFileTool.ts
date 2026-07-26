@@ -1,7 +1,7 @@
 import { z } from 'zod/v4'
 import type { ToolResultBlockParam } from 'src/Tool.js'
 import { buildTool } from 'src/Tool.js'
-import { lazySchema } from 'src/utils/lazySchema.js'
+import { lazySchema } from '@claude-code-best/core-utils/lazySchema'
 import { SEND_USER_FILE_TOOL_NAME } from './prompt.js'
 import { isBridgeEnabled } from 'src/bridge/bridgeEnabled.js'
 

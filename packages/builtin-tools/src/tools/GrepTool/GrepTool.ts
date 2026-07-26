@@ -5,7 +5,7 @@ import { getCwd } from 'src/utils/cwd.js'
 import { isENOENT } from 'src/utils/errors.js'
 import { FILE_NOT_FOUND_CWD_NOTE, suggestPathUnderCwd } from 'src/utils/file.js'
 import { getFsImplementation } from 'src/utils/fsOperations.js'
-import { lazySchema } from 'src/utils/lazySchema.js'
+import { lazySchema } from '@claude-code-best/core-utils/lazySchema'
 import { expandPath, toRelativePath } from 'src/utils/path.js'
 import {
   checkReadPermissionForTool,
@@ -16,9 +16,9 @@ import type { PermissionDecision } from 'src/utils/permissions/PermissionResult.
 import { matchWildcardPattern } from 'src/utils/permissions/shellRuleMatching.js'
 import { getGlobExclusionsForPluginCache } from 'src/utils/plugins/orphanedPluginFilter.js'
 import { ripGrep } from 'src/utils/ripgrep.js'
-import { semanticBoolean } from 'src/utils/semanticBoolean.js'
+import { semanticBoolean } from '@claude-code-best/core-utils/semanticBoolean'
 import { semanticNumber } from 'src/utils/semanticNumber.js'
-import { plural } from 'src/utils/stringUtils.js'
+import { plural } from '@claude-code-best/core-utils/stringUtils'
 import { GREP_TOOL_NAME, getDescription } from './prompt.js'
 import {
   getToolUseSummary,

@@ -1,6 +1,6 @@
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from 'src/Tool.js'
-import { lazySchema } from 'src/utils/lazySchema.js'
+import { lazySchema } from '@claude-code-best/core-utils/lazySchema'
 import React from 'react'
 import { Box, Text } from '@anthropic/ink'
 

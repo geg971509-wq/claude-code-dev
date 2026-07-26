@@ -6,7 +6,7 @@ import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js';
 import type { AppState } from 'src/state/AppState.js';
 import { z } from 'zod/v4';
 import { getKairosActive } from 'src/bootstrap/state.js';
-import { TOOL_SUMMARY_MAX_LENGTH } from 'src/constants/toolLimits.js';
+import { TOOL_SUMMARY_MAX_LENGTH } from '@claude-code-best/core-utils/toolLimits';
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -21,7 +21,7 @@ import {
   spawnShellTask,
   unregisterForeground,
 } from 'src/tasks/LocalShellTask/LocalShellTask.js';
-import type { AgentId } from 'src/types/ids.js';
+import type { AgentId } from '@claude-code-best/core-utils/ids';
 import type { AssistantMessage } from 'src/types/message.js';
 import { parseForSecurity } from 'src/utils/bash/ast.js';
 import { splitCommand_DEPRECATED, splitCommandWithOperators } from 'src/utils/bash/commands.js';
@@ -33,16 +33,16 @@ import { detectFileEncoding, detectLineEndings, getFileModificationTime, writeTe
 import { fileHistoryEnabled, fileHistoryTrackEdit } from 'src/utils/fileHistory.js';
 import { truncate } from 'src/utils/format.js';
 import { getFsImplementation } from 'src/utils/fsOperations.js';
-import { lazySchema } from 'src/utils/lazySchema.js';
+import { lazySchema } from '@claude-code-best/core-utils/lazySchema';
 import { expandPath } from 'src/utils/path.js';
 import type { PermissionResult } from 'src/utils/permissions/PermissionResult.js';
 import { maybeRecordPluginHint } from 'src/utils/plugins/hintRecommendation.js';
 import { exec } from 'src/utils/Shell.js';
 import type { ExecResult } from 'src/utils/ShellCommand.js';
 import { SandboxManager } from 'src/utils/sandbox/sandbox-adapter.js';
-import { semanticBoolean } from 'src/utils/semanticBoolean.js';
+import { semanticBoolean } from '@claude-code-best/core-utils/semanticBoolean';
 import { semanticNumber } from 'src/utils/semanticNumber.js';
-import { EndTruncatingAccumulator } from 'src/utils/stringUtils.js';
+import { EndTruncatingAccumulator } from '@claude-code-best/core-utils/stringUtils';
 import { getTaskOutputPath } from 'src/utils/task/diskOutput.js';
 import { TaskOutput } from 'src/utils/task/TaskOutput.js';
 import { isOutputLineTruncated } from 'src/utils/terminal.js';

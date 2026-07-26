@@ -13,8 +13,8 @@ import {
   type Tools,
 } from 'src/Tool.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { lazySchema } from 'src/utils/lazySchema.js'
-import { escapeRegExp } from 'src/utils/stringUtils.js'
+import { lazySchema } from '@claude-code-best/core-utils/lazySchema'
+import { escapeRegExp } from '@claude-code-best/core-utils/stringUtils'
 import { isSearchExtraToolsEnabledOptimistic } from 'src/utils/searchExtraTools.js'
 import {
   getPrompt,

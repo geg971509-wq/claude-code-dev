@@ -6,6 +6,7 @@
       "name": "claude-code-best",
       "dependencies": {
         "@agentclientprotocol/sdk": "^0.19.0",
+        "@claude-code-best/core-utils": "workspace:*",
         "@claude-code-best/mcp-chrome-bridge": "^3.0.1",
         "highlight.js": "^11.11.1",
         "ws": "^8.20.0",
@@ -238,6 +239,7 @@
       "version": "1.0.0",
       "dependencies": {
         "@claude-code-best/agent-tools": "workspace:*",
+        "@claude-code-best/core-utils": "workspace:*",
         "marked": "^17.0.6",
       },
     },
@@ -257,6 +259,13 @@
       "version": "1.0.0",
       "dependencies": {
         "highlight.js": "latest",
+      },
+    },
+    "packages/core-utils": {
+      "name": "@claude-code-best/core-utils",
+      "version": "1.0.0",
+      "dependencies": {
+        "zod": "^4.3.6",
       },
     },
     "packages/image-processor-napi": {
@@ -609,6 +618,8 @@
     "@claude-code-best/agent-tools": ["@claude-code-best/agent-tools@workspace:packages/agent-tools"],
 
     "@claude-code-best/builtin-tools": ["@claude-code-best/builtin-tools@workspace:packages/builtin-tools"],
+
+    "@claude-code-best/core-utils": ["@claude-code-best/core-utils@workspace:packages/core-utils"],
 
     "@claude-code-best/mcp-chrome-bridge": ["@claude-code-best/mcp-chrome-bridge@3.0.1", "", { "dependencies": { "@hono/node-server": "^1.19.13", "@modelcontextprotocol/sdk": "^1.11.0", "commander": "^13.1.0", "hono": "^4.12.12", "is-admin": "^4.0.0" }, "bin": { "mcp-chrome-bridge": "dist/cli.js", "mcp-chrome-stdio": "dist/mcp/mcp-server-stdio.js" } }, "sha512-ozeLHVOdckTUsWKJneJAL+CclrUlwVyBpfzFxgsrSL9f0LvjlJXE7+VcF5OmjDPwmZy6QNorvtg3/8NT2cIlzA=="],
 

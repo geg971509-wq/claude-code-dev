@@ -23,7 +23,7 @@ import {
   findInProcessTeammateTaskId,
   setAwaitingPlanApproval,
 } from 'src/utils/inProcessTeammateHelpers.js'
-import { lazySchema } from 'src/utils/lazySchema.js'
+import { lazySchema } from '@claude-code-best/core-utils/lazySchema'
 import { logError } from 'src/utils/log.js'
 import {
   getPlan,

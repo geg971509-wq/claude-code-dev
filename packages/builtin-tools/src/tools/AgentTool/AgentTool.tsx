@@ -39,7 +39,7 @@ import {
 } from 'src/tasks/RemoteAgentTask/RemoteAgentTask.js';
 import { assembleToolPool } from 'src/tools.js';
 import { filterParentToolsForFork } from 'src/utils/agentToolFilter.js';
-import { asAgentId } from 'src/types/ids.js';
+import { asAgentId } from '@claude-code-best/core-utils/ids';
 import { runWithAgentContext, type SubagentContext } from 'src/utils/agentContext.js';
 import { isAgentSwarmsEnabled } from 'src/utils/agentSwarmsEnabled.js';
 import { getCwd, runWithCwdOverride } from 'src/utils/cwd.js';
@@ -47,7 +47,7 @@ import { logForDebugging } from 'src/utils/debug.js';
 import { isEnvTruthy } from 'src/utils/envUtils.js';
 import { AbortError, errorMessage, toError } from 'src/utils/errors.js';
 import type { CacheSafeParams } from 'src/utils/forkedAgent.js';
-import { lazySchema } from 'src/utils/lazySchema.js';
+import { lazySchema } from '@claude-code-best/core-utils/lazySchema';
 import { createUserMessage, extractTextContent, isSyntheticMessage, normalizeMessages } from 'src/utils/messages.js';
 import { getAgentModel } from 'src/utils/model/agent.js';
 import { permissionModeSchema } from 'src/utils/permissions/PermissionMode.js';

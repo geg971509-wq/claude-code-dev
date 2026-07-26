@@ -8,7 +8,7 @@ import { z } from 'zod/v4';
 import { Box, Text } from '@anthropic/ink';
 import type { Tool } from 'src/Tool.js';
 import { buildTool, type ToolDef } from 'src/Tool.js';
-import { lazySchema } from 'src/utils/lazySchema.js';
+import { lazySchema } from '@claude-code-best/core-utils/lazySchema';
 import {
   ASK_USER_QUESTION_TOOL_CHIP_WIDTH,
   ASK_USER_QUESTION_TOOL_NAME,

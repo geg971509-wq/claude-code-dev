@@ -1,8 +1,3 @@
-/**
- * Returns a memoized factory function that constructs the value on first call.
- * Used to defer Zod schema construction from module init time to first access.
- */
-export function lazySchema<T>(factory: () => T): () => T {
-  let cached: T | undefined
-  return () => (cached ??= factory())
-}
+// Canonical implementation lives in @claude-code-best/core-utils so workspace
+// packages can use it without importing back into the main app.
+export { lazySchema } from '@claude-code-best/core-utils/lazySchema'

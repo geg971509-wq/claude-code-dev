@@ -38,14 +38,14 @@ import {
   updateAgentProgress as updateAsyncAgentProgress,
   updateProgressFromMessage,
 } from 'src/tasks/LocalAgentTask/LocalAgentTask.js'
-import { asAgentId } from 'src/types/ids.js'
+import { asAgentId } from '@claude-code-best/core-utils/ids'
 import type { Message as MessageType, ContentItem } from 'src/types/message.js'
 import { isAgentSwarmsEnabled } from 'src/utils/agentSwarmsEnabled.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isInProtectedNamespace } from 'src/utils/envUtils.js'
 import { AbortError, errorMessage } from 'src/utils/errors.js'
 import type { CacheSafeParams } from 'src/utils/forkedAgent.js'
-import { lazySchema } from 'src/utils/lazySchema.js'
+import { lazySchema } from '@claude-code-best/core-utils/lazySchema'
 import {
   extractTextContent,
   getLastAssistantMessage,

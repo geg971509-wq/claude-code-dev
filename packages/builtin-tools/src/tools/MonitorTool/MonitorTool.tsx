@@ -1,13 +1,13 @@
 import React from 'react';
 import { Text } from '@anthropic/ink';
 import { z } from 'zod/v4';
-import { TOOL_SUMMARY_MAX_LENGTH } from 'src/constants/toolLimits.js';
+import { TOOL_SUMMARY_MAX_LENGTH } from '@claude-code-best/core-utils/toolLimits';
 import type { ToolResultBlockParam, ToolUseContext, ValidationResult } from 'src/Tool.js';
 import { buildTool } from 'src/Tool.js';
 import { spawnShellTask } from 'src/tasks/LocalShellTask/LocalShellTask.js';
 import { bashToolHasPermission } from '../BashTool/bashPermissions.js';
 import type { PermissionResult } from 'src/utils/permissions/PermissionResult.js';
-import { lazySchema } from 'src/utils/lazySchema.js';
+import { lazySchema } from '@claude-code-best/core-utils/lazySchema';
 import { truncate } from 'src/utils/format.js';
 import { exec } from 'src/utils/Shell.js';
 import { getTaskOutputPath } from 'src/utils/task/diskOutput.js';

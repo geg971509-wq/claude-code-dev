@@ -6,7 +6,7 @@ import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js';
 import type { AppState } from 'src/state/AppState.js';
 import { z } from 'zod/v4';
 import { getKairosActive } from 'src/bootstrap/state.js';
-import { TOOL_SUMMARY_MAX_LENGTH } from 'src/constants/toolLimits.js';
+import { TOOL_SUMMARY_MAX_LENGTH } from '@claude-code-best/core-utils/toolLimits';
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -20,13 +20,13 @@ import {
   spawnShellTask,
   unregisterForeground,
 } from 'src/tasks/LocalShellTask/LocalShellTask.js';
-import type { AgentId } from 'src/types/ids.js';
+import type { AgentId } from '@claude-code-best/core-utils/ids';
 import type { AssistantMessage } from 'src/types/message.js';
 import { extractClaudeCodeHints } from 'src/utils/claudeCodeHints.js';
 import { isEnvTruthy } from 'src/utils/envUtils.js';
 import { errorMessage as getErrorMessage, ShellError } from 'src/utils/errors.js';
 import { truncate } from 'src/utils/format.js';
-import { lazySchema } from 'src/utils/lazySchema.js';
+import { lazySchema } from '@claude-code-best/core-utils/lazySchema';
 import { logError } from 'src/utils/log.js';
 import type { PermissionResult } from 'src/utils/permissions/PermissionResult.js';
 import { getPlatform } from 'src/utils/platform.js';
@@ -34,10 +34,10 @@ import { maybeRecordPluginHint } from 'src/utils/plugins/hintRecommendation.js';
 import { exec } from 'src/utils/Shell.js';
 import type { ExecResult } from 'src/utils/ShellCommand.js';
 import { SandboxManager } from 'src/utils/sandbox/sandbox-adapter.js';
-import { semanticBoolean } from 'src/utils/semanticBoolean.js';
+import { semanticBoolean } from '@claude-code-best/core-utils/semanticBoolean';
 import { semanticNumber } from 'src/utils/semanticNumber.js';
 import { getCachedPowerShellPath } from 'src/utils/shell/powershellDetection.js';
-import { EndTruncatingAccumulator } from 'src/utils/stringUtils.js';
+import { EndTruncatingAccumulator } from '@claude-code-best/core-utils/stringUtils';
 import { getTaskOutputPath } from 'src/utils/task/diskOutput.js';
 import { TaskOutput } from 'src/utils/task/TaskOutput.js';
 import { isOutputLineTruncated } from 'src/utils/terminal.js';

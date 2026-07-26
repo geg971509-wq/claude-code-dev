@@ -12,7 +12,7 @@ import {
   saveGlobalConfig,
 } from 'src/utils/config.js'
 import { errorMessage } from 'src/utils/errors.js'
-import { lazySchema } from 'src/utils/lazySchema.js'
+import { lazySchema } from '@claude-code-best/core-utils/lazySchema'
 import { logError } from 'src/utils/log.js'
 import {
   getInitialSettings,

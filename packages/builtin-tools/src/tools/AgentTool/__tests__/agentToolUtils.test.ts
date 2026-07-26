@@ -141,7 +141,7 @@ mock.module('src/tools/AgentTool/loadAgentsDir.js', () => ({}))
 
 mock.module('src/state/AppState.js', () => ({}))
 
-mock.module('src/types/ids.js', () => ({
+mock.module('@claude-code-best/core-utils/ids', () => ({
   asAgentId: (id: string) => id,
 }))
 

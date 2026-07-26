@@ -7,7 +7,7 @@ import {
   executeTaskCompletedHooks,
   getTaskCompletedHookMessage,
 } from 'src/utils/hooks.js'
-import { lazySchema } from 'src/utils/lazySchema.js'
+import { lazySchema } from '@claude-code-best/core-utils/lazySchema'
 import {
   blockTask,
   deleteTask,
