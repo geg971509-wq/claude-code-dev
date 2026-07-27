@@ -734,6 +734,65 @@ describe('prompt caching support', () => {
     expect(msgStart.message.usage.input_tokens).toBe(200)
   })
 
+  test('maps a top-level usage.cached_tokens (Moonshot shape)', async () => {
+    const events = await collectEvents([
+      makeChunk({
+        choices: [{ index: 0, delta: { content: 'hi' }, finish_reason: null }],
+        usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 50,
+          total_tokens: 1050,
+          cached_tokens: 600,
+        } as any,
+      }),
+      makeChunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+    ])
+
+    const msgStart = events.find(e => e.type === 'message_start') as any
+    expect(msgStart.message.usage.cache_read_input_tokens).toBe(600)
+    // input_tokens = prompt_tokens - cached_tokens = 1000 - 600 = 400
+    expect(msgStart.message.usage.input_tokens).toBe(400)
+  })
+
+  test('prefers prompt_tokens_details.cached_tokens over the top-level field', async () => {
+    const events = await collectEvents([
+      makeChunk({
+        choices: [{ index: 0, delta: { content: 'hi' }, finish_reason: null }],
+        usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 50,
+          total_tokens: 1050,
+          prompt_tokens_details: { cached_tokens: 800 },
+          cached_tokens: 600,
+        } as any,
+      }),
+      makeChunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+    ])
+
+    const msgStart = events.find(e => e.type === 'message_start') as any
+    expect(msgStart.message.usage.cache_read_input_tokens).toBe(800)
+    expect(msgStart.message.usage.input_tokens).toBe(200)
+  })
+
+  test('ignores a non-numeric top-level cached_tokens', async () => {
+    const events = await collectEvents([
+      makeChunk({
+        choices: [{ index: 0, delta: { content: 'hi' }, finish_reason: null }],
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 5,
+          total_tokens: 105,
+          cached_tokens: 'lots',
+        } as any,
+      }),
+      makeChunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+    ])
+
+    const msgStart = events.find(e => e.type === 'message_start') as any
+    expect(msgStart.message.usage.cache_read_input_tokens).toBe(0)
+    expect(msgStart.message.usage.input_tokens).toBe(100)
+  })
+
   test('defaults cache_read_input_tokens to 0 when no cached_tokens', async () => {
     const events = await collectEvents([
       makeChunk({

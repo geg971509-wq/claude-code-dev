@@ -1,3 +1,5 @@
+import { strip1mContextSuffix } from '../../shared/modelId.js'
+
 /**
  * Default mapping from Anthropic model names to OpenAI model names.
  * Used only when ANTHROPIC_DEFAULT_*_MODEL env vars are not set.
@@ -35,20 +37,20 @@ function getModelFamily(model: string): 'haiku' | 'sonnet' | 'opus' | null {
  */
 export function resolveOpenAIModel(anthropicModel: string): string {
   if (process.env.OPENAI_MODEL) {
-    return process.env.OPENAI_MODEL
+    return strip1mContextSuffix(process.env.OPENAI_MODEL)
   }
 
-  const cleanModel = anthropicModel.replace(/\[1m\]$/, '')
+  const cleanModel = strip1mContextSuffix(anthropicModel)
 
   const family = getModelFamily(cleanModel)
   if (family) {
     const openaiEnvVar = `OPENAI_DEFAULT_${family.toUpperCase()}_MODEL`
     const openaiOverride = process.env[openaiEnvVar]
-    if (openaiOverride) return openaiOverride
+    if (openaiOverride) return strip1mContextSuffix(openaiOverride)
 
     const anthropicEnvVar = `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`
     const anthropicOverride = process.env[anthropicEnvVar]
-    if (anthropicOverride) return anthropicOverride
+    if (anthropicOverride) return strip1mContextSuffix(anthropicOverride)
   }
 
   return DEFAULT_MODEL_MAP[cleanModel] ?? cleanModel

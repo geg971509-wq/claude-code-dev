@@ -7,7 +7,10 @@ import {
   supportsOpenAIReasoningEffortNone,
   shouldUseOpenAIResponsesAPI,
   resolveOpenAIPromptCacheKey,
+  resolveOpenAIMaxTokens,
   buildOpenAIRequestBody,
+  isKimiModel,
+  toKimiReasoningEffort,
 } from '../requestBody.js'
 
 // Re-register envUtils.js with correct isEnvDefinedFalsy and isEnvTruthy to
@@ -454,6 +457,60 @@ describe('resolveOpenAIPromptCacheKey', () => {
   })
 })
 
+describe('resolveOpenAIMaxTokens', () => {
+  test('uses valid sources by priority and skips invalid candidates', () => {
+    const originalOpenAIMaxTokens = process.env.OPENAI_MAX_TOKENS
+    const originalGenericMaxTokens = process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS
+
+    try {
+      process.env.OPENAI_MAX_TOKENS = '222'
+      process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '333'
+      expect(resolveOpenAIMaxTokens(100, 111)).toBe(111)
+      expect(resolveOpenAIMaxTokens(100)).toBe(222)
+
+      delete process.env.OPENAI_MAX_TOKENS
+      expect(resolveOpenAIMaxTokens(100)).toBe(333)
+
+      delete process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS
+      expect(resolveOpenAIMaxTokens(100)).toBe(100)
+
+      process.env.OPENAI_MAX_TOKENS = '222'
+      process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '333'
+      for (const override of [0, -1, 1.5, NaN, Infinity, -Infinity]) {
+        expect(resolveOpenAIMaxTokens(100, override)).toBe(222)
+      }
+
+      for (const value of [
+        '',
+        '0',
+        '-1',
+        '1.5',
+        '123suffix',
+        'Infinity',
+        'NaN',
+      ]) {
+        process.env.OPENAI_MAX_TOKENS = value
+        expect(resolveOpenAIMaxTokens(100)).toBe(333)
+
+        delete process.env.OPENAI_MAX_TOKENS
+        process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = value
+        expect(resolveOpenAIMaxTokens(100)).toBe(100)
+        process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '333'
+      }
+    } finally {
+      if (originalOpenAIMaxTokens === undefined)
+        delete process.env.OPENAI_MAX_TOKENS
+      else process.env.OPENAI_MAX_TOKENS = originalOpenAIMaxTokens
+
+      if (originalGenericMaxTokens === undefined) {
+        delete process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS
+      } else {
+        process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = originalGenericMaxTokens
+      }
+    }
+  })
+})
+
 describe('buildOpenAIRequestBody — reasoning chat max tokens / effort', () => {
   const baseParams = {
     messages: [{ role: 'user', content: 'hello' }],
@@ -525,5 +582,130 @@ describe('buildOpenAIRequestBody — reasoning chat max tokens / effort', () => 
       model: 'o3',
     })
     expect(noEffort.reasoning_effort).toBeUndefined()
+  })
+})
+
+describe('isKimiModel', () => {
+  test('matches Moonshot Kimi model ids case-insensitively', () => {
+    expect(isKimiModel('kimi-k3')).toBe(true)
+    expect(isKimiModel('Kimi-K2.7-Code')).toBe(true)
+    expect(isKimiModel('moonshotai/kimi-k2')).toBe(true)
+    // Defensive: the [1m] opt-in is stripped upstream, but never assume it.
+    expect(isKimiModel('kimi-k3[1m]')).toBe(true)
+  })
+
+  test('does not match unrelated models', () => {
+    expect(isKimiModel('gpt-4o')).toBe(false)
+    expect(isKimiModel('deepseek-reasoner')).toBe(false)
+    expect(isKimiModel('')).toBe(false)
+    // A bare `k3` is deliberately not a Kimi signal.
+    expect(isKimiModel('k3')).toBe(false)
+  })
+
+  test('does not match a router alias that merely contains "kimi"', () => {
+    // Both quirks gated on this are subtractive — a false positive strips
+    // temperature with nothing in the response explaining why — and gateways
+    // rename models freely, so the match is a family prefix, not a substring.
+    expect(isKimiModel('my-kimi-route')).toBe(false)
+    expect(isKimiModel('proxy/fallback-kimi-k3')).toBe(false)
+    expect(isKimiModel('not-kimi-at-all')).toBe(false)
+    // "kimi" as a bare word, with no family hyphen, is not a model family.
+    expect(isKimiModel('kimi')).toBe(false)
+  })
+})
+
+describe('toKimiReasoningEffort', () => {
+  test('collapses the six Claude Code levels onto Moonshot low/high/max', () => {
+    expect(toKimiReasoningEffort('none')).toBe('low')
+    expect(toKimiReasoningEffort('minimal')).toBe('low')
+    expect(toKimiReasoningEffort('low')).toBe('low')
+    expect(toKimiReasoningEffort('medium')).toBe('high')
+    expect(toKimiReasoningEffort('high')).toBe('high')
+    expect(toKimiReasoningEffort('xhigh')).toBe('max')
+  })
+})
+
+describe('buildOpenAIRequestBody — Kimi tuning', () => {
+  const baseParams = {
+    messages: [{ role: 'user', content: 'hello' }],
+    tools: [] as any[],
+    toolChoice: undefined as any,
+    enableThinking: false,
+    maxTokens: 1234,
+  }
+
+  test('omits temperature for Kimi even when an override is set', () => {
+    // The hook side-queries pass 0; Moonshot errors on any explicit value.
+    expect(
+      buildOpenAIRequestBody({
+        ...baseParams,
+        model: 'kimi-k3',
+        temperatureOverride: 0,
+      }).temperature,
+    ).toBeUndefined()
+    expect(
+      buildOpenAIRequestBody({
+        ...baseParams,
+        model: 'kimi-k3',
+        temperatureOverride: 0.7,
+      }).temperature,
+    ).toBeUndefined()
+  })
+
+  test('still sends temperature for a non-Kimi model', () => {
+    const body = buildOpenAIRequestBody({
+      ...baseParams,
+      model: 'gpt-4o',
+      temperatureOverride: 0.7,
+    })
+    expect(body.temperature).toBe(0.7)
+  })
+
+  test('emits a clamped reasoning_effort for Kimi', () => {
+    const effortFor = (effort: 'low' | 'minimal' | 'medium' | 'xhigh') =>
+      buildOpenAIRequestBody({
+        ...baseParams,
+        model: 'kimi-k3',
+        reasoningEffort: effort,
+      }).reasoning_effort
+
+    expect(effortFor('low')).toBe('low')
+    expect(effortFor('minimal')).toBe('low')
+    expect(effortFor('medium')).toBe('high')
+    expect(effortFor('xhigh')).toBe('max')
+  })
+
+  test('omits reasoning_effort for Kimi when no effort is requested', () => {
+    const body = buildOpenAIRequestBody({ ...baseParams, model: 'kimi-k3' })
+    expect(body.reasoning_effort).toBeUndefined()
+  })
+
+  test('keeps max_tokens for Kimi (not an OpenAI reasoning chat model)', () => {
+    const body = buildOpenAIRequestBody({ ...baseParams, model: 'kimi-k3' })
+    expect(body.max_tokens).toBe(1234)
+    expect(body.max_completion_tokens).toBeUndefined()
+  })
+
+  test('leaves a non-reasoning non-Kimi model without reasoning_effort', () => {
+    const body = buildOpenAIRequestBody({
+      ...baseParams,
+      model: 'gpt-4o',
+      reasoningEffort: 'medium',
+    })
+    expect(body.reasoning_effort).toBeUndefined()
+  })
+
+  test('does not send any thinking field for Kimi', () => {
+    // K3 has no thinking parameter and k2.7-code rejects our bare
+    // {type:'enabled'} shape, so enableThinking must stay off for Kimi.
+    const body = buildOpenAIRequestBody({ ...baseParams, model: 'kimi-k3' })
+    expect(body.thinking).toBeUndefined()
+    expect(body.enable_thinking).toBeUndefined()
+    expect(body.chat_template_kwargs).toBeUndefined()
+  })
+
+  test('isOpenAIThinkingEnabled does not auto-enable for Kimi', () => {
+    delete process.env.OPENAI_ENABLE_THINKING
+    expect(isOpenAIThinkingEnabled('kimi-k3')).toBe(false)
   })
 })

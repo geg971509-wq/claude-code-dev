@@ -1,3 +1,5 @@
+import { strip1mContextSuffix } from './aliases.js'
+
 export type ChatGPTCodexModelOption = {
   value: string
   label: string
@@ -114,7 +116,7 @@ export function isChatGPTAuthMode(): boolean {
 }
 
 function normalizeChatGPTModelId(model: string): string {
-  return model.toLowerCase().replace(/\[1m\]$/i, '')
+  return strip1mContextSuffix(model.toLowerCase())
 }
 
 /**

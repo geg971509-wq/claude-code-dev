@@ -261,6 +261,30 @@ export const CHINA_LLM_PROVIDERS: ProviderPreset[] = [
       },
     ],
   },
+  {
+    id: 'moonshot',
+    label: 'Moonshot Kimi',
+    description: '1M context, auto prompt cache, strong agentic tool use',
+    icon: '\u{1F319}',
+    baseURL: 'https://api.moonshot.cn/v1',
+    apiKeyPage: 'https://platform.moonshot.cn/console/api-keys',
+    modelsPage: 'https://platform.moonshot.cn/docs/pricing/chat',
+    freeTier: 'Credits for new users, cache hits ~10x cheaper than fresh input',
+    keyFormat: 'sk-...',
+    models: [
+      {
+        // The `[1m]` suffix is a client-side context opt-in, not a wire id:
+        // it makes auto-compact budget 1M, and resolveOpenAIModel strips it
+        // before the request. Without it K3 would fall back to the 200K default.
+        id: 'kimi-k3[1m]',
+        label: 'Kimi K3 (1M)',
+        inputPricePerMTok: 20,
+        outputPricePerMTok: 100,
+        contextWindow: '1M',
+        tags: ['Recommended', 'Flagship'],
+      },
+    ],
+  },
 ]
 
 export function findChinaProviderById(id: string): ProviderPreset | undefined {

@@ -382,7 +382,25 @@ describe('modelSupportsEffort', () => {
     'claude-sonnet-5',
     'claude-haiku-5',
   ])('returns true for post-allowlist family %s on 1P', async model => {
-    const { modelSupportsEffort } = await import('src/utils/effort.js')
-    expect(modelSupportsEffort(model)).toBe(true)
+    const providerEnvNames = [
+      'CLAUDE_CODE_USE_BEDROCK',
+      'CLAUDE_CODE_USE_VERTEX',
+      'CLAUDE_CODE_USE_FOUNDRY',
+      'CLAUDE_CODE_USE_OPENAI',
+      'CLAUDE_CODE_USE_GEMINI',
+      'CLAUDE_CODE_USE_GROK',
+    ] as const
+    const saved = providerEnvNames.map(name => process.env[name])
+    for (const name of providerEnvNames) delete process.env[name]
+    try {
+      const { modelSupportsEffort } = await import('src/utils/effort.js')
+      expect(modelSupportsEffort(model)).toBe(true)
+    } finally {
+      for (const [index, name] of providerEnvNames.entries()) {
+        const value = saved[index]
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
   })
 })

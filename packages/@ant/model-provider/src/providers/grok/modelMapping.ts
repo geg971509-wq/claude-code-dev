@@ -1,3 +1,5 @@
+import { strip1mContextSuffix } from '../../shared/modelId.js'
+
 /**
  * Default mapping from Anthropic model names to Grok model names.
  *
@@ -50,25 +52,25 @@ function getUserModelMap(): Record<string, string> | null {
  */
 export function resolveGrokModel(anthropicModel: string): string {
   if (process.env.GROK_MODEL) {
-    return process.env.GROK_MODEL
+    return strip1mContextSuffix(process.env.GROK_MODEL)
   }
 
-  const cleanModel = anthropicModel.replace(/\[1m\]$/, '')
+  const cleanModel = strip1mContextSuffix(anthropicModel)
   const family = getModelFamily(cleanModel)
 
   const userMap = getUserModelMap()
   if (userMap && family && userMap[family]) {
-    return userMap[family]
+    return strip1mContextSuffix(userMap[family])
   }
 
   if (family) {
     const grokEnvVar = `GROK_DEFAULT_${family.toUpperCase()}_MODEL`
     const grokOverride = process.env[grokEnvVar]
-    if (grokOverride) return grokOverride
+    if (grokOverride) return strip1mContextSuffix(grokOverride)
 
     const anthropicEnvVar = `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`
     const anthropicOverride = process.env[anthropicEnvVar]
-    if (anthropicOverride) return anthropicOverride
+    if (anthropicOverride) return strip1mContextSuffix(anthropicOverride)
   }
 
   if (DEFAULT_MODEL_MAP[cleanModel]) {

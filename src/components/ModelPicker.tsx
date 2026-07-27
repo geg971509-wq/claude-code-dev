@@ -34,6 +34,7 @@ import {
   parseUserSpecifiedModel,
 } from '../utils/model/model.js';
 import { resolveDefaultOptionModel } from '../utils/model/defaultOption1M.js';
+import { strip1mContextSuffix } from '../utils/model/aliases.js';
 import { getModelOptions } from '../utils/model/modelOptions.js';
 import { getSettingsForSource, updateSettingsForSource } from '../utils/settings/settings.js';
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
@@ -88,7 +89,7 @@ export function ModelPicker({
     if (initialValue === NO_PREFERENCE) {
       return defaultHas1M ? new Set([NO_PREFERENCE]) : new Set();
     }
-    return new Set(has1mContext(initialValue) ? [initialValue.replace(/\[1m\]/i, '')] : []);
+    return new Set(has1mContext(initialValue) ? [strip1mContextSuffix(initialValue)] : []);
   });
 
   const handleToggle1M = useCallback(() => {
@@ -97,7 +98,7 @@ export function ModelPicker({
     // initializer — predefined 1M options arrive with a `[1m]` suffix in
     // `focusedValue`, which would diverge from the base-value key set.
     // NO_PREFERENCE carries no suffix, so it keys as itself.
-    const baseKey = focusedValue.replace(/\[1m\]/i, '');
+    const baseKey = strip1mContextSuffix(focusedValue);
     setMarked1MValues(prev => {
       const next = new Set(prev);
       if (next.has(baseKey)) {
@@ -152,7 +153,7 @@ export function ModelPicker({
 
   const focusedModelName = selectOptions.find(opt => opt.value === focusedValue)?.label;
   const focusedModel = resolveOptionModel(focusedValue);
-  const is1MMarked = focusedValue !== undefined && marked1MValues.has(focusedValue.replace(/\[1m\]/i, ''));
+  const is1MMarked = focusedValue !== undefined && marked1MValues.has(strip1mContextSuffix(focusedValue));
   // Non-null means confirming Default would pin a concrete setting instead of
   // storing `null`. Surfaced below so the trade-off isn't silent.
   const defaultPinTarget =
@@ -239,7 +240,7 @@ export function ModelPicker({
     // on the base value (see initializer + handleToggle1M), so look up with the
     // base form — not `value`, which may carry a `[1m]` suffix from predefined
     // 1M options and would never match.
-    const baseValue = value.replace(/\[1m\]/i, '');
+    const baseValue = strip1mContextSuffix(value);
     const wants1M = marked1MValues.has(baseValue);
     const finalValue = wants1M ? `${baseValue}[1m]` : baseValue;
     onSelect(finalValue, selectedEffort);

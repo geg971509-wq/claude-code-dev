@@ -30,6 +30,13 @@ export function isOpenAIThinkingEnabled(model: string): boolean {
   return modelLower.includes('deepseek') || modelLower.includes('mimo')
 }
 
+function parsePositiveInteger(
+  value: number | string | undefined,
+): number | undefined {
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined
+}
+
 /**
  * Resolve max output tokens for the OpenAI-compatible path.
  *
@@ -45,13 +52,9 @@ export function resolveOpenAIMaxTokens(
   maxOutputTokensOverride?: number,
 ): number {
   return (
-    maxOutputTokensOverride ??
-    (process.env.OPENAI_MAX_TOKENS
-      ? parseInt(process.env.OPENAI_MAX_TOKENS, 10) || undefined
-      : undefined) ??
-    (process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS
-      ? parseInt(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS, 10) || undefined
-      : undefined) ??
+    parsePositiveInteger(maxOutputTokensOverride) ??
+    parsePositiveInteger(process.env.OPENAI_MAX_TOKENS) ??
+    parsePositiveInteger(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS) ??
     upperLimit
   )
 }
@@ -69,6 +72,57 @@ export function isOpenAIReasoningChatModel(model: string): boolean {
 export function supportsOpenAIReasoningEffortNone(model: string): boolean {
   const match = model.toLowerCase().match(/^gpt-5\.(\d+)(?:-|$)/)
   return match ? Number(match[1]) >= 1 : false
+}
+
+/**
+ * Moonshot Kimi models on the OpenAI-compatible endpoint.
+ *
+ * Matched on the resolved model id only — this path never sees a base URL or
+ * provider id, so the id is the one honest signal available.
+ *
+ * Anchored to the start of the id or a `vendor/` prefix (`kimi-k3`,
+ * `moonshotai/kimi-k2`) rather than matching `kimi` anywhere, because the two
+ * quirks gated on this are subtractive: a false positive silently strips
+ * `temperature` from a model that wanted it, with nothing in the response to
+ * indicate why. Router and gateway deployments rename models freely, and
+ * `my-kimi-route` or `kimi-proxy-fallback` naming a non-Moonshot upstream is
+ * ordinary. A hyphen is required after `kimi` so the match is a family prefix
+ * and not a word that merely starts with it.
+ *
+ * The reverse miss — a Moonshot model not named `kimi-*` — degrades to sending
+ * `temperature`, which surfaces as a loud 400 rather than a silent wrong answer.
+ * That asymmetry is why this errs toward matching less.
+ */
+const KIMI_FAMILY_RE = /(?:^|\/)kimi-/i
+
+export function isKimiModel(model: string): boolean {
+  return KIMI_FAMILY_RE.test(model)
+}
+
+/** Effort levels Moonshot accepts. Anything else is a hard 400. */
+export type KimiReasoningEffort = 'low' | 'high' | 'max'
+
+/**
+ * Clamp Claude Code's six effort levels onto the three Moonshot accepts,
+ * mirroring the aliasing the Kimi gateway documents.
+ *
+ * `max` is included for completeness — streamAttempt.ts converts `max` to
+ * `xhigh` before this module sees it, so `xhigh` is what restores that intent.
+ */
+export function toKimiReasoningEffort(
+  effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh',
+): KimiReasoningEffort {
+  switch (effort) {
+    case 'none':
+    case 'minimal':
+    case 'low':
+      return 'low'
+    case 'medium':
+    case 'high':
+      return 'high'
+    case 'xhigh':
+      return 'max'
+  }
 }
 
 /**
@@ -186,14 +240,24 @@ export function buildOpenAIRequestBody(params: {
   reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
   outputFormat?: OpenAIJSONOutputFormat
   stopSequences?: string[]
-}): ChatCompletionCreateParamsStreaming & {
+  // `reasoning_effort` is omitted from the SDK type and redeclared below:
+  // intersecting with the SDK's narrower union would just re-narrow it, and
+  // Moonshot's `max` is not one of OpenAI's levels.
+}): Omit<ChatCompletionCreateParamsStreaming, 'reasoning_effort'> & {
   thinking?: { type: string }
   enable_thinking?: boolean
   chat_template_kwargs?: { thinking: boolean; enable_thinking: boolean }
   /** OpenAI prompt-cache routing key (not always in SDK types yet). */
   prompt_cache_key?: string
   max_completion_tokens?: number
-  reasoning_effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+  reasoning_effort?:
+    | 'none'
+    | 'minimal'
+    | 'low'
+    | 'medium'
+    | 'high'
+    | 'xhigh'
+    | 'max'
 } {
   const {
     model,
@@ -209,16 +273,23 @@ export function buildOpenAIRequestBody(params: {
     stopSequences,
   } = params
   const isReasoningChat = isOpenAIReasoningChatModel(model)
+  const isKimi = isKimiModel(model)
   return {
     model,
     messages,
     ...(isReasoningChat
       ? { max_completion_tokens: maxTokens }
       : { max_tokens: maxTokens }),
-    ...(isReasoningChat &&
-      reasoningEffort && {
-        reasoning_effort: reasoningEffort,
-      }),
+    // Kimi takes a top-level reasoning_effort but is not an OpenAI reasoning
+    // chat model, so it needs its own gate — and its own clamp, because
+    // Moonshot 400s on any level outside low/high/max. Without this it silently
+    // runs at the server default (max), the expensive end of the model.
+    ...(isKimi && reasoningEffort
+      ? { reasoning_effort: toKimiReasoningEffort(reasoningEffort) }
+      : isReasoningChat &&
+        reasoningEffort && {
+          reasoning_effort: reasoningEffort,
+        }),
     ...(promptCacheKey && { prompt_cache_key: promptCacheKey }),
     ...(outputFormat && {
       response_format: {
@@ -250,8 +321,12 @@ export function buildOpenAIRequestBody(params: {
       chat_template_kwargs: { thinking: true, enable_thinking: true },
     }),
     // Only send temperature when thinking mode is off (DeepSeek ignores it anyway,
-    // but other providers may respect it)
+    // but other providers may respect it).
+    // Kimi is excluded outright: Moonshot fixes temperature server-side and
+    // errors on any explicit value, and the hook side-queries pass 0 — so
+    // sending it would fail memory extraction while the main loop looked fine.
     ...(!enableThinking &&
+      !isKimi &&
       temperatureOverride !== undefined && {
         temperature: temperatureOverride,
       }),

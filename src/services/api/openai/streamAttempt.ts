@@ -1,4 +1,7 @@
-import type { ChatCompletionChunk } from 'openai/resources/chat/completions/completions.mjs'
+import type {
+  ChatCompletionChunk,
+  ChatCompletionCreateParamsStreaming,
+} from 'openai/resources/chat/completions/completions.mjs'
 import { getSessionId } from '../../../bootstrap/state.js'
 import {
   adaptOpenAIStreamToAnthropic,
@@ -118,6 +121,9 @@ export function prepareOpenAIStreamRequest(
         maxRetries: 0,
         fetchOverride: request.fetchOverride,
         source: request.source,
+        // The SDK's ReasoningEffort union is OpenAI-specific and has no `max`,
+        // which Moonshot requires — cast at the boundary rather than lying
+        // about what the body builder can emit.
       }).chat.completions.create(
         buildOpenAIRequestBody({
           model: request.model,
@@ -134,7 +140,7 @@ export function prepareOpenAIStreamRequest(
               : request.reasoningEffort,
           outputFormat: request.outputFormat,
           stopSequences: request.stopSequences,
-        }),
+        }) as unknown as ChatCompletionCreateParamsStreaming,
         { signal },
       )
       const { data, response, request_id } = await promise.withResponse()

@@ -22,6 +22,7 @@ import { normalizeOpenAIUsage } from './openaiUsage.js'
  *   prompt_tokens - cached_tokens - cache_write_tokens → input_tokens
  *   completion_tokens                         → output_tokens
  *   prompt_tokens_details.cached_tokens       → cache_read_input_tokens
+ *     (falls back to a top-level usage.cached_tokens, which is how Moonshot reports it)
  *   prompt_tokens_details.cache_write_tokens  → cache_creation_input_tokens
  *
  *   All four fields are emitted in the post-loop message_delta (not message_start)
@@ -85,9 +86,15 @@ export async function* adaptOpenAIStreamToAnthropic(
     if (chunk.usage) {
       rawInputTokens = chunk.usage.prompt_tokens ?? rawInputTokens
       outputTokens = chunk.usage.completion_tokens ?? outputTokens
-      const rawCached = (
-        chunk.usage as { prompt_tokens_details?: { cached_tokens?: number } }
-      ).prompt_tokens_details?.cached_tokens
+      const usage = chunk.usage as {
+        prompt_tokens_details?: { cached_tokens?: number }
+        cached_tokens?: number
+      }
+      // Moonshot reports cache hits as a top-level usage.cached_tokens rather
+      // than nesting them under prompt_tokens_details. Same meaning either way,
+      // so no provider gate — but the nested form wins when both are present.
+      const rawCached =
+        usage.prompt_tokens_details?.cached_tokens ?? usage.cached_tokens
       if (typeof rawCached === 'number') {
         cachedReadTokens = rawCached
       }

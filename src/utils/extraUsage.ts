@@ -1,5 +1,6 @@
 import { isClaudeAISubscriber } from './auth.js'
 import { has1mContext } from './context.js'
+import { strip1mContextSuffix } from './model/aliases.js'
 
 export function isBilledAsExtraUsage(
   model: string | null,
@@ -10,10 +11,7 @@ export function isBilledAsExtraUsage(
   if (isFastMode) return true
   if (model === null || !has1mContext(model)) return false
 
-  const m = model
-    .toLowerCase()
-    .replace(/\[1m\]$/, '')
-    .trim()
+  const m = strip1mContextSuffix(model.toLowerCase())
   const isOpus46 =
     m === 'opus' || m.includes('opus-4-6') || m.includes('opus-4-7')
   const isSonnet46 = m === 'sonnet' || m.includes('sonnet-4-6')

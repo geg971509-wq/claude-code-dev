@@ -14,11 +14,14 @@
  *
  * A non-null return therefore also answers "will confirming pin the model?".
  *
- * `defaultHas1M` is passed in rather than derived so this module stays
- * import-free: `has1mContext` pulls in the settings chain, which several test
- * files replace wholesale via process-global `mock.module` (see CLAUDE.md on
- * cross-file mock pollution).
+ * `defaultHas1M` is passed in rather than derived to keep the settings chain out
+ * of this module: `has1mContext` pulls it in, and several test files replace that
+ * chain wholesale via process-global `mock.module` (see CLAUDE.md on cross-file
+ * mock pollution). `aliases.js` below is safe by the same rule — it is a leaf
+ * with no imports of its own.
  */
+import { strip1mContextSuffix } from './aliases.js'
+
 export function resolveDefaultOptionModel(
   defaultSetting: string,
   wants1M: boolean,
@@ -27,6 +30,6 @@ export function resolveDefaultOptionModel(
   if (wants1M === defaultHas1M) {
     return null
   }
-  const base = defaultSetting.replace(/\[1m\]/i, '')
+  const base = strip1mContextSuffix(defaultSetting)
   return wants1M ? `${base}[1m]` : base
 }

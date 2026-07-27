@@ -65,4 +65,26 @@ describe('resolveOpenAIModel', () => {
   test('strips [1m] suffix', () => {
     expect(resolveOpenAIModel('claude-sonnet-4-6[1m]')).toBe('gpt-4o')
   })
+
+  test('strips [1m] suffix from an OPENAI_DEFAULT_*_MODEL override', () => {
+    process.env.OPENAI_DEFAULT_SONNET_MODEL = 'kimi-k3[1m]'
+    // The /model picker resolves a custom 3P model to the bare 'sonnet' alias,
+    // so the override is what reaches the wire — it must not carry [1m].
+    expect(resolveOpenAIModel('sonnet')).toBe('kimi-k3')
+    expect(resolveOpenAIModel('claude-sonnet-4-6')).toBe('kimi-k3')
+  })
+
+  test('strips [1m] suffix from an ANTHROPIC_DEFAULT_*_MODEL override', () => {
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'kimi-k3[1m]'
+    expect(resolveOpenAIModel('claude-opus-4-6')).toBe('kimi-k3')
+  })
+
+  test('strips [1m] suffix from OPENAI_MODEL', () => {
+    process.env.OPENAI_MODEL = 'kimi-k3[1m]'
+    expect(resolveOpenAIModel('claude-sonnet-4-6')).toBe('kimi-k3')
+  })
+
+  test('leaves a [1m]-tagged session model resolving to the bare id', () => {
+    expect(resolveOpenAIModel('kimi-k3[1m]')).toBe('kimi-k3')
+  })
 })

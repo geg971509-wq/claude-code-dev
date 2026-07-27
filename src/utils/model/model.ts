@@ -27,7 +27,11 @@ import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './providers.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
-import { type ModelAlias, isModelAlias } from './aliases.js'
+import {
+  type ModelAlias,
+  isModelAlias,
+  strip1mContextSuffix,
+} from './aliases.js'
 import { capitalize } from '../stringUtils.js'
 import {
   type ChatGPTCodexModelTier,
@@ -502,7 +506,7 @@ export function renderModelName(model: ModelName): string {
     const resolved = parseUserSpecifiedModel(model)
     const antModel = resolveAntModel(model)
     if (antModel) {
-      const baseName = antModel.model.replace(/\[1m\]$/i, '')
+      const baseName = strip1mContextSuffix(antModel.model)
       const masked = maskModelCodename(baseName)
       const suffix = has1mContext(resolved) ? '[1m]' : ''
       return masked + suffix
@@ -602,7 +606,7 @@ export function parseUserSpecifiedModel(
   // Preserve original case for custom model names (e.g., Azure Foundry deployment IDs)
   // Only strip [1m] suffix if present, maintaining case of the base model
   if (has1mTag) {
-    return modelInputTrimmed.replace(/\[1m\]$/i, '').trim() + '[1m]'
+    return strip1mContextSuffix(modelInputTrimmed) + '[1m]'
   }
   return modelInputTrimmed
 }

@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { isModelAlias, isModelFamilyAlias } from '../aliases'
+import {
+  isModelAlias,
+  isModelFamilyAlias,
+  strip1mContextSuffix,
+} from '../aliases'
 
 describe('isModelAlias', () => {
   test('returns true for "sonnet"', () => {
@@ -66,5 +70,34 @@ describe('isModelFamilyAlias', () => {
 
   test('returns false for "sonnet[1m]"', () => {
     expect(isModelFamilyAlias('sonnet[1m]')).toBe(false)
+  })
+})
+
+describe('strip1mContextSuffix', () => {
+  test('removes a trailing [1m] marker in either case', () => {
+    expect(strip1mContextSuffix('opus[1m]')).toBe('opus')
+    expect(strip1mContextSuffix('sonnet[1M]')).toBe('sonnet')
+    expect(strip1mContextSuffix('kimi-k3[1m]')).toBe('kimi-k3')
+  })
+
+  test('leaves ids without the marker untouched', () => {
+    expect(strip1mContextSuffix('opus')).toBe('opus')
+    expect(strip1mContextSuffix('')).toBe('')
+  })
+
+  test('trims before stripping, so a trailing space cannot hide the marker', () => {
+    // The inline `.replace(...).trim()` copies this replaced got this backwards:
+    // the space blocked the `$` anchor, so the marker survived into the request.
+    expect(strip1mContextSuffix('opus[1m] ')).toBe('opus')
+    expect(strip1mContextSuffix('  opus[1m]  ')).toBe('opus')
+    expect(strip1mContextSuffix(' opus ')).toBe('opus')
+  })
+
+  test('is anchored — a mid-string [1m] belongs to the id', () => {
+    expect(strip1mContextSuffix('weird[1m]name')).toBe('weird[1m]name')
+  })
+
+  test('removes only the final marker', () => {
+    expect(strip1mContextSuffix('opus[1m][1m]')).toBe('opus[1m]')
   })
 })
