@@ -123,10 +123,10 @@ import { getLoggingSafeMcpBaseUrl } from './utils.js'
 import {
   isMcpSessionExpiredError as isMcpSessionExpiredErrorFromPackage,
   MAX_MCP_DESCRIPTION_LENGTH as PKG_MAX_MCP_DESCRIPTION_LENGTH,
+  resolveMcpToolTimeoutMs,
 } from '@claude-code-best/mcp-client'
 import { recursivelySanitizeUnicode } from '@claude-code-best/mcp-client'
 
-/* eslint-disable @typescript-eslint/no-require-imports */
 const fetchMcpSkillsForClient = feature('MCP_SKILLS')
   ? (
       require('../../skills/mcpSkills.js') as typeof import('../../skills/mcpSkills.js')
@@ -135,7 +135,6 @@ const fetchMcpSkillsForClient = feature('MCP_SKILLS')
 
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
 import type { AssistantMessage } from 'src/types/message.js'
-/* eslint-enable @typescript-eslint/no-require-imports */
 import { classifyMcpToolForCollapse } from '@claude-code-best/builtin-tools/tools/MCPTool/classifyForCollapse.js'
 import { clearKeychainCache } from '../../utils/secureStorage/macOsKeychainHelpers.js'
 import { sleep } from '../../utils/sleep.js'
@@ -207,32 +206,15 @@ export class McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS extends T
 export const isMcpSessionExpiredError = isMcpSessionExpiredErrorFromPackage
 
 /**
- * Default timeout for MCP tool calls (effectively infinite - ~27.8 hours).
- */
-const DEFAULT_MCP_TOOL_TIMEOUT_MS = 100_000_000
-
-/**
  * Cap on MCP tool descriptions and server instructions sent to the model.
  * OpenAPI-generated MCP servers have been observed dumping 15-60KB of endpoint
  * docs into tool.description; this caps the p95 tail without losing the intent.
  */
 const MAX_MCP_DESCRIPTION_LENGTH = PKG_MAX_MCP_DESCRIPTION_LENGTH
 
-/**
- * Gets the timeout for MCP tool calls in milliseconds.
- * Uses MCP_TOOL_TIMEOUT environment variable if set, otherwise defaults to ~27.8 hours.
- */
-function getMcpToolTimeoutMs(): number {
-  return (
-    parseInt(process.env.MCP_TOOL_TIMEOUT || '', 10) ||
-    DEFAULT_MCP_TOOL_TIMEOUT_MS
-  )
-}
-
 import { isClaudeInChromeMCPServer } from '../../utils/claudeInChrome/common.js'
 
 // Lazy: toolRendering.tsx pulls React/ink; only needed when Claude-in-Chrome MCP server is connected
-/* eslint-disable @typescript-eslint/no-require-imports */
 const claudeInChromeToolRendering =
   (): typeof import('../../utils/claudeInChrome/toolRendering.js') =>
     require('../../utils/claudeInChrome/toolRendering.js')
@@ -252,7 +234,6 @@ const isComputerUseMCPServer = feature('CHICAGO_MCP')
 import { mkdir, readFile, unlink, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
-/* eslint-enable @typescript-eslint/no-require-imports */
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
 
 const MCP_AUTH_CACHE_TTL_MS = 15 * 60 * 1000 // 15 min
@@ -378,7 +359,6 @@ export function createClaudeAiProxyFetch(innerFetch: FetchLike): FetchLike {
       if (!currentTokens) {
         throw new Error('No claude.ai OAuth token available')
       }
-      // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
       const headers = new Headers(init?.headers)
       headers.set('Authorization', `Bearer ${currentTokens.accessToken}`)
       const response = await innerFetch(url, { ...init, headers })
@@ -504,7 +484,6 @@ export function wrapFetchWithTimeout(baseFetch: FetchLike): FetchLike {
     // accepts HeadersInit | undefined and copies from plain objects, tuple arrays,
     // and existing Headers instances — so whatever shape the SDK handed us, the
     // Accept value survives the spread below as an own property of a concrete object.
-    // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
     const headers = new Headers(init?.headers)
     if (!headers.has('accept')) {
       headers.set('accept', MCP_STREAMABLE_HTTP_ACCEPT)
@@ -656,7 +635,6 @@ export const connectToServer = memoize(
             }
 
             const proxyOptions = getProxyFetchOptions()
-            // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
             return fetch(url, {
               ...init,
               ...proxyOptions,
@@ -686,7 +664,6 @@ export const connectToServer = memoize(
             ? {
                 eventSourceInit: {
                   fetch: async (url: string | URL, init?: RequestInit) => {
-                    // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
                     return fetch(url, {
                       ...init,
                       ...proxyOptions,
@@ -718,7 +695,6 @@ export const connectToServer = memoize(
         let wsClient: WsClientLike
         if (typeof Bun !== 'undefined') {
           // Bun's WebSocket supports headers/proxy/tls options but the DOM typings don't
-          // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
           wsClient = new globalThis.WebSocket(serverRef.url, {
             protocols: ['mcp'],
             headers: wsHeaders,
@@ -767,7 +743,6 @@ export const connectToServer = memoize(
         let wsClient: WsClientLike
         if (typeof Bun !== 'undefined') {
           // Bun's WebSocket supports headers/proxy/tls options but the DOM typings don't
-          // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
           wsClient = new globalThis.WebSocket(serverRef.url, {
             protocols: ['mcp'],
             headers: wsHeaders,
@@ -882,7 +857,6 @@ export const connectToServer = memoize(
 
         logMCPDebug(name, `Using claude.ai proxy at ${proxyUrl}`)
 
-        // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
         const fetchWithAuth = createClaudeAiProxyFetch(globalThis.fetch)
 
         const proxyOptions = getProxyFetchOptions()
@@ -3159,7 +3133,7 @@ async function callMCPTool({
 
     // Use Promise.race with our own timeout to handle cases where SDK's
     // internal timeout doesn't work (e.g., SSE stream breaks mid-request)
-    const timeoutMs = getMcpToolTimeoutMs()
+    const timeoutMs = resolveMcpToolTimeoutMs(process.env.MCP_TOOL_TIMEOUT)
     let timeoutId: NodeJS.Timeout | undefined
 
     const timeoutPromise = new Promise<never>((_, reject) => {

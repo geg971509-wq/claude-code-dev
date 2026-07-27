@@ -116,7 +116,7 @@ export {
 export type { DiscoveryOptions } from './discovery.js'
 
 // Tool execution
-export { callMcpTool } from './execution.js'
+export { callMcpTool, resolveMcpToolTimeoutMs } from './execution.js'
 export type { CallToolOptions, CallToolResult } from './execution.js'
 
 // Manager (main API)

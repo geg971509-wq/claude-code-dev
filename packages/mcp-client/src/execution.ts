@@ -59,7 +59,8 @@ export async function callMcpTool(
 ): Promise<CallToolResult> {
   const { client, tool, args, meta, signal, onProgress, timeoutMs } = options
   const { name: serverName, client: mcpClient } = client
-  const effectiveTimeout = timeoutMs ?? getMcpToolTimeoutMs()
+  const effectiveTimeout =
+    timeoutMs ?? resolveMcpToolTimeoutMs(process.env.MCP_TOOL_TIMEOUT)
 
   let progressInterval: ReturnType<typeof setInterval> | undefined
   let clearToolTimeout: (() => void) | undefined
@@ -152,11 +153,13 @@ export async function callMcpTool(
 // Helpers
 // ============================================================================
 
-function getMcpToolTimeoutMs(): number {
-  return (
-    parseInt(process.env.MCP_TOOL_TIMEOUT || '', 10) ||
-    DEFAULT_MCP_TOOL_TIMEOUT_MS
-  )
+export function resolveMcpToolTimeoutMs(raw: string | undefined): number {
+  if (!raw?.trim()) return DEFAULT_MCP_TOOL_TIMEOUT_MS
+
+  const timeoutMs = Number(raw)
+  return Number.isInteger(timeoutMs) && timeoutMs > 0
+    ? timeoutMs
+    : DEFAULT_MCP_TOOL_TIMEOUT_MS
 }
 
 function createTimeoutPromise(

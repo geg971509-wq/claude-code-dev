@@ -1,5 +1,5 @@
 import { describe, expect, test, mock } from 'bun:test'
-import { callMcpTool } from '../execution.js'
+import { callMcpTool, resolveMcpToolTimeoutMs } from '../execution.js'
 import type { ConnectedMCPServer } from '../types.js'
 import type { McpClientDependencies } from '../interfaces.js'
 import { McpAuthError, McpToolCallError } from '../errors.js'
@@ -65,6 +65,28 @@ function createMockDeps(): McpClientDependencies {
     },
   }
 }
+
+describe('resolveMcpToolTimeoutMs', () => {
+  const defaultTimeoutMs = 100_000_000
+
+  test('accepts whitespace-padded positive integers', () => {
+    expect(resolveMcpToolTimeoutMs(' 5000 ')).toBe(5000)
+  })
+
+  test.each([
+    undefined,
+    '',
+    '   ',
+    '0',
+    '-1',
+    '1.5',
+    '5000ms',
+    'NaN',
+    'Infinity',
+  ])('falls back to the default for %p', raw => {
+    expect(resolveMcpToolTimeoutMs(raw)).toBe(defaultTimeoutMs)
+  })
+})
 
 describe('callMcpTool', () => {
   test('clears the race timeout after success', async () => {
