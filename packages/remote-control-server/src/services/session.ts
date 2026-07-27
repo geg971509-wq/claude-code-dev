@@ -11,7 +11,11 @@ import {
   storeListSessionsByOwnerUuid,
 } from '../store'
 import { randomUUID } from 'node:crypto'
-import { getAllEventBuses, removeEventBus } from '../transport/event-bus'
+import {
+  cancelEventBusRetirement,
+  getAllEventBuses,
+  retireEventBus,
+} from '../transport/event-bus'
 import type {
   CreateSessionRequest,
   CreateCodeSessionRequest,
@@ -178,6 +182,9 @@ export function updateSessionStatus(sessionId: string, status: string) {
   const bus = getAllEventBuses().get(sessionId)
   if (!bus) return
 
+  const isClosed = CLOSED_SESSION_STATUSES.has(status)
+  if (!isClosed) cancelEventBusRetirement(sessionId)
+
   bus.publish({
     id: randomUUID(),
     sessionId,
@@ -185,6 +192,15 @@ export function updateSessionStatus(sessionId: string, status: string) {
     payload: { status },
     direction: 'inbound',
   })
+
+  // Publish first so live subscribers receive the final status. Closing their bus
+  // here would leave an open but permanently silent SSE stream, so retirement is
+  // deferred until the final subscriber leaves. Subscribers can synchronously
+  // recover the session, so re-read its status before arming retirement.
+  const currentStatus = storeGetSession(sessionId)?.status
+  if (currentStatus && CLOSED_SESSION_STATUSES.has(currentStatus)) {
+    retireEventBus(sessionId)
+  }
 }
 
 export function touchSession(sessionId: string) {
@@ -193,7 +209,6 @@ export function touchSession(sessionId: string) {
 
 export function archiveSession(sessionId: string) {
   updateSessionStatus(sessionId, 'archived')
-  removeEventBus(sessionId)
 }
 
 export function incrementEpoch(sessionId: string): number {

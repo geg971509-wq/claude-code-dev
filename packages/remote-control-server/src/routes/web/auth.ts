@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
-import { storeBindSession } from '../../store'
 import {
   resolveExistingWebSessionId,
+  resolveOwnedWebSessionId,
   toWebSessionId,
 } from '../../services/session'
 
@@ -23,8 +23,12 @@ app.post('/bind', async c => {
     return c.json({ error: 'Session not found' }, 404)
   }
 
-  storeBindSession(resolvedSessionId, uuid)
-  return c.json({ ok: true, sessionId: toWebSessionId(resolvedSessionId) })
+  const ownedSessionId = resolveOwnedWebSessionId(resolvedSessionId, uuid)
+  if (!ownedSessionId) {
+    return c.json({ error: 'Session already bound' }, 403)
+  }
+
+  return c.json({ ok: true, sessionId: toWebSessionId(ownedSessionId) })
 })
 
 export default app

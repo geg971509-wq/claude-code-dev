@@ -20,9 +20,14 @@ export class EventBus {
   private seqNum = 0
   private closed = false
 
+  constructor(private readonly onEmpty?: () => void) {}
+
   subscribe(callback: Subscriber): () => void {
     this.subscribers.add(callback)
-    return () => this.subscribers.delete(callback)
+    return () => {
+      if (!this.subscribers.delete(callback)) return
+      if (this.subscribers.size === 0) this.onEmpty?.()
+    }
   }
 
   subscriberCount(): number {
@@ -73,17 +78,35 @@ export class EventBus {
 
 /** Global registry of per-session event buses */
 const buses = new Map<string, EventBus>()
+const retiringBuses = new Set<string>()
 
 export function getEventBus(sessionId: string): EventBus {
   let bus = buses.get(sessionId)
   if (!bus) {
-    bus = new EventBus()
+    bus = new EventBus(() => {
+      if (retiringBuses.has(sessionId)) removeEventBus(sessionId)
+    })
     buses.set(sessionId, bus)
   }
   return bus
 }
 
+export function retireEventBus(sessionId: string) {
+  const bus = buses.get(sessionId)
+  if (!bus) return
+  if (bus.subscriberCount() === 0) {
+    removeEventBus(sessionId)
+    return
+  }
+  retiringBuses.add(sessionId)
+}
+
+export function cancelEventBusRetirement(sessionId: string) {
+  retiringBuses.delete(sessionId)
+}
+
 export function removeEventBus(sessionId: string) {
+  retiringBuses.delete(sessionId)
   const bus = buses.get(sessionId)
   if (bus) {
     bus.close()

@@ -593,6 +593,29 @@ describe('Web Auth Routes', () => {
     expect(bindBody.sessionId).toBe(compatId)
   })
 
+  test('POST /web/bind — rejects a different owner', async () => {
+    const sessRes = await app.request('/v1/sessions', {
+      method: 'POST',
+      headers: { ...AUTH_HEADERS, 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    const { id } = await resJson(sessRes)
+
+    await app.request('/web/bind?uuid=owner-1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: id }),
+    })
+    const res = await app.request('/web/bind?uuid=owner-2', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: id }),
+    })
+
+    expect(res.status).toBe(403)
+    expect(await resJson(res)).toEqual({ error: 'Session already bound' })
+  })
+
   test('POST /web/bind — 404 for unknown session', async () => {
     const res = await app.request('/web/bind?uuid=test-uuid', {
       method: 'POST',

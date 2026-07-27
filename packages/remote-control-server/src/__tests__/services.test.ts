@@ -129,13 +129,55 @@ describe('Session Service', () => {
   })
 
   describe('archiveSession', () => {
-    test('sets status to archived and removes event bus', () => {
+    test('sets status to archived and removes an unused event bus', () => {
       const s = createSession({})
-      // Create event bus for this session
       getEventBus(s.id)
       archiveSession(s.id)
       expect(getSession(s.id)?.status).toBe('archived')
       expect(getAllEventBuses().has(s.id)).toBe(false)
+    })
+
+    test('retires the event bus after its final subscriber leaves', () => {
+      const s = createSession({})
+      const bus = getEventBus(s.id)
+      const unsubscribe = bus.subscribe(() => {})
+
+      archiveSession(s.id)
+      expect(getAllEventBuses().get(s.id)).toBe(bus)
+
+      unsubscribe()
+      expect(getAllEventBuses().has(s.id)).toBe(false)
+    })
+
+    test('cancels pending retirement when an inactive session recovers', () => {
+      const s = createSession({})
+      const bus = getEventBus(s.id)
+      const unsubscribe = bus.subscribe(() => {})
+
+      updateSessionStatus(s.id, 'inactive')
+      updateSessionStatus(s.id, 'running')
+      unsubscribe()
+
+      expect(getAllEventBuses().get(s.id)).toBe(bus)
+    })
+
+    test('does not retire a session recovered by an inactive subscriber', () => {
+      const s = createSession({})
+      const bus = getEventBus(s.id)
+      const unsubscribe = bus.subscribe(event => {
+        if (
+          event.type === 'session_status' &&
+          (event.payload as { status?: string }).status === 'inactive'
+        ) {
+          updateSessionStatus(s.id, 'running')
+        }
+      })
+
+      updateSessionStatus(s.id, 'inactive')
+      unsubscribe()
+
+      expect(getSession(s.id)?.status).toBe('running')
+      expect(getAllEventBuses().get(s.id)).toBe(bus)
     })
   })
 

@@ -6,7 +6,11 @@ import { config } from './config'
 import { closeAllConnections } from './transport/ws-handler'
 import { closeAllAcpConnections } from './transport/acp-ws-handler'
 import { closeAllRelayConnections } from './transport/acp-relay-handler'
-import { startDisconnectMonitor } from './services/disconnect-monitor'
+import {
+  startDisconnectMonitor,
+  stopDisconnectMonitor,
+} from './services/disconnect-monitor'
+import { error as logError } from './logger'
 import { dirname, resolve } from 'node:path'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -47,8 +51,41 @@ app.use('*', async (c, next) => {
 })
 app.use('/web/*', cors(webCorsOptions))
 
+// Fatal-error bookkeeping for /health.
+//
+// The uncaughtException handler below keeps the process alive so one bad request
+// cannot drop every live session. The cost is that state may be half-mutated
+// afterwards, which only stays acceptable while it is observable — so /health
+// reports it instead of unconditionally answering "ok".
+//
+// Reported as `degraded` with a **200**, not a 503. This deployment is a single
+// instance (confirmed, not assumed): Dockerfile HEALTHCHECK fails the container
+// on non-2xx, so a 503 here restarts the only instance and drops every live
+// session — and `degraded` is not self-clearing, so it would restart-loop.
+// Surfacing the state without acting on it is the whole point.
+//
+// If this ever runs multi-replica, a 503 becomes the right answer (pull the one
+// instance from rotation, leave the others serving). That is one literal below;
+// the counter it needs already exists.
+let fatalErrorCount = 0
+let lastFatalError: { message: string; at: string } | undefined
+
+function recordFatalError(err: unknown): void {
+  fatalErrorCount += 1
+  lastFatalError = {
+    message: err instanceof Error ? err.message : String(err),
+    at: new Date().toISOString(),
+  }
+}
+
 // Health check
-app.get('/health', c => c.json({ status: 'ok', version: config.version }))
+app.get('/health', c =>
+  c.json({
+    status: fatalErrorCount === 0 ? 'ok' : 'degraded',
+    version: config.version,
+    ...(fatalErrorCount > 0 && { fatalErrorCount, lastFatalError }),
+  }),
+)
 
 // Static files — serve built web UI under /code path
 // Uses web/dist/ if it exists (production), otherwise falls back to web/ (dev/fallback)
@@ -126,9 +163,34 @@ export default {
   idleTimeout: config.wsIdleTimeout, // HTTP server idle timeout (seconds)
 }
 
+// A long-lived server must not die from one stray async failure. Bun terminates
+// the process on an unhandled rejection, so a single floating promise in any
+// background task (disconnect sweep, event publish, a WS handler) would take
+// every connected session down with it. Log and keep serving: dropping one
+// operation is recoverable, dropping the server is not.
+const onUnhandledRejection = (reason: unknown) => {
+  logError('[RCS] Unhandled rejection:', reason)
+}
+// An uncaught exception is the harder case: it can leave state half-mutated, so
+// surviving it trades strictness for availability. That trade is only defensible
+// if the damage is *visible* — a swallowed exception plus a /health that always
+// answers "ok" means a wedged process looks healthy forever and the container's
+// HEALTHCHECK can never act. So record it and let /health report it.
+const onUncaughtException = (err: Error) => {
+  recordFatalError(err)
+  logError('[RCS] Uncaught exception:', err)
+}
+// Named, not inline, so shutdown can remove them — otherwise they keep
+// swallowing during teardown, when a throw is exactly what should surface.
+process.on('unhandledRejection', onUnhandledRejection)
+process.on('uncaughtException', onUncaughtException)
+
 // Graceful shutdown
 async function gracefulShutdown(signal: string) {
   console.log(`\n[RCS] Received ${signal}, shutting down...`)
+  process.off('unhandledRejection', onUnhandledRejection)
+  process.off('uncaughtException', onUncaughtException)
+  stopDisconnectMonitor()
   closeAllConnections()
   closeAllAcpConnections()
   closeAllRelayConnections()

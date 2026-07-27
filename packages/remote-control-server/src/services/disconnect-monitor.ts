@@ -47,8 +47,19 @@ export function runDisconnectMonitorSweep(now = Date.now()) {
   }
 }
 
+let sweepInterval: ReturnType<typeof setInterval> | undefined
+
 export function startDisconnectMonitor() {
-  setInterval(() => {
+  // Idempotent: a second start would otherwise leave the first interval running
+  // with no handle, doubling the sweep rate for the life of the process.
+  if (sweepInterval !== undefined) return
+  sweepInterval = setInterval(() => {
     runDisconnectMonitorSweep()
   }, 60_000) // Check every minute
+}
+
+export function stopDisconnectMonitor() {
+  if (sweepInterval === undefined) return
+  clearInterval(sweepInterval)
+  sweepInterval = undefined
 }
