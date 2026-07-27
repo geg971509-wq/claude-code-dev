@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Compile the final standalone binary for the current host.
-# Output: dist/ccb
+# Compile standalone binaries for mac arm64 and windows x64.
+# Outputs: dist/ccb  dist/ccb.exe
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,17 +17,32 @@ if [[ ! -d node_modules ]]; then
   bun install
 fi
 
-echo "Building standalone binary..."
-bun run scripts/compile-mac.ts
+echo "=== Building mac arm64 ==="
+bun run scripts/compile.ts darwin-arm64
 
-OUT="$ROOT/dist/ccb"
-if [[ ! -x "$OUT" ]]; then
-  echo "error: expected executable missing: $OUT" >&2
+echo
+echo "=== Building windows x64 ==="
+bun run scripts/compile.ts windows-x64
+
+echo
+MAC="$ROOT/dist/ccb"
+WIN="$ROOT/dist/ccb.exe"
+
+if [[ ! -x "$MAC" ]]; then
+  echo "error: expected executable missing: $MAC" >&2
+  exit 1
+fi
+if [[ ! -f "$WIN" ]]; then
+  echo "error: expected executable missing: $WIN" >&2
   exit 1
 fi
 
+echo "Binaries:"
+file "$MAC" || true
+ls -lh "$MAC"
 echo
-echo "Binary: $OUT"
-file "$OUT" || true
-ls -lh "$OUT"
-"$OUT" --version
+file "$WIN" || true
+ls -lh "$WIN"
+
+echo
+"$MAC" --version

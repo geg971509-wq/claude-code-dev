@@ -1,14 +1,19 @@
 #!/usr/bin/env bun
 /**
- * Compile a standalone macOS binary via Bun --compile.
- * Output: dist/ccb (Mach-O executable)
+ * Cross-platform compile script.
+ * Usage: bun run scripts/compile.ts [darwin-arm64|windows-x64]
+ * Defaults to the current host platform when no argument is given.
  */
 import { rmSync, chmodSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { getMacroDefines, DEFAULT_BUILD_FEATURES } from './defines.ts'
 
+const targetArg = process.argv[2] // e.g. "darwin-arm64" | "windows-x64"
+const isWindows = targetArg?.startsWith('windows') ?? false
+const bunTarget = targetArg ? (`bun-${targetArg}` as string) : undefined
+
 const outdir = 'dist'
-const outfile = join(outdir, 'ccb')
+const outfile = join(outdir, isWindows ? 'ccb.exe' : 'ccb')
 
 mkdirSync(outdir, { recursive: true })
 try {
@@ -22,18 +27,15 @@ const envFeatures = Object.keys(process.env)
   .map(k => k.replace('FEATURE_', ''))
 const features = [...new Set([...DEFAULT_BUILD_FEATURES, ...envFeatures])]
 
-console.log(`Compiling macOS binary → ${outfile}`)
+console.log(`Compiling ${bunTarget ?? 'host'} → ${outfile}`)
 console.log(`Features (${features.length}): ${features.join(', ')}`)
 
 const result = await Bun.build({
   entrypoints: ['src/entrypoints/cli.tsx'],
-  // compile mode embeds into a single executable; outfile required
-  compile: {
-    outfile,
-    // keep default target = host (darwin-arm64 here)
-  },
-  target: 'bun',
-  // compile implies production minify; no splitting for standalone binary
+  compile: { outfile },
+  // bunTarget overrides the default host platform for cross-compilation;
+  // 'bun' is the fallback that Bun resolves to the current host.
+  target: (bunTarget ?? 'bun') as 'bun',
   define: {
     ...getMacroDefines(),
     'process.env.NODE_ENV': JSON.stringify('production'),
@@ -49,7 +51,7 @@ if (!result.success) {
   process.exit(1)
 }
 
-chmodSync(outfile, 0o755)
+if (!isWindows) chmodSync(outfile, 0o755)
 
 for (const out of result.outputs) {
   console.log(`  ${out.path} (${out.size} bytes, ${out.kind})`)
