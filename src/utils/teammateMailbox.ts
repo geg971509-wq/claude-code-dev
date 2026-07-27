@@ -600,8 +600,18 @@ export async function markMessagesAsRead(
     logError(error)
   } finally {
     if (release) {
-      await release()
-      logForDebugging(`[TeammateMailbox] markMessagesAsRead: lock released`)
+      // Guarded: a throw from finally escapes the catch above, and callers invoke
+      // this as `void markMessagesAsRead(...)`, so it would surface as an
+      // unhandled rejection — which exits the CLI. A stale lock is recoverable;
+      // losing the session is not.
+      try {
+        await release()
+        logForDebugging(`[TeammateMailbox] markMessagesAsRead: lock released`)
+      } catch (releaseError) {
+        logForDebugging(
+          `[TeammateMailbox] markMessagesAsRead: lock release failed: ${releaseError}`,
+        )
+      }
     }
   }
 }

@@ -54,13 +54,59 @@ describe('Stream', () => {
     expect(promise).rejects.toThrow('boom')
   })
 
-  test('error() after done — hasError is set but next returns done:true (isDone checked first)', async () => {
+  test('error() after done — error wins over done', async () => {
     const stream = new Stream<number>()
     stream[Symbol.asyncIterator]()
     stream.done()
     stream.error(new Error('late error'))
-    // next() checks isDone before hasError, so it returns done:true
-    expect(await stream.next()).toEqual({ done: true, value: undefined })
+    // next() checks hasError before isDone, so a reported error is never dropped
+    expect(stream.next()).rejects.toThrow('late error')
+  })
+
+  test('error() then done() with a buffered value — queue drains, then the error surfaces', async () => {
+    const stream = new Stream<number>()
+    stream[Symbol.asyncIterator]()
+    // Producer shape of streamedCheckPermissionsAndCallTool:
+    // .catch(e => stream.error(e)).finally(() => stream.done()) — same
+    // microtask, no consumer read in between, and a progress value still queued.
+    stream.enqueue(1)
+    stream.error(new Error('tool failed'))
+    stream.done()
+    // Buffered progress is still delivered first.
+    expect(await stream.next()).toEqual({ done: false, value: 1 })
+    // Then the error, rather than a silent done:true that would leave the
+    // tool_use block without a tool_result.
+    expect(stream.next()).rejects.toThrow('tool failed')
+  })
+
+  test('error() with a falsy rejection value still rejects', async () => {
+    // toolExecution.ts forwards whatever the promise rejected with, and
+    // `throw undefined` is legal. When the flag and the value shared one field,
+    // this surfaced as a clean done:true — the dropped-tool_result case the
+    // error-before-done ordering exists to prevent.
+    const stream = new Stream<number>()
+    stream[Symbol.asyncIterator]()
+    stream.error(undefined)
+    stream.done()
+    expect(stream.next()).rejects.toBeUndefined()
+  })
+
+  test('error() with other falsy values rejects with the value unchanged', async () => {
+    for (const falsy of [null, 0, '', false, Number.NaN]) {
+      const stream = new Stream<number>()
+      stream[Symbol.asyncIterator]()
+      stream.error(falsy)
+      stream.done()
+      let rejected = false
+      let received: unknown = 'not-called'
+      await stream.next().catch(e => {
+        rejected = true
+        received = e
+      })
+      expect(rejected).toBe(true)
+      // Not wrapped or coerced — the original rejection reaches the consumer.
+      expect(received).toBe(falsy)
+    }
   })
 
   test('enqueue after done — queue is checked before isDone, value is consumed', async () => {

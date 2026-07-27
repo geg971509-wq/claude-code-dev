@@ -178,7 +178,6 @@ function printResumeHint(): void {
     }
   }
 }
-/* eslint-enable custom-rules/no-sync-fs */
 
 /**
  * Force process exit, handling the case where the terminal is gone.
@@ -191,6 +190,11 @@ function forceExit(exitCode: number): never {
   if (failsafeTimer !== undefined) {
     clearTimeout(failsafeTimer)
     failsafeTimer = undefined
+  }
+  // Clear orphan check timer if active
+  if (orphanCheckInterval !== undefined) {
+    clearInterval(orphanCheckInterval)
+    orphanCheckInterval = undefined
   }
   // Drain stdin LAST, right before exit. cleanupTerminalModes() sent
   // DISABLE_MOUSE_TRACKING early, but the terminal round-trip plus any

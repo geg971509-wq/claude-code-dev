@@ -3,12 +3,9 @@ import { initAutoDream } from '../services/autoDream/autoDream.js'
 import { initMagicDocs } from '../services/MagicDocs/magicDocs.js'
 import { initSkillImprovement } from './hooks/skillImprovement.js'
 
-/* eslint-disable @typescript-eslint/no-require-imports */
 const registerProtocolModule = feature('LODESTONE')
   ? (require('./deepLink/registerProtocol.js') as typeof import('./deepLink/registerProtocol.js'))
   : null
-
-/* eslint-enable @typescript-eslint/no-require-imports */
 
 import { getIsInteractive, getLastInteractionTime } from '../bootstrap/state.js'
 import {

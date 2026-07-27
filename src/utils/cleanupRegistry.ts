@@ -19,7 +19,27 @@ export function registerCleanup(cleanupFn: () => Promise<void>): () => void {
 /**
  * Run all registered cleanup functions.
  * Used internally by gracefulShutdown.
+ *
+ * Uses Promise.allSettled to guarantee all cleanup functions execute even if
+ * some fail. Critical cleanups (session persistence, MCP connections, temp files)
+ * must complete regardless of earlier failures.
  */
 export async function runCleanupFunctions(): Promise<void> {
-  await Promise.all(Array.from(cleanupFunctions).map(fn => fn()))
+  const results = await Promise.allSettled(
+    Array.from(cleanupFunctions, fn => Promise.resolve().then(fn)),
+  )
+  // All cleanups have run; log any failures for diagnostics but don't throw
+  const failures = results.filter(
+    (r): r is PromiseRejectedResult => r.status === 'rejected',
+  )
+  if (failures.length > 0) {
+    // Import dynamically to avoid circular dependency with debug.ts
+    const { logForDebugging } = await import('./debug.js')
+    for (const failure of failures) {
+      logForDebugging(
+        `Cleanup function failed: ${failure.reason instanceof Error ? failure.reason.message : String(failure.reason)}`,
+        { level: 'error' },
+      )
+    }
+  }
 }
