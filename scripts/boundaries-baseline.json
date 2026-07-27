@@ -1,3 +1,7 @@
 {
-  "packagesToSrcImports": 1207
+  "perPackage": {
+    "@ant/computer-use-swift": 2,
+    "agent-tools": 1,
+    "builtin-tools": 1206
+  }
 }
