@@ -1,5 +1,3 @@
-/* eslint-disable custom-rules/no-top-level-side-effects */
-
 import createReconciler from 'react-reconciler'
 import { getYogaCounters } from './yoga-layout/index.js'
 import {
@@ -35,7 +33,6 @@ if (process.env.NODE_ENV === 'development') {
   try {
     // eslint-disable-next-line custom-rules/no-top-level-dynamic-import -- dev-only; NODE_ENV check is DCE'd in production
     void import('./devtools.js')
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (error: unknown) {
     if (
       error instanceof Error &&
@@ -52,7 +49,6 @@ $ npm install --save-dev react-devtools-core
 				`.trim() + '\n',
       )
     } else {
-      // eslint-disable-next-line @typescript-eslint/only-throw-error
       throw error
     }
   }

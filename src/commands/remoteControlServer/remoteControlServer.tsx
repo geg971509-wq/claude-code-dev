@@ -84,7 +84,7 @@ function RemoteControlServer({ onDone }: Props): React.ReactNode {
     return () => {
       cancelled = true;
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   if (status === 'running' && daemonProcess && !daemonProcess.killed) {
     return <ServerManagementDialog onDone={onDone} />;

@@ -79,8 +79,7 @@ let useShareGhCpStubs = false
 const wrappedExecFile = ((...args: unknown[]) =>
   useShareGhCpStubs
     ? (execFileMockCore as (...a: unknown[]) => unknown)(...args)
-    : // eslint-disable-next-line @typescript-eslint/no-require-imports
-      (require('node:child_process').execFile as (...a: unknown[]) => unknown)(
+    : (require('node:child_process').execFile as (...a: unknown[]) => unknown)(
         ...args,
       )) as unknown as Record<symbol, unknown> & ((...a: unknown[]) => unknown)
 ;(wrappedExecFile as Record<symbol, unknown>)[promisify.custom as symbol] = (
@@ -107,7 +106,6 @@ const wrappedExecFile = ((...args: unknown[]) =>
           ),
         )
   }
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const real = require('node:child_process') as Record<string, unknown>
   return promisify(real.execFile as never)(cmd, args, opts) as Promise<{
     stdout: string
@@ -115,7 +113,6 @@ const wrappedExecFile = ((...args: unknown[]) =>
   }>
 }
 mock.module('node:child_process', () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const real = require('node:child_process') as Record<string, unknown>
   return {
     ...real,

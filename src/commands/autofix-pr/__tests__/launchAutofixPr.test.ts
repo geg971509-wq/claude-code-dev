@@ -373,15 +373,10 @@ describe('callAutofixPr', () => {
   test('captureFailMsg called via onBundleFail when teleport returns null (line 237)', async () => {
     // When teleportToRemote calls onBundleFail before returning null,
     // captureFailMsg captures the message and it's used in the !session branch.
-    teleportMock.mockImplementationOnce(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ((opts: any) => {
-        opts?.onBundleFail?.('bundle creation failed: disk full')
-        return Promise.resolve(null)
-      }) as unknown as Parameters<
-        typeof teleportMock.mockImplementationOnce
-      >[0],
-    )
+    teleportMock.mockImplementationOnce(((opts: any) => {
+      opts?.onBundleFail?.('bundle creation failed: disk full')
+      return Promise.resolve(null)
+    }) as unknown as Parameters<typeof teleportMock.mockImplementationOnce>[0])
     await callAutofixPr(onDone, makeContext(), '42')
     const firstArg = onDone.mock.calls[0]?.[0] as string
     expect(firstArg).toMatch(/Autofix PR failed/)

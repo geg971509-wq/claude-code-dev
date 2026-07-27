@@ -196,7 +196,7 @@ bun run docs:dev
 
 ### HTML Artifact Hosting
 
-- **`packages/cloud-artifacts/`** — 独立 Cloudflare Worker + R2 服务，类似 `remote-control-server/` 的"独立部署服务"定位，**不被主 CLI import**。Worker 处理 `POST /upload`（Bearer token 鉴权 + text/html 校验 + 10MB 上限 + ttl∈{7,30}）和 `GET /<7d|30d>/<id>.html`（从 R2 读 + Cache-Control: max-age=86400）。R2 用 prefix + lifecycle rule 实现 TTL（`7d/` 删 7 天、`30d/` 删 30 天），Worker 不参与过期处理。ID 默认 `nanoid(21)`（126 bit 熵），可指定 `?hash=` 自定义 ID（覆盖语义：先删 7d/30d prefix 旧 key 再写新 key）。Worker 用 `wrangler types` 生成的全局 `Env` 类型（`worker-configuration.d.ts`，已 gitignore），不依赖 `@cloudflare/workers-types`。部署用 `npm create cloudflare@latest` 初始化 + `bun run setup`（创建 bucket + lifecycle + secret）+ `bun run deploy`。生产出口经 Deno Deploy 边缘代理（`https://cloud-artifacts.claude-code-best.win`），副作用是 HTTP status code 被抹平为 200（body 的 `{error}` 字段仍保留）。详见 `packages/cloud-artifacts/README.md`。
+- **`packages/cloud-artifacts/`** — 独立 Cloudflare Worker + R2 服务，类似 `remote-control-server/` 的"独立部署服务"定位，**不被主 CLI import**。Worker 处理 `POST /upload`（Bearer token 鉴权 + text/html 校验 + 10MB 上限 + ttl∈{7,30}）和 `GET /<7d|30d>/<id>.html`（从 R2 读 + Cache-Control: max-age=86400）。R2 用 prefix + lifecycle rule 实现 TTL（`7d/` 删 7 天、`30d/` 删 30 天），Worker 不参与过期处理。ID 默认 `nanoid(21)`（126 bit 熵），可指定 `?hash=` 自定义 ID（覆盖目标 TTL key；另一 TTL 的旧 key 由 R2 lifecycle 到期删除，避免并发覆盖跨 prefix 互删）。Worker 用 `wrangler types` 生成的全局 `Env` 类型（`worker-configuration.d.ts`，已 gitignore），不依赖 `@cloudflare/workers-types`。部署用 `npm create cloudflare@latest` 初始化 + `bun run setup`（创建 bucket + lifecycle + secret）+ `bun run deploy`。生产出口经 Deno Deploy 边缘代理（`https://cloud-artifacts.claude-code-best.win`），副作用是 HTTP status code 被抹平为 200（body 的 `{error}` 字段仍保留）。详见 `packages/cloud-artifacts/README.md`。
 
 ### ACP Protocol (Agent Client Protocol)
 
@@ -396,7 +396,8 @@ bun run precheck
 - **构建产物兼容 Node.js** — `build.ts` 会自动后处理 `import.meta.require`，产物可直接用 `node dist/cli.js` 运行。
 - **Biome 配置** — 42 条 lint 规则因 decompiled 代码被关闭，仅保留 `recommended` 基线。格式化覆盖全项目（`src/`、`scripts/`、`packages/`，含 `packages/@ant/`）。`.tsx` 文件用 120 行宽 + 强制分号；其他文件 80 行宽 + 按需分号。JSON 格式化已启用。`.editorconfig` 与 Biome 配置对齐（2-space 缩进）。修改任何代码后应运行 `bun run precheck` 确认无类型/lint/格式/测试问题，pre-commit hook 会自动拦截不合格提交。
 - **tsc 与 Biome 冲突处理** — 当 tsc 要求声明属性（赋值使用）但 biome 报 `noUnusedPrivateClassMembers`（只写不读）时，用 `// biome-ignore lint/correctness/noUnusedPrivateClassMembers: <原因>` 抑制 lint 警告，保留类型声明。`biome ci` 必须零 warnings。
-- **依赖边界棘轮** — `packages/` 内禁止新增 `from 'src/...'` 反向导入主应用（存量基线见 `scripts/boundaries-baseline.json`，只减不增）。共享逻辑应下沉到 workspace 包或通过参数/注入传入。解耦后运行 `bun scripts/check-boundaries.ts --update` 收紧基线并提交。
+- **`eslint-disable` 注释是历史遗留，不是生效的抑制** — 本仓库没有 ESLint（无依赖、无配置文件），`custom-rules/*` 的规则实现也已不在仓库里。所以任何 `eslint-disable` 都**不会**被任何工具读取。无理由的裸压制已清理；保留下来的都带 `--` 理由（例如 `no-sync-fs -- must be sync to flush before process.exit`），它们的价值只在于**记录当初的设计意图**，读代码时应当这样理解，不要以为存在对应的守卫。需要真正的强制时用 Biome 规则或 `scripts/` 下的检查（参考 `check-boundaries.ts`）。
+- **依赖边界棘轮** — `packages/` 内禁止新增 `from 'src/...'` 反向导入主应用。棘轮**按包**计数（基线见 `scripts/boundaries-baseline.json` 的 `perPackage`，每个包各自只减不增；基线中没有的包上限为 0，新包一旦越界立刻失败）。存量 1207 条里 1205 条属于 `builtin-tools`，是已知架构债 —— 按包计数正是为此：总数棘轮下，`builtin-tools` 的清理能为别的包新增的越界导入买单，总数不变而方向性退化已经发生。共享逻辑应下沉到 workspace 包或通过参数/注入传入；跨 `packages/` ↔ `src/` 的小工具确实无法共享时，两侧各留一份并在注释里互指（如 `strip1mContextSuffix`）。解耦后运行 `bun scripts/check-boundaries.ts --update` 收紧基线并提交。
 - **`@ts-expect-error` 维护** — 只在下方代码确实有类型错误时保留 `@ts-expect-error`。如果类型系统已更新导致 directive 变为 unused（TS2578），直接移除注释。MACRO 替换产生的永假比较（如 `'production' === 'development'`）仍需保留 `@ts-expect-error`。
 - **Ink 框架在 `packages/@ant/ink/`** — 不是 `src/ink/`（该目录不存在）。Ink 相关的组件、hooks、keybindings 都在 packages 中。
 - **Provider 优先级** — `modelType` 参数 > 环境变量 > 默认 `firstParty`。新增 provider 需在 `src/utils/model/providers.ts` 注册。

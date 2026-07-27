@@ -27,6 +27,12 @@ function execFileNoThrow(
       },
     )
     if (input && proc.stdin) {
+      // A clipboard helper that exits before draining stdin (missing binary, no
+      // DISPLAY, unsupported flag, or killed by `timeout`) makes this write emit
+      // EPIPE. An unlistened writable error is an uncaughtException, which this
+      // app turns into a process exit — so swallow it and let the execFile
+      // callback report the failure instead, per this function's contract.
+      proc.stdin.on('error', () => {})
       proc.stdin.write(input)
       proc.stdin.end()
     }

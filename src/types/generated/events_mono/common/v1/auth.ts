@@ -4,8 +4,6 @@
 //   protoc               unknown
 // source: events_mono/common/v1/auth.proto
 
-/* eslint-disable */
-
 /** PublicApiAuth contains authentication context automatically injected by the API */
 export interface PublicApiAuth {
   account_id?: number | undefined

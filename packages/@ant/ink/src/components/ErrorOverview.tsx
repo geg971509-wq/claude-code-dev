@@ -21,8 +21,6 @@ function getStackUtils(): StackUtils {
   }));
 }
 
-/* eslint-enable custom-rules/no-process-cwd */
-
 type ErrorLike = {
   readonly message: string;
   readonly stack?: string;
