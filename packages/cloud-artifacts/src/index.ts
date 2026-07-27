@@ -9,7 +9,6 @@ declare global {
 }
 
 const HASH_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
-const TTL_PREFIXES = ['7d', '30d']
 const ALLOWED_TTLS = [7, 30]
 const HTML_CONTENT_TYPE = 'text/html; charset=utf-8'
 // GET /<prefix>/<id>.html —— prefix 与 lifecycle rule 对应，限制只能是 7d 或 30d
@@ -86,10 +85,6 @@ async function handleUpload(
       return json({ error: 'invalid_hash' }, 400)
     }
     id = hashParam
-    // 覆盖：先删所有 ttl prefix 下可能的旧 key（R2 delete 不存在的 key 不报错）
-    await Promise.all(
-      TTL_PREFIXES.map(p => env.BUCKET.delete(`${p}/${id}.html`)),
-    )
   } else {
     id = nanoid(21)
   }
@@ -103,6 +98,10 @@ async function handleUpload(
   await env.BUCKET.put(key, body, {
     httpMetadata: { contentType: HTML_CONTENT_TYPE },
   })
+
+  // Different TTLs use different keys. Keep the old key until its lifecycle expiry:
+  // deleting the opposite prefix lets concurrent 7d/30d overwrites delete each
+  // other's successful writes. The returned URL always points at this completed put.
 
   const expiresAt = new Date(Date.now() + ttl * 24 * 60 * 60 * 1000)
   return json(

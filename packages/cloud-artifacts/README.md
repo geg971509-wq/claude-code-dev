@@ -51,7 +51,7 @@ curl "https://cloud-artifacts.claude-code-best.win/7d/V1StGXR8_Z5jdHi6B-myT.html
 - **POST /upload**：Bearer 鉴权 → text/html 校验 → 10MB 上限 → ttl ∈ {7,30} → R2 put
 - **GET /<7d\|30d>/<id>.html**：Worker 从 R2 读 → 返回 `text/html; charset=utf-8` + `Cache-Control: public, max-age=86400`
 - **TTL**：R2 prefix + lifecycle rule 实现，Worker 不参与过期处理（零额外代码）
-- **覆盖**：指定 `?hash=` 时，先删 `7d/<hash>.html` 和 `30d/<hash>.html` 旧 key，再写新 key
+- **覆盖**：指定 `?hash=` 时覆盖目标 TTL key；另一 TTL 的旧 key 留给 R2 lifecycle 到期删除，避免并发覆盖互删
 - **ID**：默认 `nanoid(21)`（126 bit 熵），可指定 `?hash=<custom-id>`
 
 ## 为什么套一层 Deno Deploy
@@ -125,9 +125,10 @@ curl "https://cloud-artifacts.claude-code-best.win/7d/V1StGXR8_Z5jdHi6B-myT.html
 指定 `?hash=` 时：
 
 1. 校验 hash 字符集（`^[A-Za-z0-9_-]{1,128}$`）
-2. 删除 `7d/<hash>.html` 和 `30d/<hash>.html` 两个 key（R2 delete 不存在的 key 不报错，零成本）
-3. 按 `?ttl=` 写入新 key
-4. 返回新的 `expiresAt`
+2. 按 `?ttl=` 覆盖目标 key
+3. 返回新的 `expiresAt`
+
+不同 TTL 使用不同 key。切换 TTL 时，旧 key 由对应的 R2 lifecycle 到期删除；不在请求中跨 prefix 删除，避免相同 hash 的 7 天与 30 天并发覆盖互相删掉成功写入。
 
 不指定 `?hash=` 时：用 `nanoid(21)` 随机 ID，几乎不可能碰撞，不做碰撞检查。
 
