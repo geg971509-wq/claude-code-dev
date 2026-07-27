@@ -106,7 +106,6 @@ export function createLSPServerInstance(
   // Private state encapsulated via closures. Lazy-require LSPClient so
   // vscode-jsonrpc (~129KB) only loads when an LSP server is actually
   // instantiated, not when the static import chain reaches this module.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { createLSPClient } = require('./LSPClient.js') as {
     createLSPClient: typeof createLSPClientType
   }
@@ -127,16 +126,48 @@ export function createLSPServerInstance(
   /**
    * Starts the LSP server and initializes it with workspace information.
    *
-   * If the server is already running or starting, this method returns immediately.
-   * On failure, sets state to 'error', logs for monitoring, and throws.
+   * Concurrent callers share one startup: the second caller awaits the first
+   * rather than returning early. Returning early left it holding a server whose
+   * state was still 'starting', which isHealthy() rejects — so the request that
+   * followed threw "server is ${state}" while the first caller succeeded. The
+   * tool layer reaches this concurrently because LSPTool is concurrency-safe, so
+   * the orchestrator batches its calls.
+   *
+   * On failure, sets state to 'error', logs for monitoring, and throws. A caller
+   * that joined an in-flight startup sees that same failure, rather than a
+   * misleading downstream one.
    *
    * @throws {Error} If server fails to start or initialize
    */
+  let startInFlight: Promise<void> | undefined
+
+  let stopInFlight: Promise<void> | undefined
+
   async function start(): Promise<void> {
-    if (state === 'running' || state === 'starting') {
+    if (stopInFlight) {
+      await stopInFlight
+    }
+    if (state === 'running') {
       return
     }
+    if (startInFlight) {
+      return startInFlight
+    }
 
+    const attempt = startInner()
+    startInFlight = attempt
+    try {
+      await attempt
+    } finally {
+      // Only clear our own attempt: a caller that joined late must not wipe a
+      // newer one registered after this settled.
+      if (startInFlight === attempt) {
+        startInFlight = undefined
+      }
+    }
+  }
+
+  async function startInner(): Promise<void> {
     // Cap crash-recovery attempts so a persistently crashing server doesn't
     // spawn unbounded child processes on every incoming request.
     const maxRestarts = config.maxRestarts ?? 3
@@ -252,10 +283,17 @@ export function createLSPServerInstance(
       crashRecoveryCount = 0
       logForDebugging(`LSP server instance started: ${name}`)
     } catch (error) {
-      // Clean up the spawned child process on timeout/error
-      client.stop().catch(() => {})
-      // Prevent unhandled rejection from abandoned initialize promise
+      // Prevent unhandled rejection from an initialization that timed out.
       initPromise?.catch(() => {})
+      try {
+        await client.stop()
+      } catch (cleanupError) {
+        logError(
+          new Error(
+            `Failed to clean up LSP server '${name}' after startup failure: ${errorMessage(cleanupError)}`,
+          ),
+        )
+      }
       state = 'error'
       lastError = error as Error
       logError(error)
@@ -272,7 +310,27 @@ export function createLSPServerInstance(
    * @throws {Error} If server fails to stop
    */
   async function stop(): Promise<void> {
-    if (state === 'stopped' || state === 'stopping') {
+    if (stopInFlight) {
+      return stopInFlight
+    }
+
+    const attempt = stopInner()
+    stopInFlight = attempt
+    try {
+      await attempt
+    } finally {
+      if (stopInFlight === attempt) {
+        stopInFlight = undefined
+      }
+    }
+  }
+
+  async function stopInner(): Promise<void> {
+    const startup = startInFlight
+    if (startup) {
+      await startup.catch(() => undefined)
+    }
+    if (state === 'stopped') {
       return
     }
 

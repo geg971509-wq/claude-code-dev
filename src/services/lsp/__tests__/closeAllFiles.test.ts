@@ -1,4 +1,5 @@
-import { describe, expect, test, mock } from 'bun:test'
+import { beforeEach, describe, expect, test, mock } from 'bun:test'
+import { withResolvers } from '../../../utils/withResolvers.js'
 import { createLSPServerManager } from '../LSPServerManager.js'
 
 // Mock config loading to avoid real filesystem/LSP server access
@@ -17,18 +18,21 @@ mock.module('../config.js', () => ({
 }))
 
 // Mock LSPServerInstance to avoid spawning real processes
+let mockServerState = 'running'
+let startGate: PromiseWithResolvers<void> | undefined
+let stopGate: PromiseWithResolvers<void> | undefined
+const startMock = mock(() => startGate?.promise ?? Promise.resolve())
+const stopMock = mock(() => stopGate?.promise ?? Promise.resolve())
 const sendNotificationMock = mock(() => Promise.resolve())
 mock.module('../LSPServerInstance.js', () => ({
   createLSPServerInstance: (name: string, config: any) => ({
     name,
     config,
-    state: 'running',
-    start: mock(async () => {
-      /* no-op */
-    }),
-    stop: mock(async () => {
-      /* no-op */
-    }),
+    get state() {
+      return mockServerState
+    },
+    start: startMock,
+    stop: stopMock,
     sendRequest: mock(async () => undefined),
     sendNotification: sendNotificationMock,
     onRequest: mock(() => {}),
@@ -43,6 +47,15 @@ mock.module('../../../utils/log.js', () => ({
 mock.module('../../../utils/debug.js', () => ({
   logForDebugging: mock(() => {}),
 }))
+
+beforeEach(() => {
+  mockServerState = 'running'
+  startGate = undefined
+  stopGate = undefined
+  startMock.mockClear()
+  stopMock.mockClear()
+  sendNotificationMock.mockClear()
+})
 
 describe('LSPServerManager closeAllFiles', () => {
   test('closeAllFiles is a no-op when no files are open', async () => {
@@ -117,21 +130,71 @@ describe('LSPServerManager closeAllFiles', () => {
   })
 
   test('closeAllFiles skips servers that are not running', async () => {
-    // Create manager and manually register a server with 'stopped' state
     const manager = createLSPServerManager()
     await manager.initialize()
 
-    // Open a file first (mocked server is running)
     await manager.openFile('/project/z.ts', 'content-z')
     expect(manager.isFileOpen('/project/z.ts')).toBe(true)
 
-    // If we manually stop the server (simulating server crash),
-    // closeAllFiles should skip it gracefully.
-    // Since we can't easily change the mock state, we verify that
-    // closeAllFiles at least clears tracking regardless.
+    mockServerState = 'stopped'
     sendNotificationMock.mockClear()
     await manager.closeAllFiles()
-    // Tracking cleared regardless of server state
+    expect(sendNotificationMock).not.toHaveBeenCalled()
     expect(manager.isFileOpen('/project/z.ts')).toBe(false)
+  })
+})
+
+describe('LSPServerManager lifecycle', () => {
+  test('shutdown waits for a starting server before clearing it', async () => {
+    mockServerState = 'starting'
+    stopGate = withResolvers<void>()
+    const manager = createLSPServerManager()
+    await manager.initialize()
+
+    const shutdown = manager.shutdown()
+    await Promise.resolve()
+    expect(stopMock).toHaveBeenCalledTimes(1)
+    expect(manager.getAllServers()).toHaveLength(1)
+
+    stopGate.resolve()
+    await shutdown
+    expect(manager.getAllServers()).toHaveLength(0)
+  })
+
+  test('requests made while starting await the shared startup', async () => {
+    mockServerState = 'starting'
+    startGate = withResolvers<void>()
+    const manager = createLSPServerManager()
+    await manager.initialize()
+
+    const first = manager.ensureServerStarted('/project/a.ts')
+    const second = manager.ensureServerStarted('/project/b.ts')
+    let settled = false
+    void Promise.all([first, second]).then(() => {
+      settled = true
+    })
+
+    await Promise.resolve()
+    expect(startMock).toHaveBeenCalledTimes(2)
+    expect(settled).toBe(false)
+
+    startGate.resolve()
+    await Promise.all([first, second])
+  })
+
+  test('rejects new starts after shutdown begins', async () => {
+    mockServerState = 'stopped'
+    stopGate = withResolvers<void>()
+    const manager = createLSPServerManager()
+    await manager.initialize()
+
+    const shutdown = manager.shutdown()
+    await expect(manager.ensureServerStarted('/project/a.ts')).rejects.toThrow(
+      'LSP server manager is shutting down',
+    )
+    expect(startMock).not.toHaveBeenCalled()
+
+    stopGate.resolve()
+    await shutdown
   })
 })

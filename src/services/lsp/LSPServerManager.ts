@@ -64,6 +64,7 @@ export function createLSPServerManager(): LSPServerManager {
   const extensionMap: Map<string, string[]> = new Map()
   // Track which files have been opened on which servers (URI -> server name)
   const openedFiles: Map<string, string> = new Map()
+  let shuttingDown = false
 
   /**
    * Initialize the manager by loading all configured LSP servers.
@@ -151,15 +152,12 @@ export function createLSPServerManager(): LSPServerManager {
 
   /**
    * Shutdown all running servers and clear state.
-   * Only servers in 'running' state are explicitly stopped;
-   * servers in other states are cleared without shutdown.
    *
    * @throws {Error} If one or more servers fail to stop
    */
   async function shutdown(): Promise<void> {
-    const toStop = Array.from(servers.entries()).filter(
-      ([, s]) => s.state === 'running' || s.state === 'error',
-    )
+    shuttingDown = true
+    const toStop = Array.from(servers.entries())
 
     const results = await Promise.allSettled(
       toStop.map(([, server]) => server.stop()),
@@ -217,10 +215,18 @@ export function createLSPServerManager(): LSPServerManager {
   async function ensureServerStarted(
     filePath: string,
   ): Promise<LSPServerInstance | undefined> {
+    if (shuttingDown) {
+      throw new Error('LSP server manager is shutting down')
+    }
+
     const server = getServerForFile(filePath)
     if (!server) return undefined
 
-    if (server.state === 'stopped' || server.state === 'error') {
+    if (
+      server.state === 'starting' ||
+      server.state === 'stopped' ||
+      server.state === 'error'
+    ) {
       try {
         await server.start()
       } catch (error) {
