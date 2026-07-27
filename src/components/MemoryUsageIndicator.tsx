@@ -12,7 +12,6 @@ export function MemoryUsageIndicator(): React.ReactNode {
     return null;
   }
 
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   const memoryUsage = useMemoryUsage();
 
   if (!memoryUsage) {

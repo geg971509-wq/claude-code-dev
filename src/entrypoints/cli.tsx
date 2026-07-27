@@ -36,15 +36,11 @@ if (isEnvTruthy(process.env.CLAUDE_CODE_FORCE_INTERACTIVE)) {
 }
 
 // Bugfix for corepack auto-pinning, which adds yarnpkg to peoples' package.jsons
-// eslint-disable-next-line custom-rules/no-top-level-side-effects
 process.env.COREPACK_ENABLE_AUTO_PIN = '0';
 
 // Set max heap size for child processes in CCR environments (containers have 16GB)
-// eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level, custom-rules/safe-env-boolean-check
 if (process.env.CLAUDE_CODE_REMOTE === 'true') {
-  // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level
   const existing = process.env.NODE_OPTIONS || '';
-  // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level
   process.env.NODE_OPTIONS = existing ? `${existing} --max-old-space-size=8192` : '--max-old-space-size=8192';
 }
 
@@ -52,7 +48,6 @@ if (process.env.CLAUDE_CODE_REMOTE === 'true') {
 // BashTool/AgentTool/PowerShellTool capture DISABLE_BACKGROUND_TASKS into
 // module-level consts at import time — init() runs too late. feature() gate
 // DCEs this entire block from external builds.
-// eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level
 if (feature('ABLATION_BASELINE') && process.env.CLAUDE_CODE_ABLATION_BASELINE) {
   for (const k of [
     'CLAUDE_CODE_SIMPLE',
@@ -63,7 +58,6 @@ if (feature('ABLATION_BASELINE') && process.env.CLAUDE_CODE_ABLATION_BASELINE) {
     'CLAUDE_CODE_DISABLE_AUTO_MEMORY',
     'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS',
   ]) {
-    // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level
     process.env[k] ??= '1';
   }
 }
@@ -300,7 +294,6 @@ async function main(): Promise<void> {
     await templatesMain(args.slice(1));
     // process.exit (not return) — mountFleetView's Ink TUI can leave event
     // loop handles that prevent natural exit.
-    // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(0);
   }
 
@@ -310,7 +303,6 @@ async function main(): Promise<void> {
     profileCheckpoint('cli_templates_path');
     const { templatesMain } = await import('../cli/handlers/templateJobs.js');
     await templatesMain(args);
-    // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(0);
   }
 
@@ -359,5 +351,4 @@ async function main(): Promise<void> {
   profileCheckpoint('cli_after_main_complete');
 }
 
-// eslint-disable-next-line custom-rules/no-top-level-side-effects
 await main();

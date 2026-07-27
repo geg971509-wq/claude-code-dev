@@ -320,7 +320,6 @@ export function createCliExecutor(opts: {
   // Non-macOS: delegate entirely to the cross-platform executor.
   // No macOS code paths, no drainRunLoop, no @ant packages.
   if (process.platform !== 'darwin') {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { createCrossPlatformExecutor } =
       require('./executorCrossPlatform.js') as typeof import('./executorCrossPlatform.js')
     return createCrossPlatformExecutor(opts)

@@ -3,14 +3,12 @@ import { join } from 'path'
 import { getFsImplementation } from '../utils/fsOperations.js'
 import { getAutoMemPath, isAutoMemoryEnabled } from './paths.js'
 
-/* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM')
   ? (require('./teamMemPaths.js') as typeof import('./teamMemPaths.js'))
   : null
 
 import { getKairosActive, getOriginalCwd } from '../bootstrap/state.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
-/* eslint-enable @typescript-eslint/no-require-imports */
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -102,11 +100,9 @@ export function truncateEntrypointContent(raw: string): EntrypointTruncation {
   }
 }
 
-/* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPrompts = feature('TEAMMEM')
   ? (require('./teamMemPrompts.js') as typeof import('./teamMemPrompts.js'))
   : null
-/* eslint-enable @typescript-eslint/no-require-imports */
 
 /**
  * Shared guidance text appended to each memory directory prompt line.
@@ -284,7 +280,6 @@ export function buildMemoryPrompt(params: {
   // Read existing memory entrypoint (sync: prompt building is synchronous)
   let entrypointContent = ''
   try {
-    // eslint-disable-next-line custom-rules/no-sync-fs
     entrypointContent = fs.readFileSync(entrypoint, { encoding: 'utf-8' })
   } catch {
     // No memory file yet

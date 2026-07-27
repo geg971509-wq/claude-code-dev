@@ -2651,7 +2651,6 @@ function readFileTailSync(fullPath: string): string {
     }
   }
 }
-/* eslint-enable custom-rules/no-sync-fs */
 
 export async function saveCustomTitle(
   sessionId: UUID,

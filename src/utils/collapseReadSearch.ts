@@ -52,7 +52,6 @@ import {
   isShellCommandTargetingMemory,
 } from './memoryFileDetection.js'
 
-/* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemOps = feature('TEAMMEM')
   ? (require('./teamMemoryOps.js') as typeof import('./teamMemoryOps.js'))
   : null
@@ -61,7 +60,6 @@ const SNIP_TOOL_NAME = feature('HISTORY_SNIP')
       require('@claude-code-best/builtin-tools/tools/SnipTool/prompt.js') as typeof import('@claude-code-best/builtin-tools/tools/SnipTool/prompt.js')
     ).SNIP_TOOL_NAME
   : null
-/* eslint-enable @typescript-eslint/no-require-imports */
 
 /**
  * Result of checking if a tool use is a search or read operation.

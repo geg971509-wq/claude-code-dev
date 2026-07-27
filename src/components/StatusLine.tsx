@@ -493,7 +493,6 @@ function StatusLineInner({ messagesRef, lastAssistantMessageId, vimMode }: Props
         logForDebugging('Status line command skipped: workspace trust not accepted', { level: 'warn' });
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Only run once on mount - settings stable for initial logging
 
   // Initial update on mount + cleanup on unmount
@@ -506,7 +505,6 @@ function StatusLineInner({ messagesRef, lastAssistantMessageId, vimMode }: Props
         clearTimeout(debounceTimerRef.current);
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Only run once on mount, not when doUpdate changes
 
   // Get padding from settings or default to 0

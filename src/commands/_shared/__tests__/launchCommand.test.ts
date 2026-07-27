@@ -33,7 +33,6 @@ type TestViewProps = { greeting: string }
 const TestView: React.FC<TestViewProps> = ({ greeting }) =>
   React.createElement('span', null, greeting)
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyOpts = LaunchCommandOptions<any, any>
 
 const makeOpts = (overrides: Partial<AnyOpts> = {}): AnyOpts => ({

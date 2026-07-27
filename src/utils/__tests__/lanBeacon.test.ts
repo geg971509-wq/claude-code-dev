@@ -28,7 +28,6 @@ const mockSocket = {
 // + gate the stub behind useLanBeaconDgramStubs so other tests see real UDP.
 let useLanBeaconDgramStubs = false
 mock.module('dgram', () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const real = require('dgram') as Record<string, unknown>
   return {
     ...real,

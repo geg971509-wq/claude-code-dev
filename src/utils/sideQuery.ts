@@ -277,7 +277,6 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
   // When parentSpan is provided, create a child span nested under the
   // main agent trace; otherwise create a standalone root trace.
   const _ps = opts.parentSpan
-  // eslint-disable-next-line no-constant-condition
   if (opts.querySource === 'auto_mode') {
     logForDebugging(
       `[sideQuery] auto_mode parentSpan=${_ps ? `id=${(_ps as unknown as Record<string, unknown>).id ?? 'present'}` : 'null/undefined'} querySource=${opts.querySource}`,

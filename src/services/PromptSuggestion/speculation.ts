@@ -967,7 +967,6 @@ export async function handleSpeculationAccept(
         ? error
         : new Error('handleSpeculationAccept failed'),
     )
-    /* eslint-enable no-restricted-syntax */
     logSpeculation(
       speculationState.id,
       'error',

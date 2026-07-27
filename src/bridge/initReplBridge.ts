@@ -480,10 +480,8 @@ export async function initReplBridge(
   // assistant module out of external builds entirely.
   let workerType: BridgeWorkerType = 'claude_code'
   if (feature('KAIROS')) {
-    /* eslint-disable @typescript-eslint/no-require-imports */
     const { isAssistantMode } =
       require('../assistant/index.js') as typeof import('../assistant/index.js')
-    /* eslint-enable @typescript-eslint/no-require-imports */
     if (isAssistantMode()) {
       workerType = 'claude_code_assistant'
     }

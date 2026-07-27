@@ -157,7 +157,6 @@ export function useAssistantHistory({
       cancelled = true
     }
     // config identity is stable (created once in main.tsx, never recreated)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled])
 
   const loadOlder = useCallback(async () => {

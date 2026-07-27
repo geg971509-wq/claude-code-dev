@@ -22,7 +22,6 @@ export function isModifierPressed(modifier: ModifierKey): boolean {
     return false
   }
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { isModifierPressed: nativeIsModifierPressed } =
       require('modifiers-napi') as { isModifierPressed: (m: string) => boolean }
     return nativeIsModifierPressed(modifier)

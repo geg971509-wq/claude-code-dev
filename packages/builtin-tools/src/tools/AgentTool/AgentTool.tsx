@@ -104,12 +104,10 @@ import {
   userFacingNameBackgroundColor,
 } from './UI.js';
 
-/* eslint-disable @typescript-eslint/no-require-imports */
 const proactiveModule =
   feature('PROACTIVE') || feature('KAIROS')
     ? (require('src/proactive/index.js') as typeof import('src/proactive/index.js'))
     : null;
-/* eslint-enable @typescript-eslint/no-require-imports */
 
 // Progress display constants (for showing background hint)
 const PROGRESS_THRESHOLD_MS = 2000; // Show background hint after 2 seconds

@@ -28,7 +28,6 @@ import {
   memoryScopeForPath,
 } from './memoryFileDetection.js'
 
-/* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM')
   ? (require('../memdir/teamMemPaths.js') as typeof import('../memdir/teamMemPaths.js'))
   : null
@@ -39,7 +38,6 @@ const memoryShapeTelemetry = feature('MEMORY_SHAPE_TELEMETRY')
   ? (require('../memdir/memoryShapeTelemetry.js') as typeof import('../memdir/memoryShapeTelemetry.js'))
   : null
 
-/* eslint-enable @typescript-eslint/no-require-imports */
 import { getSubagentLogName } from './agentContext.js'
 
 /**

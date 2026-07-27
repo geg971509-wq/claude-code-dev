@@ -90,7 +90,6 @@ function handlePluginCommandError(
     ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     ...telemetryFields,
   })
-  // eslint-disable-next-line custom-rules/no-process-exit
   process.exit(1)
 }
 
@@ -135,7 +134,6 @@ export async function installPlugin(
       ...buildPluginTelemetryFields(name, marketplace, getManagedPluginNames()),
     })
 
-    // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(0)
   } catch (error) {
     handlePluginCommandError(error, 'install', plugin)
@@ -176,7 +174,6 @@ export async function uninstallPlugin(
       ...buildPluginTelemetryFields(name, marketplace, getManagedPluginNames()),
     })
 
-    // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(0)
   } catch (error) {
     handlePluginCommandError(error, 'uninstall', plugin)
@@ -216,7 +213,6 @@ export async function enablePlugin(
       ...buildPluginTelemetryFields(name, marketplace, getManagedPluginNames()),
     })
 
-    // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(0)
   } catch (error) {
     handlePluginCommandError(error, 'enable', plugin)
@@ -256,7 +252,6 @@ export async function disablePlugin(
       ...buildPluginTelemetryFields(name, marketplace, getManagedPluginNames()),
     })
 
-    // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(0)
   } catch (error) {
     handlePluginCommandError(error, 'disable', plugin)
@@ -278,7 +273,6 @@ export async function disableAllPlugins(): Promise<void> {
 
     logEvent('tengu_plugin_disabled_all_cli', {})
 
-    // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(0)
   } catch (error) {
     handlePluginCommandError(error, 'disable-all')

@@ -29,7 +29,6 @@ import { getPlatform } from './platform.js'
 import { lt } from './semver.js'
 
 // Lazy: IdeOnboardingDialog.tsx pulls React/ink; only needed in interactive onboarding path
-/* eslint-disable @typescript-eslint/no-require-imports */
 const ideOnboardingDialog =
   (): typeof import('src/components/IdeOnboardingDialog.js') =>
     require('src/components/IdeOnboardingDialog.js')
@@ -38,7 +37,6 @@ import { createAbortController } from './abortController.js'
 import { logForDebugging } from './debug.js'
 import { envDynamic } from './envDynamic.js'
 import { errorMessage, isFsInaccessible } from './errors.js'
-/* eslint-enable @typescript-eslint/no-require-imports */
 import {
   checkWSLDistroMatch,
   WindowsToWSLConverter,
@@ -967,7 +965,6 @@ function getVSCodeIDECommandByParentProcess(): string | null {
       // Get the command for this PID
       // this function already returned if not running on macos
       const command = execSyncWithDefaults_DEPRECATED(
-        // eslint-disable-next-line custom-rules/no-direct-ps-commands
         `ps -o command= -p ${pid}`,
       )?.trim()
 
@@ -1000,7 +997,6 @@ function getVSCodeIDECommandByParentProcess(): string | null {
       // Get parent PID
       // this function already returned if not running on macos
       const ppidStr = execSyncWithDefaults_DEPRECATED(
-        // eslint-disable-next-line custom-rules/no-direct-ps-commands
         `ps -o ppid= -p ${pid}`,
       )?.trim()
       if (!ppidStr) {

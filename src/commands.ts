@@ -63,7 +63,6 @@ import vim from './commands/vim/index.js'
 import webTools from './commands/web-tools/index.js'
 import { feature } from 'bun:bundle'
 // Dead code elimination: conditional imports
-/* eslint-disable @typescript-eslint/no-require-imports */
 const proactive =
   feature('PROACTIVE') || feature('KAIROS')
     ? require('./commands/proactive.js').default
@@ -168,7 +167,6 @@ const goalCmd = feature('GOAL')
       require('./commands/goal/index.js') as typeof import('./commands/goal/index.js')
     ).default
   : null
-/* eslint-enable @typescript-eslint/no-require-imports */
 import thinkback from './commands/thinkback/index.js'
 import thinkbackPlay from './commands/thinkback-play/index.js'
 import permissions from './commands/permissions/index.js'
@@ -484,13 +482,11 @@ async function getSkills(cwd: string): Promise<{
   }
 }
 
-/* eslint-disable @typescript-eslint/no-require-imports */
 const getWorkflowCommands = feature('WORKFLOW_SCRIPTS')
   ? (
       require('./workflow/namedWorkflowCommands.js') as typeof import('./workflow/namedWorkflowCommands.js')
     ).getWorkflowCommands
   : null
-/* eslint-enable @typescript-eslint/no-require-imports */
 
 /**
  * Filters commands by their declared `availability` (auth/provider requirement).

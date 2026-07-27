@@ -54,7 +54,6 @@ import type { ContentReplacementRecord } from './toolResultStorage.js'
 
 // Dead code elimination: ant-only tool names are conditionally required so
 // their strings don't leak into external builds. Static imports always bundle.
-/* eslint-disable @typescript-eslint/no-require-imports */
 const BRIEF_TOOL_NAME: string | null =
   feature('KAIROS') || feature('KAIROS_BRIEF')
     ? (
@@ -72,7 +71,6 @@ const SEND_USER_FILE_TOOL_NAME: string | null = feature('KAIROS')
       require('@claude-code-best/builtin-tools/tools/SendUserFileTool/prompt.js') as typeof import('@claude-code-best/builtin-tools/tools/SendUserFileTool/prompt.js')
     ).SEND_USER_FILE_TOOL_NAME
   : null
-/* eslint-enable @typescript-eslint/no-require-imports */
 
 /**
  * Transforms legacy attachment types to current types for backward compatibility

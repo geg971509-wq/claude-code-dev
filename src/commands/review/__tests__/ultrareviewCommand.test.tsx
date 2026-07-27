@@ -105,7 +105,6 @@ mock.module('src/utils/teleport/api.js', () => ({
 }));
 
 // Mock axios — per-test responses set via mockAxiosPost.mockImplementationOnce
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockAxiosPost = mock(
   async (..._args: any[]): Promise<any> => ({
     status: 200,

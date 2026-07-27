@@ -36,7 +36,6 @@ function loadModule(): AudioCaptureNapi | null {
   // direct require(env var) — bun cannot analyze require(variable) from a loop.
   if (process.env.AUDIO_CAPTURE_NODE_PATH) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
       cachedModule = require(
         process.env.AUDIO_CAPTURE_NODE_PATH,
       ) as AudioCaptureNapi
@@ -57,7 +56,6 @@ function loadModule(): AudioCaptureNapi | null {
   ]
   for (const p of fallbacks) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
       cachedModule = require(p) as AudioCaptureNapi
       return cachedModule
     } catch {

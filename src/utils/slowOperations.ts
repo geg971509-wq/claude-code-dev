@@ -130,7 +130,6 @@ function slowLoggingAnt(
   _strings: TemplateStringsArray,
   ..._values: unknown[]
 ): AntSlowLogger {
-  // eslint-disable-next-line prefer-rest-params
   // biome-ignore lint/complexity/noArguments: intentional use of arguments object for AntSlowLogger
   return new AntSlowLogger(arguments)
 }

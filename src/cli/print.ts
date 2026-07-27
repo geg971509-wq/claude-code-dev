@@ -364,7 +364,6 @@ import { sleep } from '../utils/sleep.js'
 import { isExtractModeActive } from '../memdir/paths.js'
 
 // Dead code elimination: conditional imports
-/* eslint-disable @typescript-eslint/no-require-imports */
 const coordinatorModeModule = feature('COORDINATOR_MODE')
   ? (require('../coordinator/coordinatorMode.js') as typeof import('../coordinator/coordinatorMode.js'))
   : null
@@ -378,7 +377,6 @@ const cronJitterConfigModule =
   require('../utils/cronJitterConfig.js') as typeof import('../utils/cronJitterConfig.js')
 const cronGate =
   require('@claude-code-best/builtin-tools/tools/ScheduleCronTool/prompt.js') as typeof import('@claude-code-best/builtin-tools/tools/ScheduleCronTool/prompt.js')
-/* eslint-enable @typescript-eslint/no-require-imports */
 
 const SHUTDOWN_TEAM_PROMPT = `<system-reminder>
 You are running in non-interactive mode and cannot return a response to the user until your team is shut down.
@@ -2800,10 +2798,8 @@ function runHeadlessStreaming(
   // Set up UDS inbox callback so the query loop is kicked off
   // when a message arrives via the UDS socket in headless mode.
   if (feature('UDS_INBOX')) {
-    /* eslint-disable @typescript-eslint/no-require-imports */
     const { drainInbox, setOnEnqueue } =
       require('../utils/udsMessaging.js') as typeof import('../utils/udsMessaging.js')
-    /* eslint-enable @typescript-eslint/no-require-imports */
 
     const enqueueUdsInboxMessages = (): boolean => {
       const entries = drainInbox()
@@ -5169,7 +5165,6 @@ async function loadInitialMessages(
               getAgentDefinitionsWithOverrides,
               getActiveAgentsFromList,
             } =
-              // eslint-disable-next-line @typescript-eslint/no-require-imports
               require('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js') as typeof import('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js')
             getAgentDefinitionsWithOverrides.cache.clear?.()
             const freshAgentDefs = await getAgentDefinitionsWithOverrides(
@@ -5371,7 +5366,6 @@ async function loadInitialMessages(
           process.stderr.write(warning + '\n')
           // Refresh agent definitions to reflect the mode switch
           const { getAgentDefinitionsWithOverrides, getActiveAgentsFromList } =
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
             require('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js') as typeof import('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js')
           getAgentDefinitionsWithOverrides.cache.clear?.()
           const freshAgentDefs = await getAgentDefinitionsWithOverrides(

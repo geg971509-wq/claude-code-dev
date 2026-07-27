@@ -1,4 +1,3 @@
-/* eslint-disable eslint-plugin-n/no-unsupported-features/node-builtins */
 /**
  * CONNECT-over-WebSocket relay for CCR upstreamproxy.
  *

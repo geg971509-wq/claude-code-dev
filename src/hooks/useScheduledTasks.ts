@@ -226,7 +226,6 @@ export function useScheduledTasks({
     }
     // assistantMode is stable for the session lifetime; store/setAppState are
     // stable refs from useSyncExternalStore; setMessages is a stable useCallback.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assistantMode])
 }
 

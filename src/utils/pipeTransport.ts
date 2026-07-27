@@ -717,7 +717,6 @@ export function getLocalIp(): string {
  * Safely read pipeIpc from AppState, returning the default if not yet initialized.
  * This avoids crashes when the state hasn't been extended by the PIPE_IPC bootstrap.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getPipeIpc(state: any): PipeIpcState {
   return state?.pipeIpc ?? DEFAULT_PIPE_IPC
 }

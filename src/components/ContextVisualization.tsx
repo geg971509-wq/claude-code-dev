@@ -20,10 +20,8 @@ const RESERVED_CATEGORY_NAME = 'Autocompact buffer';
  */
 function CollapseStatus(): React.ReactNode {
   if (feature('CONTEXT_COLLAPSE')) {
-    /* eslint-disable @typescript-eslint/no-require-imports */
     const { getStats, isContextCollapseEnabled } =
       require('../services/contextCollapse/index.js') as typeof import('../services/contextCollapse/index.js');
-    /* eslint-enable @typescript-eslint/no-require-imports */
     if (!isContextCollapseEnabled()) return null;
 
     const s = getStats();

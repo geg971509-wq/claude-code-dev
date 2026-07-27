@@ -156,7 +156,6 @@ export function FuzzyPicker<T>({
   useEffect(() => {
     onQueryChange(query);
     setFocusedIndex(0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
 
   useEffect(() => {
@@ -166,7 +165,6 @@ export function FuzzyPicker<T>({
   const focused = items[focusedIndex];
   useEffect(() => {
     onFocus?.(focused);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focused]);
 
   const windowStart = clamp(focusedIndex - visibleCount + 1, 0, items.length - visibleCount);

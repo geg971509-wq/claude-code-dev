@@ -2003,7 +2003,6 @@ export async function bridgeMain(args: string[]): Promise<void> {
   }
   if (parsed.error) {
     console.error(`Error: ${parsed.error}`)
-    // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(1)
   }
 
@@ -2043,7 +2042,6 @@ export async function bridgeMain(args: string[]): Promise<void> {
       console.error(
         `Error: Invalid permission mode '${permissionMode}'. Valid modes: ${valid.join(', ')}`,
       )
-      // eslint-disable-next-line custom-rules/no-process-exit
       process.exit(1)
     }
   }
@@ -2085,7 +2083,6 @@ export async function bridgeMain(args: string[]): Promise<void> {
     console.error(
       'Error: Multi-session Remote Control is not enabled for your account yet.',
     )
-    // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(1)
   }
 
@@ -2101,7 +2098,6 @@ export async function bridgeMain(args: string[]): Promise<void> {
     console.error(
       `Error: Workspace not trusted. Please run \`claude\` in ${dir} first to review and accept the workspace trust dialog.`,
     )
-    // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(1)
   }
 
@@ -2115,7 +2111,6 @@ export async function bridgeMain(args: string[]): Promise<void> {
   const bridgeToken = getBridgeAccessToken()
   if (!bridgeToken) {
     console.error(BRIDGE_LOGIN_ERROR)
-    // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(1)
   }
 
@@ -2144,7 +2139,6 @@ export async function bridgeMain(args: string[]): Promise<void> {
       return { ...current, remoteDialogSeen: true }
     })
     if (answer.toLowerCase() !== 'y' && answer.toLowerCase() !== 'yes') {
-      // eslint-disable-next-line custom-rules/no-process-exit
       process.exit(0)
     }
   }
@@ -2166,7 +2160,6 @@ export async function bridgeMain(args: string[]): Promise<void> {
       console.error(
         `Error: No recent session found in this directory or its worktrees. Run \`claude remote-control\` to start a new one.`,
       )
-      // eslint-disable-next-line custom-rules/no-process-exit
       process.exit(1)
     }
     const { pointer, dir: pointerDir } = found
@@ -2196,7 +2189,6 @@ export async function bridgeMain(args: string[]): Promise<void> {
     console.error(
       'Error: Remote Control base URL uses HTTP. Only HTTPS or localhost HTTP is allowed.',
     )
-    // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(1)
   }
 
@@ -2335,7 +2327,6 @@ export async function bridgeMain(args: string[]): Promise<void> {
     console.error(
       `Error: Worktree mode requires a git repository or WorktreeCreate hooks configured. Use --spawn=session for single-session mode.`,
     )
-    // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(1)
   }
 
@@ -2369,7 +2360,6 @@ export async function bridgeMain(args: string[]): Promise<void> {
       console.error(
         `Error: Invalid session ID "${resumeSessionId}". Session IDs must not contain unsafe characters.`,
       )
-      // eslint-disable-next-line custom-rules/no-process-exit
       process.exit(1)
     }
     // Proactively refresh the OAuth token — getBridgeSession uses raw axios
@@ -2394,7 +2384,6 @@ export async function bridgeMain(args: string[]): Promise<void> {
       console.error(
         `Error: Session ${resumeSessionId} not found. It may have been archived or expired, or your login may have lapsed (run \`claude /login\`).`,
       )
-      // eslint-disable-next-line custom-rules/no-process-exit
       process.exit(1)
     }
     if (!session.environment_id) {
@@ -2405,7 +2394,6 @@ export async function bridgeMain(args: string[]): Promise<void> {
       console.error(
         `Error: Session ${resumeSessionId} has no environment_id. It may never have been attached to a bridge.`,
       )
-      // eslint-disable-next-line custom-rules/no-process-exit
       process.exit(1)
     }
     reuseEnvironmentId = session.environment_id
@@ -2460,7 +2448,6 @@ export async function bridgeMain(args: string[]): Promise<void> {
         ? 'Remote Control environments are not available for your account.'
         : `Error: ${errorMessage(err)}`,
     )
-    // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(1)
   }
 
@@ -2534,7 +2521,6 @@ export async function bridgeMain(args: string[]): Promise<void> {
             ? `Error: ${errorMessage(err)}`
             : `Error: Failed to reconnect session ${resumeSessionId}: ${errorMessage(err)}\nThe session may still be resumable — try running the same command again.`,
         )
-        // eslint-disable-next-line custom-rules/no-process-exit
         process.exit(1)
       }
     }
@@ -2759,7 +2745,6 @@ export async function bridgeMain(args: string[]): Promise<void> {
 
   // The bridge bypasses init.ts (and its graceful shutdown handler), so we
   // must exit explicitly.
-  // eslint-disable-next-line custom-rules/no-process-exit
   process.exit(0)
 }
 

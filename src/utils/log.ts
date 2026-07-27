@@ -159,7 +159,6 @@ export function logError(error: unknown): void {
   const err = toError(error)
   if (feature('HARD_FAIL') && isHardFailMode()) {
     console.error('[HARD FAIL] logError called with:', err.stack || err.message)
-    // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(1)
   }
   try {

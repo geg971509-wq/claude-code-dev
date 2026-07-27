@@ -58,7 +58,6 @@ export function GlobalKeybindingHandlers({
     });
     setAppState(prev => {
       const { getAllInProcessTeammateTasks } =
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
         require('../tasks/InProcessTeammateTask/InProcessTeammateTask.js') as typeof import('../tasks/InProcessTeammateTask/InProcessTeammateTask.js');
       const hasTeammates = count(getAllInProcessTeammateTasks(prev.tasks), t => t.status === 'running') > 0;
 
@@ -91,10 +90,8 @@ export function GlobalKeybindingHandlers({
       // view. Users will reach for ctrl+o — clear the stuck state first.
       // Only needed in the prompt screen — transcript mode already ignores
       // isBriefOnly (Messages.tsx filter is gated on !isTranscriptMode).
-      /* eslint-disable @typescript-eslint/no-require-imports */
       const { isBriefEnabled } =
         require('@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js') as typeof import('@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js');
-      /* eslint-enable @typescript-eslint/no-require-imports */
       if (!isBriefEnabled() && isBriefOnlyState && screen !== 'transcript') {
         setAppState(prev => {
           if (!prev.isBriefOnly) return prev;
@@ -158,10 +155,8 @@ export function GlobalKeybindingHandlers({
   // out even if the GB kill-switch fires mid-session.
   const handleToggleBrief = useCallback(() => {
     if (feature('KAIROS') || feature('KAIROS_BRIEF')) {
-      /* eslint-disable @typescript-eslint/no-require-imports */
       const { isBriefEnabled } =
         require('@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js') as typeof import('@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js');
-      /* eslint-enable @typescript-eslint/no-require-imports */
       if (!isBriefEnabled() && !isBriefOnlyState) return;
       const next = !isBriefOnlyState;
       logEvent('tengu_brief_mode_toggled', {

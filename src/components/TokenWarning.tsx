@@ -23,10 +23,8 @@ type Props = {
  * renders this when feature('CONTEXT_COLLAPSE') + isContextCollapseEnabled().
  */
 function CollapseLabel({ upgradeMessage }: { upgradeMessage: string | null }): React.ReactNode {
-  /* eslint-disable @typescript-eslint/no-require-imports */
   const { getStats, subscribe } =
     require('../services/contextCollapse/index.js') as typeof import('../services/contextCollapse/index.js');
-  /* eslint-enable @typescript-eslint/no-require-imports */
 
   // Snapshot must be referentially stable across calls when the
   // underlying counts haven't changed — returning a fresh object every
@@ -95,10 +93,8 @@ export function TokenWarning({ tokenUsage, model }: Props): React.ReactNode {
     }
   }
   if (feature('CONTEXT_COLLAPSE')) {
-    /* eslint-disable @typescript-eslint/no-require-imports */
     const { isContextCollapseEnabled } =
       require('../services/contextCollapse/index.js') as typeof import('../services/contextCollapse/index.js');
-    /* eslint-enable @typescript-eslint/no-require-imports */
     if (isContextCollapseEnabled()) {
       collapseMode = true;
     }

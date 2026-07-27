@@ -215,10 +215,8 @@ export function useReplBridge(
                   ? rawContent
                   : (rawContent as unknown as Array<{ type: string; [key: string]: unknown }>);
               if (feature('KAIROS_GITHUB_WEBHOOKS')) {
-                /* eslint-disable @typescript-eslint/no-require-imports */
                 const { sanitizeInboundWebhookContent } =
                   require('../bridge/webhookSanitizer.js') as typeof import('../bridge/webhookSanitizer.js');
-                /* eslint-enable @typescript-eslint/no-require-imports */
                 if (typeof sanitized === 'string') {
                   sanitized = sanitizeInboundWebhookContent(sanitized);
                 }

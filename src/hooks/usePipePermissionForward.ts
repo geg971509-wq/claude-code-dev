@@ -30,14 +30,12 @@ export function usePipePermissionForward({
 }: Deps): void {
   useEffect(() => {
     if (!feature('UDS_INBOX')) return
-    /* eslint-disable @typescript-eslint/no-require-imports */
     const { subscribePipeEntries, getSlaveClient } =
       require('./useMasterMonitor.js') as typeof import('./useMasterMonitor.js')
     const { getPipeIpc } =
       require('../utils/pipeTransport.js') as typeof import('../utils/pipeTransport.js')
     const { createAssistantMessage, createSystemMessage } =
       require('../utils/messages.js') as typeof import('../utils/messages.js')
-    /* eslint-enable @typescript-eslint/no-require-imports */
 
     return subscribePipeEntries(
       (pipeName: string, entry: { type: string; content: string }) => {

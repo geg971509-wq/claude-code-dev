@@ -31,7 +31,6 @@ import { PowerShellPermissionRequest } from './PowerShellPermissionRequest/Power
 import { SkillPermissionRequest } from './SkillPermissionRequest/SkillPermissionRequest.js';
 import { WebFetchPermissionRequest } from './WebFetchPermissionRequest/WebFetchPermissionRequest.js';
 
-/* eslint-disable @typescript-eslint/no-require-imports */
 const ReviewArtifactTool = feature('REVIEW_ARTIFACT')
   ? (
       require('@claude-code-best/builtin-tools/tools/ReviewArtifactTool/ReviewArtifactTool.js') as typeof import('@claude-code-best/builtin-tools/tools/ReviewArtifactTool/ReviewArtifactTool.js')
@@ -67,7 +66,6 @@ const MonitorPermissionRequest = feature('MONITOR_TOOL')
   : null;
 
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
-/* eslint-enable @typescript-eslint/no-require-imports */
 import type { z } from 'zod/v4';
 import type { PermissionUpdate } from '../../utils/permissions/PermissionUpdateSchema.js';
 import type { WorkerBadgeProps } from './WorkerBadge.js';

@@ -1641,7 +1641,6 @@ export default class Ink {
       // Clear tab status (OSC 21337) so a stale dot doesn't linger
       if (supportsTabStatus()) writeSync(1, wrapForMultiplexer(CLEAR_TAB_STATUS));
     }
-    /* eslint-enable custom-rules/no-sync-fs */
 
     this.isUnmounted = true;
 
@@ -1864,7 +1863,6 @@ export function drainStdin(stdin: NodeJS.ReadStream = process.stdin): void {
     }
   }
 }
-/* eslint-enable custom-rules/no-sync-fs */
 
 const CONSOLE_STDOUT_METHODS = [
   'log',

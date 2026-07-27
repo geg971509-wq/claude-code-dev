@@ -827,10 +827,8 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
               },
             }
           }
-          /* eslint-disable @typescript-eslint/no-require-imports */
           const { postInterClaudeMessage } =
             require('src/bridge/peerSessions.js') as typeof import('src/bridge/peerSessions.js')
-          /* eslint-enable @typescript-eslint/no-require-imports */
           const result = (await postInterClaudeMessage(
             addr.target,
             input.message,
@@ -847,10 +845,8 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
         }
         if (addr.scheme === 'uds') {
           const recipient = recipientForDisplay(input.to)
-          /* eslint-disable @typescript-eslint/no-require-imports */
           const { sendToUdsSocket } =
             require('src/utils/udsClient.js') as typeof import('src/utils/udsClient.js')
-          /* eslint-enable @typescript-eslint/no-require-imports */
           try {
             await sendToUdsSocket(addr.target, input.message)
             const preview = input.summary || truncate(input.message, 50)

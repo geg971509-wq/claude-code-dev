@@ -277,7 +277,6 @@ const mockReadFileFsPromises = mock(
 )
 
 mock.module('fs/promises', () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const real = require('node:fs/promises') as Record<string, unknown>
   return {
     ...real,

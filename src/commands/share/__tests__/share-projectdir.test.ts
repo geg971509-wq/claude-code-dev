@@ -57,7 +57,6 @@ const execFileMockPD = (
 // execFileSync for git) gets our stubs and breaks.
 let useShareProjectdirCpStubs = false
 mock.module('node:child_process', () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const real = require('node:child_process') as Record<string, unknown>
   return {
     ...real,

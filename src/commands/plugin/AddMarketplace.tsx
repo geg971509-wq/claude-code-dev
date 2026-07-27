@@ -122,7 +122,6 @@ export function AddMarketplace({
       hasAttemptedAutoAdd.current = true;
       void handleAdd();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Only run once on mount
 
   return (

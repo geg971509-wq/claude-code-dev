@@ -85,7 +85,6 @@ export async function openWithController(
 
   switch (type) {
     case 'excel': {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { createExcel, openExcel } =
         require('./comExcel.js') as typeof import('./comExcel.js')
       const isExisting = nameOrPath.match(/\.(xlsx|xls|csv|xlsm|xlsb)$/i)
@@ -105,7 +104,6 @@ export async function openWithController(
     }
 
     case 'word': {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { createWord, openWord } =
         require('./comWord.js') as typeof import('./comWord.js')
       const isExisting = nameOrPath.match(/\.(docx|doc|rtf)$/i)

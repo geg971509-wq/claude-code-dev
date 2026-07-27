@@ -4,7 +4,6 @@
 //   protoc               unknown
 // source: events_mono/claude_code/v1/claude_code_internal_event.proto
 
-/* eslint-disable */
 import { Timestamp } from '../../../google/protobuf/timestamp.js'
 import { PublicApiAuth } from '../../common/v1/auth.js'
 

@@ -89,7 +89,6 @@ import type { DiscoverySignal } from '../services/skillSearch/signals.js'
 // surfaces in THIS file are: the maybe() call (gated via spread below) and
 // the skill_listing suppression check (uses the same skillSearchModules null
 // check). The type-only DiscoverySignal import above is erased at compile time.
-/* eslint-disable @typescript-eslint/no-require-imports */
 const skillSearchModules = feature('EXPERIMENTAL_SKILL_SEARCH')
   ? {
       featureCheck:
@@ -107,7 +106,6 @@ const searchExtraToolsModules = feature('EXPERIMENTAL_SEARCH_EXTRA_TOOLS')
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
   ? (require('./permissions/autoModeState.js') as typeof import('./permissions/autoModeState.js'))
   : null
-/* eslint-enable @typescript-eslint/no-require-imports */
 import {
   MAX_LINES_TO_READ,
   FILE_READ_TOOL_NAME,
@@ -199,7 +197,6 @@ import {
 import { isHumanTurn } from './messagePredicates.js'
 import { isEnvTruthy, getClaudeConfigHomeDir } from './envUtils.js'
 import { feature } from 'bun:bundle'
-/* eslint-disable @typescript-eslint/no-require-imports */
 const BRIEF_TOOL_NAME: string | null =
   feature('KAIROS') || feature('KAIROS_BRIEF')
     ? (
@@ -209,7 +206,6 @@ const BRIEF_TOOL_NAME: string | null =
 const sessionTranscriptModule = feature('KAIROS')
   ? (require('../services/sessionTranscript/sessionTranscript.js') as typeof import('../services/sessionTranscript/sessionTranscript.js'))
   : null
-/* eslint-enable @typescript-eslint/no-require-imports */
 import { hasUltrathinkKeyword, isUltrathinkEnabled } from './thinking.js'
 import {
   tokenCountFromLastAPIResponse,
@@ -4081,7 +4077,6 @@ export function getContextEfficiencyAttachment(
   // Gate must match SnipTool.isEnabled() — don't nudge toward a tool that
   // isn't in the tool list. Lazy require keeps this file snip-string-free.
   const { isSnipRuntimeEnabled, shouldNudgeForSnips } =
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     require('../services/compact/snipCompact.js') as typeof import('../services/compact/snipCompact.js')
   if (!isSnipRuntimeEnabled()) {
     return []

@@ -9,7 +9,6 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { InputEvent } from '../core/events/input-event.js';
 // ChordInterceptor intentionally uses useInput to intercept all keystrokes before
 // other handlers process them - this is required for chord sequence support
-// eslint-disable-next-line custom-rules/prefer-use-keybindings
 import useInput from '../hooks/use-input.js';
 import type { Key } from '../core/events/input-event.js';
 import { KeybindingProvider } from './KeybindingContext.js';

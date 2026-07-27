@@ -26,7 +26,6 @@
 
 import { mock } from 'bun:test'
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
 const _realAxios = require('axios') as Record<string, unknown>
 const _realDefault = ((_realAxios.default as
   | Record<string, unknown>

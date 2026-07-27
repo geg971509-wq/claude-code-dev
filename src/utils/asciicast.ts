@@ -92,9 +92,7 @@ let recorder: AsciicastRecorder | null = null
 
 function getTerminalSize(): { cols: number; rows: number } {
   // Direct access to stdout dimensions — not in a React component
-  // eslint-disable-next-line custom-rules/prefer-use-terminal-size
   const cols = process.stdout.columns || 80
-  // eslint-disable-next-line custom-rules/prefer-use-terminal-size
   const rows = process.stdout.rows || 24
   return { cols, rows }
 }

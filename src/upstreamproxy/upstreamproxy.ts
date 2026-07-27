@@ -225,7 +225,6 @@ async function readToken(path: string): Promise<string | null> {
 function setNonDumpable(): void {
   if (process.platform !== 'linux' || typeof Bun === 'undefined') return
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const ffi = require('bun:ffi') as typeof import('bun:ffi')
     const lib = ffi.dlopen('libc.so.6', {
       prctl: {
@@ -257,7 +256,6 @@ async function downloadCaBundle(
   outPath: string,
 ): Promise<boolean> {
   try {
-    // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
     const resp = await fetch(`${baseUrl}/v1/code/upstreamproxy/ca-cert`, {
       // Bun has no default fetch timeout — a hung endpoint would block CLI
       // startup forever. 5s is generous for a small PEM.

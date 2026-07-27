@@ -182,7 +182,6 @@ export function AutoUpdater({
     // isUpdating intentionally omitted from deps; we read isUpdatingRef
     // instead so the guard is always current without changing callback
     // identity (which would re-trigger the initial-check useEffect below).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onAutoUpdaterResult]);
 
   // Initial check

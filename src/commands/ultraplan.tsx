@@ -61,9 +61,7 @@ export function isUltraplanEnabled(): boolean {
 // /ultraplan, which is filtered out of headless mode as "Unknown skill"
 //
 // Bundler inlines .txt as a string; the test runner wraps it as {default}.
-/* eslint-disable @typescript-eslint/no-require-imports */
 const _rawPrompt = require('../utils/ultraplan/prompt.txt');
-/* eslint-enable @typescript-eslint/no-require-imports */
 const DEFAULT_INSTRUCTIONS: string = (typeof _rawPrompt === 'string' ? _rawPrompt : _rawPrompt.default).trimEnd();
 
 /**

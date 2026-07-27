@@ -97,7 +97,6 @@ const mkdirMock = mock(async (..._args: unknown[]) => undefined)
 const writeFileMock = mock(async (..._args: unknown[]) => undefined)
 let useSkillStoreFsStubs = false
 mock.module('node:fs/promises', () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const real = require('node:fs/promises') as Record<string, unknown>
   return {
     ...real,

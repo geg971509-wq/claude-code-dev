@@ -18,7 +18,6 @@ import type {
   ServerResource,
 } from './types.js'
 
-/* eslint-disable @typescript-eslint/no-require-imports */
 const fetchMcpSkillsForClient = feature('MCP_SKILLS')
   ? (
       require('../../skills/mcpSkills.js') as typeof import('../../skills/mcpSkills.js')
@@ -60,7 +59,6 @@ import {
   useSetAppState,
 } from '../../state/AppState.js'
 import { errorMessage } from '../../utils/errors.js'
-/* eslint-enable @typescript-eslint/no-require-imports */
 import { logMCPDebug, logMCPError } from '../../utils/log.js'
 import { enqueue } from '../../utils/messageQueueManager.js'
 import {

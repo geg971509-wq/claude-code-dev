@@ -74,7 +74,6 @@ export async function processSessionStartHooks(
           : new Error(
               `Failed to load plugin hooks during ${source}: ${String(error)}`,
             )
-      /* eslint-enable no-restricted-syntax */
 
       if (error instanceof Error && error.stack) {
         enhancedError.stack = error.stack

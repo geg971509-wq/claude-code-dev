@@ -19,7 +19,6 @@ export function useVoiceEnabled(): boolean {
   const provider = useAppState(s => s.settings.voiceProvider)
   // All hooks must be called unconditionally (Rules of Hooks)
   const authVersion = useAppState(s => s.authVersion)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const authed = useMemo(hasVoiceAuth, [authVersion])
   if (provider === 'doubao') {
     return userIntent && isVoiceGrowthBookEnabled()

@@ -41,7 +41,6 @@ function OrderedListComponent({ children }: OrderedListProps): React.ReactNode {
   );
 }
 
-// eslint-disable-next-line custom-rules/no-top-level-side-effects
 OrderedListComponent.Item = OrderedListItem;
 
 export const OrderedList = OrderedListComponent;

@@ -87,10 +87,8 @@ export function UserTextMessage({
   // the sanitizer were ever weakened.
   if (feature('KAIROS_GITHUB_WEBHOOKS')) {
     if (param.text.startsWith('<github-webhook-activity>')) {
-      /* eslint-disable @typescript-eslint/no-require-imports */
       const { UserGitHubWebhookMessage } =
         require('./UserGitHubWebhookMessage.js') as typeof import('./UserGitHubWebhookMessage.js');
-      /* eslint-enable @typescript-eslint/no-require-imports */
       return <UserGitHubWebhookMessage addMargin={addMargin} param={param} />;
     }
   }
@@ -128,10 +126,8 @@ export function UserTextMessage({
   // only the user prompt. Independent of FORK_SUBAGENT flag — the fork agent
   // transcript always needs to render the prompt as a normal user bubble.
   if (param.text.includes(`<${FORK_BOILERPLATE_TAG}>`)) {
-    /* eslint-disable @typescript-eslint/no-require-imports */
     const { UserForkBoilerplateMessage } =
       require('./UserForkBoilerplateMessage.js') as typeof import('./UserForkBoilerplateMessage.js');
-    /* eslint-enable @typescript-eslint/no-require-imports */
     return (
       <UserForkBoilerplateMessage
         addMargin={addMargin}
@@ -147,10 +143,8 @@ export function UserTextMessage({
   // external builds where feature('UDS_INBOX') is false.
   if (feature('UDS_INBOX')) {
     if (param.text.includes('<cross-session-message')) {
-      /* eslint-disable @typescript-eslint/no-require-imports */
       const { UserCrossSessionMessage } =
         require('./UserCrossSessionMessage.js') as typeof import('./UserCrossSessionMessage.js');
-      /* eslint-enable @typescript-eslint/no-require-imports */
       return <UserCrossSessionMessage addMargin={addMargin} param={param} />;
     }
   }
@@ -158,9 +152,7 @@ export function UserTextMessage({
   // Inbound channel message (MCP server push).
   if (feature('KAIROS') || feature('KAIROS_CHANNELS')) {
     if (param.text.includes('<channel source="')) {
-      /* eslint-disable @typescript-eslint/no-require-imports */
       const { UserChannelMessage } = require('./UserChannelMessage.js') as typeof import('./UserChannelMessage.js');
-      /* eslint-enable @typescript-eslint/no-require-imports */
       return <UserChannelMessage addMargin={addMargin} param={param} />;
     }
   }

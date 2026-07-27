@@ -78,10 +78,8 @@ export function getRemoteSessionUrl(
   sessionId: string,
   ingressUrl?: string,
 ): string {
-  /* eslint-disable @typescript-eslint/no-require-imports */
   const { toCompatSessionId } =
     require('../bridge/sessionIdCompat.js') as typeof import('../bridge/sessionIdCompat.js')
-  /* eslint-enable @typescript-eslint/no-require-imports */
   const compatId = toCompatSessionId(sessionId)
   // Use CLAUDE_BRIDGE_BASE_URL from env if available, otherwise fall back to default logic
   const bridgeBaseUrl = process.env.CLAUDE_BRIDGE_BASE_URL

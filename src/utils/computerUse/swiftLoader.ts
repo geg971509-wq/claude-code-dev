@@ -8,7 +8,6 @@ let cached: ComputerUseAPI | undefined
  */
 export function requireComputerUseSwift(): ComputerUseAPI {
   if (cached) return cached
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mod = require('@ant/computer-use-swift')
   if (mod.ComputerUseAPI && typeof mod.ComputerUseAPI === 'function') {
     cached = new mod.ComputerUseAPI() as ComputerUseAPI

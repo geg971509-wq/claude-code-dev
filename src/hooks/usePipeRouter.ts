@@ -36,7 +36,6 @@ export function usePipeRouter({ store, setAppState, addNotification }: Deps): {
       if (!feature('UDS_INBOX')) return false
       if (!input.trim() || input.trim().startsWith('/')) return false
 
-      /* eslint-disable @typescript-eslint/no-require-imports */
       const pipeState = store.getState().pipeIpc
       const selectedPipes: string[] = pipeState?.selectedPipes ?? []
       const routeMode: 'selected' | 'local' = pipeState?.routeMode ?? 'selected'
@@ -47,7 +46,6 @@ export function usePipeRouter({ store, setAppState, addNotification }: Deps): {
         require('./useMasterMonitor.js') as typeof import('./useMasterMonitor.js')
       const { getPipeIpc } =
         require('../utils/pipeTransport.js') as typeof import('../utils/pipeTransport.js')
-      /* eslint-enable @typescript-eslint/no-require-imports */
 
       const targets = getConnectedSlaveTargets(selectedPipes)
       const pipeIpcForDisplay = getPipeIpc(store.getState())

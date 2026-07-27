@@ -52,7 +52,6 @@ function _loadModule() {
     if (_mod === null) throw new Error('module load failed previously')
     return _mod
   }
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const m = require('@napi-rs/keyring') as { Entry: typeof MockEntry }
   if (!m || typeof m.Entry !== 'function') {
     _mod = null

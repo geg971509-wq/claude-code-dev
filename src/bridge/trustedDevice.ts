@@ -118,10 +118,8 @@ export async function enrollTrustedDevice(): Promise<void> {
     // Lazy require — utils/auth.ts transitively pulls ~1300 modules
     // (config → file → permissions → sessionStorage → commands). Daemon callers
     // of getTrustedDeviceToken() don't need this; only /login does.
-    /* eslint-disable @typescript-eslint/no-require-imports */
     const { getClaudeAIOAuthTokens } =
       require('../utils/auth.js') as typeof import('../utils/auth.js')
-    /* eslint-enable @typescript-eslint/no-require-imports */
     const accessToken = getClaudeAIOAuthTokens()?.accessToken
     if (!accessToken) {
       logForDebugging('[trusted-device] No OAuth token, skipping enrollment')

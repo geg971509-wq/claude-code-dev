@@ -10,7 +10,6 @@ const SHUTDOWN_TIMEOUT_MS = 5000
 
 export class ProcessManager {
   private instances = new Map<string, AcpInstance>()
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private processes = new Map<string, any>()
 
   create(group: string, command: string): AcpInstance {

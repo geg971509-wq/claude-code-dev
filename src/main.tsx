@@ -8,17 +8,14 @@
 //    (~65ms on every macOS startup)
 import { profileCheckpoint, profileReport } from './utils/startupProfiler.js';
 
-// eslint-disable-next-line custom-rules/no-top-level-side-effects
 profileCheckpoint('main_tsx_entry');
 
 import { startMdmRawRead } from './utils/settings/mdm/rawRead.js';
 
-// eslint-disable-next-line custom-rules/no-top-level-side-effects
 startMdmRawRead();
 
 import { ensureKeychainPrefetchCompleted, startKeychainPrefetch } from './utils/secureStorage/keychainPrefetch.js';
 
-// eslint-disable-next-line custom-rules/no-top-level-side-effects
 startKeychainPrefetch();
 
 import { feature } from 'bun:bundle';
@@ -107,21 +104,16 @@ import { initializeWarningHandler } from './utils/warningHandler.js';
 import { isWorktreeModeEnabled } from './utils/worktreeModeEnabled.js';
 
 // Lazy require to avoid circular dependency: teammate.ts -> AppState.tsx -> ... -> main.tsx
-/* eslint-disable @typescript-eslint/no-require-imports */
 const getTeammateUtils = () => require('./utils/teammate.js') as typeof import('./utils/teammate.js');
 const getTeammatePromptAddendum = () =>
   require('./utils/swarm/teammatePromptAddendum.js') as typeof import('./utils/swarm/teammatePromptAddendum.js');
 const getTeammateModeSnapshot = () =>
   require('./utils/swarm/backends/teammateModeSnapshot.js') as typeof import('./utils/swarm/backends/teammateModeSnapshot.js');
-/* eslint-enable @typescript-eslint/no-require-imports */
 // Dead code elimination: conditional import for COORDINATOR_MODE
-/* eslint-disable @typescript-eslint/no-require-imports */
 const coordinatorModeModule = feature('COORDINATOR_MODE')
   ? (require('./coordinator/coordinatorMode.js') as typeof import('./coordinator/coordinatorMode.js'))
   : null;
-/* eslint-enable @typescript-eslint/no-require-imports */
 // Dead code elimination: conditional import for KAIROS (assistant mode)
-/* eslint-disable @typescript-eslint/no-require-imports */
 const assistantModule = feature('KAIROS')
   ? (require('./assistant/index.js') as typeof import('./assistant/index.js'))
   : null;
@@ -163,7 +155,6 @@ import {
   showSetupScreens,
 } from './interactiveHelpers.js';
 import { initBuiltinPlugins } from './plugins/bundled/index.js';
-/* eslint-enable @typescript-eslint/no-require-imports */
 import { checkQuotaStatus } from './services/claudeAiLimits.js';
 import { getMcpToolsCommandsAndResources, prefetchAllMcpResources } from './services/mcp/client.js';
 import { VALID_INSTALLABLE_SCOPES, VALID_UPDATE_SCOPES } from './services/plugins/pluginCliCommands.js';
@@ -313,7 +304,6 @@ import {
   switchSession,
 } from './bootstrap/state.js';
 
-/* eslint-disable @typescript-eslint/no-require-imports */
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
   ? (require('./utils/permissions/autoModeState.js') as typeof import('./utils/permissions/autoModeState.js'))
   : null;
@@ -330,7 +320,6 @@ import { migrateSonnet45ToSonnet46 } from './migrations/migrateSonnet45ToSonnet4
 import { resetAutoModeOptInForDefaultOffer } from './migrations/resetAutoModeOptInForDefaultOffer.js';
 import { resetProToOpusDefault } from './migrations/resetProToOpusDefault.js';
 import { createRemoteSessionConfig } from './remote/RemoteSessionManager.js';
-/* eslint-enable @typescript-eslint/no-require-imports */
 // teleportWithProgress dynamically imported at call site
 import { createDirectConnectSession, DirectConnectError } from './server/createDirectConnectSession.js';
 import { initializeLspServerManager } from './services/lsp/manager.js';
@@ -358,7 +347,6 @@ import { shouldEnableThinkingByDefault, type ThinkingConfig } from './utils/thin
 import { initUser, resetUserCache } from './utils/user.js';
 import { getTmuxInstallInstructions, isTmuxAvailable, parsePRReference } from './utils/worktree.js';
 
-// eslint-disable-next-line custom-rules/no-top-level-side-effects
 profileCheckpoint('main_tsx_imports_loaded');
 
 /**
@@ -405,7 +393,6 @@ function _isBeingDebugged() {
   // Check if inspector is available and active (indicates debugging)
   try {
     // Dynamic import would be better but is async - use global object instead
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const inspector = (global as any).require('inspector');
     const hasInspectorUrl = !!inspector.url();
     return hasInspectorUrl || hasInspectArg || hasInspectEnv;
@@ -2186,12 +2173,10 @@ async function run(): Promise<CommanderCommand> {
       // Conditional require avoids leaking the tool-name string into
       // external builds.
       if ((feature('KAIROS') || feature('KAIROS_BRIEF')) && baseTools.length > 0) {
-        /* eslint-disable @typescript-eslint/no-require-imports */
         const { BRIEF_TOOL_NAME, LEGACY_BRIEF_TOOL_NAME } =
           require('@claude-code-best/builtin-tools/tools/BriefTool/prompt.js') as typeof import('@claude-code-best/builtin-tools/tools/BriefTool/prompt.js');
         const { isBriefEntitled } =
           require('@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js') as typeof import('@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js');
-        /* eslint-enable @typescript-eslint/no-require-imports */
         const parsed = parseToolListFromCLI(baseTools);
         if ((parsed.includes(BRIEF_TOOL_NAME) || parsed.includes(LEGACY_BRIEF_TOOL_NAME)) && isBriefEntitled()) {
           setUserMsgOptIn(true);
@@ -2695,10 +2680,8 @@ async function run(): Promise<CommanderCommand> {
         !getUserMsgOptIn() &&
         getInitialSettings().defaultView === 'chat'
       ) {
-        /* eslint-disable @typescript-eslint/no-require-imports */
         const { isBriefEntitled } =
           require('@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js') as typeof import('@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js');
-        /* eslint-enable @typescript-eslint/no-require-imports */
         if (isBriefEntitled()) {
           setUserMsgOptIn(true);
         }
@@ -2711,7 +2694,6 @@ async function run(): Promise<CommanderCommand> {
         ((options as { proactive?: boolean }).proactive || isEnvTruthy(process.env.CLAUDE_CODE_PROACTIVE)) &&
         !coordinatorModeModule?.isCoordinatorMode()
       ) {
-        /* eslint-disable @typescript-eslint/no-require-imports */
         const briefVisibility =
           feature('KAIROS') || feature('KAIROS_BRIEF')
             ? (
@@ -2720,7 +2702,6 @@ async function run(): Promise<CommanderCommand> {
               ? 'Call SendUserMessage at checkpoints to mark where things stand.'
               : 'The user will see any text you output.'
             : 'The user will see any text you output.';
-        /* eslint-enable @typescript-eslint/no-require-imports */
         const proactivePrompt = `\n# Proactive Mode\n\nYou are in proactive mode. Take initiative — explore, act, and make progress without waiting for instructions.\n\nStart by briefly greeting the user.\n\nYou will receive periodic <tick> prompts. These are check-ins. Do whatever seems most useful, or call Sleep if there's nothing to do. ${briefVisibility}`;
         appendSystemPrompt = appendSystemPrompt ? `${appendSystemPrompt}\n\n${proactivePrompt}` : proactivePrompt;
       }
@@ -3463,10 +3444,8 @@ async function run(): Promise<CommanderCommand> {
       const fullRemoteControl = remoteControl || getRemoteControlAtStartup() || kairosEnabled;
       let ccrMirrorEnabled = false;
       if (feature('CCR_MIRROR') && !fullRemoteControl) {
-        /* eslint-disable @typescript-eslint/no-require-imports */
         const { isCcrMirrorEnabled } =
           require('./bridge/bridgeEnabled.js') as typeof import('./bridge/bridgeEnabled.js');
-        /* eslint-enable @typescript-eslint/no-require-imports */
         ccrMirrorEnabled = isCcrMirrorEnabled();
       }
 
@@ -5558,7 +5537,6 @@ function maybeActivateProactive(options: unknown): void {
     (feature('PROACTIVE') || feature('KAIROS')) &&
     ((options as { proactive?: boolean }).proactive || isEnvTruthy(process.env.CLAUDE_CODE_PROACTIVE))
   ) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const proactiveModule = require('./proactive/index.js');
     if (!proactiveModule.isProactiveActive()) {
       proactiveModule.activateProactive('command');
@@ -5578,10 +5556,8 @@ function maybeActivateBrief(options: unknown): void {
   // needed. initialIsBriefOnly reads getUserMsgOptIn() directly.
   // Conditional require: static import would leak the tool name string
   // into external builds via BriefTool.ts → prompt.ts.
-  /* eslint-disable @typescript-eslint/no-require-imports */
   const { isBriefEntitled } =
     require('@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js') as typeof import('@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js');
-  /* eslint-enable @typescript-eslint/no-require-imports */
   const entitled = isBriefEntitled();
   if (entitled) {
     setUserMsgOptIn(true);

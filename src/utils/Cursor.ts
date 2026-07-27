@@ -747,7 +747,6 @@ export class Cursor {
   }
 
   nextWORD(): Cursor {
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
     let nextCursor: Cursor = this
     // If we're on a non-whitespace character, move to the next whitespace
     while (!nextCursor.isOverWhitespace() && !nextCursor.isAtEnd()) {
@@ -765,7 +764,6 @@ export class Cursor {
       return this
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
     let cursor: Cursor = this
 
     // Check if we're already at the end of a WORD
@@ -794,7 +792,6 @@ export class Cursor {
   }
 
   prevWORD(): Cursor {
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
     let cursor: Cursor = this
 
     // if we are already at the beginning of a WORD, step off it

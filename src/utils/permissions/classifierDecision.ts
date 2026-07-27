@@ -23,7 +23,6 @@ import { YOLO_CLASSIFIER_TOOL_NAME } from './yoloClassifier.js'
 
 // Ant-only tool names: conditional require so Bun can DCE these in external builds.
 // Gates mirror tools.ts. Keeps the tool name strings out of cli.js.
-/* eslint-disable @typescript-eslint/no-require-imports */
 const TERMINAL_CAPTURE_TOOL_NAME = feature('TERMINAL_PANEL')
   ? (
       require('@claude-code-best/builtin-tools/tools/TerminalCaptureTool/prompt.js') as typeof import('@claude-code-best/builtin-tools/tools/TerminalCaptureTool/prompt.js')
@@ -45,7 +44,6 @@ const WORKFLOW_TOOL_NAME = feature('WORKFLOW_SCRIPTS')
       require('@claude-code-best/workflow-engine') as typeof import('@claude-code-best/workflow-engine')
     ).WORKFLOW_TOOL_NAME
   : null
-/* eslint-enable @typescript-eslint/no-require-imports */
 
 /**
  * Tools that are safe and don't need any classifier checking.

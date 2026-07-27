@@ -228,7 +228,6 @@ export function unbindWindow(): void {
 
 let _wm: typeof import('../win32/windowMessage.js') | undefined
 function getWm() {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   return (_wm ??=
     require('../win32/windowMessage.js') as typeof import('../win32/windowMessage.js'))
 }
@@ -298,7 +297,6 @@ const input: InputPlatform = {
   async typeText(text) {
     // COM-controlled apps: write directly via COM API
     if (boundAppType === 'word' && boundFilePath) {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { appendText } =
         require('../win32/comWord.js') as typeof import('../win32/comWord.js')
       appendText(boundFilePath, text)

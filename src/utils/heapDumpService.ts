@@ -291,7 +291,6 @@ async function writeHeapSnapshot(filepath: string): Promise<void> {
     writeFileSync(filepath, Bun.generateHeapSnapshot('v8', 'arraybuffer'), {
       mode: 0o600,
     })
-    /* eslint-enable custom-rules/no-sync-fs */
 
     // Force GC to try to free that heap snapshot sooner.
     Bun.gc(true)

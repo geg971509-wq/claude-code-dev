@@ -105,7 +105,6 @@ type ListItem =
 // WORKFLOW_SCRIPTS is ant-only (build_flags.yaml). Static imports would leak
 // ~1.3K lines into external builds. Gate with feature() + require so the
 // bundler can dead-code-eliminate the branch.
-/* eslint-disable @typescript-eslint/no-require-imports */
 // WorkflowDetailDialog 已移除：workflow 详情改由 /workflows 面板展示。
 const workflowTaskModule = feature('WORKFLOW_SCRIPTS')
   ? (require('src/tasks/LocalWorkflowTask/LocalWorkflowTask.js') as typeof import('src/tasks/LocalWorkflowTask/LocalWorkflowTask.js'))
@@ -122,7 +121,6 @@ const killMonitorMcp = monitorMcpModule?.killMonitorMcp ?? null;
 const MonitorMcpDetailDialog = feature('MONITOR_TOOL')
   ? (require('./MonitorMcpDetailDialog.js') as typeof import('./MonitorMcpDetailDialog.js')).MonitorMcpDetailDialog
   : null;
-/* eslint-enable @typescript-eslint/no-require-imports */
 
 // Helper to get filtered background tasks (excludes foregrounded local_agent)
 function getSelectableBackgroundTasks(

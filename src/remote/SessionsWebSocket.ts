@@ -134,7 +134,6 @@ export class SessionsWebSocket {
         // close() may race in; don't install a zombie socket
         if (!this.ownsConnectAttempt(attempt)) return
         // Bun's WebSocket supports headers/proxy options but the DOM typings don't
-        // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
         const ws = new globalThis.WebSocket(url, {
           headers,
           proxy: getWebSocketProxyUrl(url),
@@ -177,7 +176,6 @@ export class SessionsWebSocket {
           this.callbacks.onError?.(err)
         })
 
-        // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
         ws.addEventListener('close', (event: CloseEvent) => {
           if (this.ws !== ws) return
           logForDebugging(

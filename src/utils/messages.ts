@@ -165,7 +165,6 @@ import { isTodoV2Enabled } from './tasks.js'
 
 // Lazy import to avoid circular dependency (teammateMailbox -> teammate -> ... -> messages)
 function getTeammateMailbox(): typeof import('./teammateMailbox.js') {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   return require('./teammateMailbox.js')
 }
 
@@ -2669,7 +2668,6 @@ export function normalizeMessagesForAPI(
   // and wastes tokens on every non-meta user message for every ant).
   if (feature('HISTORY_SNIP') && process.env.NODE_ENV !== 'test') {
     const { isSnipRuntimeEnabled } =
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
       require('../services/compact/snipCompact.js') as typeof import('../services/compact/snipCompact.js')
     if (isSnipRuntimeEnabled()) {
       for (let i = 0; i < sanitized.length; i++) {
@@ -2752,7 +2750,6 @@ export function mergeUserMessages(a: UserMessage, b: UserMessage): UserMessage {
     // tests), so this must only fire when snip is actually enabled — not
     // for all ants.
     const { isSnipRuntimeEnabled } =
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
       require('../services/compact/snipCompact.js') as typeof import('../services/compact/snipCompact.js')
     if (isSnipRuntimeEnabled()) {
       return {
@@ -4614,7 +4611,6 @@ You have exited auto mode. The user may now want to interact more directly. You 
     case 'context_efficiency': {
       if (feature('HISTORY_SNIP')) {
         const { SNIP_NUDGE_TEXT } =
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
           require('../services/compact/snipCompact.js') as typeof import('../services/compact/snipCompact.js')
         return wrapMessagesInSystemReminder([
           createUserMessage({
@@ -4705,7 +4701,6 @@ You have exited auto mode. The user may now want to interact more directly. You 
     }
     case 'verify_plan_reminder': {
       // Dead code elimination: CLAUDE_CODE_VERIFY_PLAN='false' in external builds, so === 'true' check allows Bun to eliminate the string
-      /* eslint-disable-next-line custom-rules/no-process-env-top-level */
       const toolName =
         process.env.CLAUDE_CODE_VERIFY_PLAN === 'true'
           ? 'VerifyPlanExecution'
@@ -5112,10 +5107,8 @@ export function getMessagesAfterCompactBoundary<
   const boundaryIndex = findLastCompactBoundaryIndex(messages)
   const sliced = boundaryIndex === -1 ? messages : messages.slice(boundaryIndex)
   if (!options?.includeSnipped && feature('HISTORY_SNIP')) {
-    /* eslint-disable @typescript-eslint/no-require-imports */
     const { projectSnippedView } =
       require('../services/compact/snipProjection.js') as typeof import('../services/compact/snipProjection.js')
-    /* eslint-enable @typescript-eslint/no-require-imports */
     return projectSnippedView(sliced as Message[]) as T[]
   }
   return sliced

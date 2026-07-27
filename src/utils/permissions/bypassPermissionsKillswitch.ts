@@ -119,6 +119,5 @@ export function useKickOffCheckAndDisableAutoModeIfNeeded(): void {
         new Error('Auto mode gate check failed', { cause: toError(error) }),
       )
     })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mainLoopModel, mainLoopModelForSession, fastMode])
 }

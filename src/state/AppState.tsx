@@ -13,7 +13,6 @@ import { createStore } from './store.js';
 
 // DCE: voice context is ant-only. External builds get a noop provider that
 // still wraps children in VoiceContext so useVoiceState never throws.
-/* eslint-disable @typescript-eslint/no-require-imports */
 const VoiceProvider: (props: { children: React.ReactNode }) => React.ReactNode = feature('VOICE_MODE')
   ? require('../context/voice.js').VoiceProvider
   : (() => {
@@ -30,7 +29,6 @@ const VoiceProvider: (props: { children: React.ReactNode }) => React.ReactNode =
       );
     })();
 
-/* eslint-enable @typescript-eslint/no-require-imports */
 import { type AppState, type AppStateStore, getDefaultAppState } from './AppStateStore.js';
 
 // TODO: Remove these re-exports once all callers import directly from
@@ -102,7 +100,6 @@ export function AppStateProvider({ children, initialState, onChangeAppState }: P
 }
 
 function useAppStore(): AppStateStore {
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   const store = useContext(AppStoreContext);
   if (!store) {
     throw new ReferenceError('useAppState/useSetAppState cannot be called outside of an <AppStateProvider />');
