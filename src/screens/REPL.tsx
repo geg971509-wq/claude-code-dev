@@ -170,7 +170,6 @@ import { isHumanTurn } from '../utils/messagePredicates.js';
 import { logError } from '../utils/log.js';
 import { getCwd } from '../utils/cwd.js';
 // Dead code elimination: conditional imports
-/* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const useVoiceIntegration: typeof import('../hooks/useVoiceIntegration.js').useVoiceIntegration = feature('VOICE_MODE')
   ? require('../hooks/useVoiceIntegration.js').useVoiceIntegration
   : () => ({
@@ -203,7 +202,6 @@ const getCoordinatorUserContext: (
 ) => { [k: string]: string } = feature('COORDINATOR_MODE')
   ? require('../coordinator/coordinatorMode.js').getCoordinatorUserContext
   : () => ({});
-/* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import useCanUseTool from '../hooks/useCanUseTool.js';
 import type { ToolPermissionContext, Tool } from '../Tool.js';
 import { notifyAutomationStateChanged } from '../utils/sessionState.js';
@@ -346,7 +344,6 @@ import { restoreRemoteAgentTasks } from '../tasks/RemoteAgentTask/RemoteAgentTas
 import { BackgroundAgentSelector } from '../components/tasks/BackgroundAgentSelector.js';
 import { useInboxPoller } from '../hooks/useInboxPoller.js';
 // Dead code elimination: conditional import for loop mode
-/* eslint-disable @typescript-eslint/no-require-imports */
 const proactiveModule = feature('PROACTIVE') || feature('KAIROS') ? require('../proactive/index.js') : null;
 const PROACTIVE_NO_OP_SUBSCRIBE = (_cb: () => void) => () => {};
 const PROACTIVE_FALSE = () => false;
@@ -375,7 +372,6 @@ const usePipeMuteSync = feature('UDS_INBOX') ? require('../hooks/usePipeMuteSync
 const usePipeRouter = feature('UDS_INBOX')
   ? require('../hooks/usePipeRouter.js').usePipeRouter
   : () => ({ routeToSelectedPipes: () => false });
-/* eslint-enable @typescript-eslint/no-require-imports */
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js';
 import { useTaskListWatcher } from '../hooks/useTaskListWatcher.js';
 import type { SandboxAskCallback, NetworkHostPattern } from '../utils/sandbox/sandbox-adapter.js';
@@ -408,7 +404,6 @@ import { IdeOnboardingDialog } from '../components/IdeOnboardingDialog.js';
 import { EffortCallout, shouldShowEffortCallout } from '../components/EffortCallout.js';
 import type { EffortValue } from '../utils/effort.js';
 import { RemoteCallout } from '../components/RemoteCallout.js';
-/* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const AntModelSwitchCallout =
   process.env.USER_TYPE === 'ant' ? require('../components/AntModelSwitchCallout.js').AntModelSwitchCallout : null;
 const shouldShowAntModelSwitch =
@@ -417,7 +412,6 @@ const shouldShowAntModelSwitch =
     : (): boolean => false;
 const UndercoverAutoCallout =
   process.env.USER_TYPE === 'ant' ? require('../components/UndercoverAutoCallout.js').UndercoverAutoCallout : null;
-/* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import { activityManager } from '../utils/activityManager.js';
 import { createAbortController } from '../utils/abortController.js';
 import { MCPConnectionManager } from 'src/services/mcp/MCPConnectionManager.js';
@@ -659,16 +653,24 @@ function TranscriptSearchBar({
       return;
     }
     setIndexStatus('building');
-    warm().then(ms => {
-      if (!alive) return;
-      // <20ms = imperceptible. No point showing "indexed in 3ms".
-      if (ms < 20) {
-        setIndexStatus(null);
-      } else {
-        setIndexStatus({ ms });
-        hideTimeout = setTimeout(() => alive && setIndexStatus(null), 2000);
-      }
-    });
+    warm()
+      .then(ms => {
+        if (!alive) return;
+        // <20ms = imperceptible. No point showing "indexed in 3ms".
+        if (ms < 20) {
+          setIndexStatus(null);
+        } else {
+          setIndexStatus({ ms });
+          hideTimeout = setTimeout(() => alive && setIndexStatus(null), 2000);
+        }
+      })
+      .catch(() => {
+        // A resumed transcript can hold tool results whose stored shape predates
+        // the current extractor (e.g. Glob/Grep without `filenames`), which throws
+        // inside warmSearchIndex. Degrade to no indicator, matching the !warm
+        // branch above — an unhandled rejection here would exit the CLI.
+        if (alive) setIndexStatus(null);
+      });
     return () => {
       alive = false;
       if (hideTimeout) clearTimeout(hideTimeout);
@@ -1001,7 +1003,6 @@ export function REPL({
   const editorRenderingRef = useRef(false);
   const { addNotification, removeNotification } = useNotifications();
 
-  // eslint-disable-next-line prefer-const
   let trySuggestBgPRIntercept = SUGGEST_BG_PR_NOOP;
 
   const mcpClients = useMergedClients(initialMcpClients, mcp.clients);
@@ -1295,7 +1296,6 @@ export function REPL({
         }
       });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const [showUndercoverCallout, setShowUndercoverCallout] = useState(false);
@@ -1311,7 +1311,6 @@ export function REPL({
         }
       })();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const [toolJSX, setToolJSXInternal] = useState<{
@@ -1918,6 +1917,15 @@ export function REPL({
     // turn's commands — clear after each turn to avoid accumulating
     // Promise chains for unconsumed checks (denied/aborted paths).
     clearSpeculativeChecks();
+    // Per-turn upper bound on in-progress tool bookkeeping. The orchestrator
+    // clears each id as its tool settles, but on interrupt that clearing runs
+    // from an abandoned generator's `finally`, which resumes only once its
+    // in-flight await settles — so an id can outlive the turn with no bound on
+    // how long. A leftover id keeps hasActiveTools true forever, which
+    // suppresses stall detection for the rest of the session (the spinner never
+    // goes red again). Every call site here is a turn boundary or a session
+    // switch, so nothing legitimately in progress is being dropped.
+    setInProgressToolUseIDs(prev => (prev.size > 0 ? new Set() : prev));
   }, [pickNewSpinnerTip]);
 
   // Session backgrounding — hook is below, after getToolUseContext
@@ -2130,18 +2138,14 @@ export function REPL({
 
         // Match coordinator/normal mode to the resumed session
         if (feature('COORDINATOR_MODE')) {
-          /* eslint-disable @typescript-eslint/no-require-imports */
           const coordinatorModule =
             require('../coordinator/coordinatorMode.js') as typeof import('../coordinator/coordinatorMode.js');
-          /* eslint-enable @typescript-eslint/no-require-imports */
           const warning = coordinatorModule.matchSessionMode(log.mode);
           if (warning) {
             // Re-derive agent definitions after mode switch so built-in agents
             // reflect the new coordinator/normal mode
-            /* eslint-disable @typescript-eslint/no-require-imports */
             const { getAgentDefinitionsWithOverrides, getActiveAgentsFromList } =
               require('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js') as typeof import('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js');
-            /* eslint-enable @typescript-eslint/no-require-imports */
             getAgentDefinitionsWithOverrides.cache.clear?.();
             const freshAgentDefs = await getAgentDefinitionsWithOverrides(getOriginalCwd());
 
@@ -2290,11 +2294,9 @@ export function REPL({
 
         // Persist the current mode so future resumes know what mode this session was in
         if (feature('COORDINATOR_MODE')) {
-          /* eslint-disable @typescript-eslint/no-require-imports */
           const { saveMode } = require('../utils/sessionStorage.js');
           const { isCoordinatorMode } =
             require('../coordinator/coordinatorMode.js') as typeof import('../coordinator/coordinatorMode.js');
-          /* eslint-enable @typescript-eslint/no-require-imports */
           saveMode(isCoordinatorMode() ? 'coordinator' : 'normal');
         }
 
@@ -2389,7 +2391,6 @@ export function REPL({
       });
     }
     // Only run on mount - initialMessages shouldn't change during component lifetime
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const { status: apiKeyStatus, reverify } = useApiKeyVerification();
@@ -4603,11 +4604,9 @@ export function REPL({
         // maps reference stale uuids. Simplest safe reset: drop
         // everything. The ctx-agent will re-stage on the next
         // threshold crossing.
-        /* eslint-disable @typescript-eslint/no-require-imports */
         (
           require('../services/contextCollapse/index.js') as typeof import('../services/contextCollapse/index.js')
         ).resetContextCollapse();
-        /* eslint-enable @typescript-eslint/no-require-imports */
       }
 
       // Restore state from the message we're rewinding to
@@ -5118,7 +5117,6 @@ export function REPL({
 
   if (process.env.USER_TYPE === 'ant') {
     // Tasks mode: watch for tasks and auto-process them
-    // eslint-disable-next-line react-hooks/rules-of-hooks
     useTaskListWatcher({
       taskListId,
       isLoading,
@@ -5128,7 +5126,6 @@ export function REPL({
 
   // Proactive mode: auto-tick when enabled (via /proactive command)
   // Moved out of USER_TYPE === 'ant' block so external users can use it.
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   useProactive?.({
     // Suppress ticks while an initial message is pending — the initial
     // message will be processed asynchronously and a premature tick would
@@ -5141,7 +5138,6 @@ export function REPL({
   });
 
   // Goal auto-continuation: enqueue a steering prompt when idle + active goal
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   useGoalContinuation?.({
     isLoading: isLoading || initialMessage !== null,
     wasAborted,

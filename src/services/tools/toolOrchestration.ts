@@ -1,6 +1,11 @@
 import type { ToolUseBlock } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
-import { findToolByName, type ToolUseContext, type Tools } from '../../Tool.js'
+import {
+  findToolByName,
+  markToolUseAsComplete,
+  type ToolUseContext,
+  type Tools,
+} from '../../Tool.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { all } from '../../utils/generators.js'
 import { type MessageUpdateLazy, runToolUse } from './toolExecution.js'
@@ -185,32 +190,29 @@ async function* runToolsConcurrently(
       toolUseContext.setInProgressToolUseIDs(prev =>
         new Set(prev).add(toolUse.id),
       )
-      yield* runToolUse(
-        toolUse,
-        assistantMessages.find(
-          _ =>
-            Array.isArray(_.message.content) &&
-            _.message.content.some(
-              _ => _.type === 'tool_use' && _.id === toolUse.id,
-            ),
-        )!,
-        canUseTool,
-        toolUseContext,
-        requestTools,
-      )
-      markToolUseAsComplete(toolUseContext, toolUse.id)
+      // `finally` rather than a trailing statement: on abandonment (REPL
+      // interrupt) `all()` calls `.return()` on this generator while it is
+      // suspended inside `runToolUse`, which resumes only `finally` blocks. A
+      // statement after `yield*` is skipped, which left the id in
+      // inProgressToolUseIDs for the rest of the session.
+      try {
+        yield* runToolUse(
+          toolUse,
+          assistantMessages.find(
+            _ =>
+              Array.isArray(_.message.content) &&
+              _.message.content.some(
+                _ => _.type === 'tool_use' && _.id === toolUse.id,
+              ),
+          )!,
+          canUseTool,
+          toolUseContext,
+          requestTools,
+        )
+      } finally {
+        markToolUseAsComplete(toolUseContext, toolUse.id)
+      }
     }),
     getMaxToolUseConcurrency(),
   )
-}
-
-function markToolUseAsComplete(
-  toolUseContext: ToolUseContext,
-  toolUseID: string,
-) {
-  toolUseContext.setInProgressToolUseIDs(prev => {
-    const next = new Set(prev)
-    next.delete(toolUseID)
-    return next
-  })
 }

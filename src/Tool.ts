@@ -369,6 +369,29 @@ export function findToolByName(tools: Tools, name: string): Tool | undefined {
   return tools.find(t => toolMatchesName(t, name))
 }
 
+/**
+ * Drops a tool_use id from the in-progress set that drives the spinner.
+ *
+ * Lives next to ToolUseContext because three call paths retire an id on
+ * different triggers — a tool yielding its result, an executor being discarded
+ * on streaming fallback, and an abandoned generator unwinding on interrupt —
+ * and each previously hand-rolled the same Set copy. A leftover id keeps
+ * `hasActiveTools` true, which suppresses stall detection for the rest of the
+ * session, so the turn-boundary reset in REPL.tsx is the backstop for the
+ * interrupt path, whose timing this cannot bound.
+ */
+export function markToolUseAsComplete(
+  toolUseContext: Pick<ToolUseContext, 'setInProgressToolUseIDs'>,
+  toolUseID: string,
+): void {
+  toolUseContext.setInProgressToolUseIDs(prev => {
+    if (!prev.has(toolUseID)) return prev
+    const next = new Set(prev)
+    next.delete(toolUseID)
+    return next
+  })
+}
+
 export type Tool<
   Input extends AnyObject = AnyObject,
   Output = unknown,
@@ -787,7 +810,6 @@ type ToolDefaults = typeof TOOL_DEFAULTS
 // constraint provides contextual typing for method parameters; `any` in
 // constraint position is structural and never leaks into the return type.
 // BuiltTool<D> mirrors runtime `{...TOOL_DEFAULTS, ...def}` at the type level.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyToolDef = ToolDef<any, any, any>
 
 export function buildTool<D extends AnyToolDef>(def: D): BuiltTool<D> {

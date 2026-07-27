@@ -5,7 +5,12 @@ import {
   withMemoryCorrectionHint,
 } from 'src/utils/messages.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
-import { findToolByName, type Tools, type ToolUseContext } from '../../Tool.js'
+import {
+  findToolByName,
+  markToolUseAsComplete,
+  type Tools,
+  type ToolUseContext,
+} from '../../Tool.js'
 import { BASH_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/BashTool/toolName.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { createChildAbortController } from '../../utils/abortController.js'
@@ -14,6 +19,7 @@ import { escapeXml } from '../../utils/xml.js'
 import { runToolUse } from './toolExecution.js'
 import { createToolBatchSpan, endToolBatchSpan } from '../langfuse/index.js'
 import type { LangfuseSpan } from '../langfuse/index.js'
+import { logForDebugging } from '../../utils/debug.js'
 
 type MessageUpdate = {
   message?: Message
@@ -77,6 +83,15 @@ export class StreamingToolExecutor {
     // Abort running tool subprocesses (Bash spawns, etc.) so they don't
     // continue producing results after the executor is replaced.
     this.siblingAbortController.abort('streaming_fallback')
+    // Settle the in-progress bookkeeping before dropping the tools. Anything not
+    // yet yielded was registered by executeTool and would otherwise stay in
+    // inProgressToolUseIDs for the session: getCompletedResults early-returns
+    // once `discarded` is set, so the resolving promises can no longer clear it.
+    for (const tool of this.tools) {
+      if (tool.status !== 'yielded') {
+        markToolUseAsComplete(this.toolUseContext, tool.id)
+      }
+    }
     // Release references to allow GC of tool blocks, messages, and promises.
     this.tools.length = 0
     this.progressAvailableResolve = undefined
@@ -457,7 +472,12 @@ export class StreamingToolExecutor {
     }
 
     // Never reject — callers race these promises.
-    const promise = collectResults().catch(() => {})
+    const promise = collectResults().catch(error => {
+      logForDebugging(
+        `Tool execution failed: ${tool.block.name} - ${errorMessage(error)}`,
+        { level: 'error' },
+      )
+    })
     tool.promise = promise
 
     // Process more queue when done
@@ -520,15 +540,25 @@ export class StreamingToolExecutor {
     while (this.hasUnfinishedTools()) {
       await this.processQueue()
 
+      let yieldedAny = false
       for (const result of this.getCompletedResults()) {
+        yieldedAny = true
         yield result
       }
 
       // If we still have executing tools but nothing completed, wait for any to complete
-      // OR for progress to become available
+      // OR for progress to become available.
+      //
+      // Gate on what was actually yielded rather than on whether any tool is
+      // marked completed. Such a scan covers every tool, while
+      // `getCompletedResults` stops at the first executing non-concurrency-safe
+      // tool — so a completed tool queued behind one counts toward the scan while
+      // being unreachable. That skipped this wait and turned the loop into an
+      // unbroken microtask chain, starving the macrotask that would have
+      // completed the executing tool.
       if (
         this.hasExecutingTools() &&
-        !this.hasCompletedResults() &&
+        !yieldedAny &&
         !this.hasPendingProgress()
       ) {
         const executingPromises = this.tools
@@ -559,13 +589,6 @@ export class StreamingToolExecutor {
   }
 
   /**
-   * Check if there are any completed results ready to yield
-   */
-  private hasCompletedResults(): boolean {
-    return this.tools.some(t => t.status === 'completed')
-  }
-
-  /**
    * Check if there are any tools still executing
    */
   private hasExecutingTools(): boolean {
@@ -585,15 +608,4 @@ export class StreamingToolExecutor {
   getUpdatedContext(): ToolUseContext {
     return this.toolUseContext
   }
-}
-
-function markToolUseAsComplete(
-  toolUseContext: ToolUseContext,
-  toolUseID: string,
-) {
-  toolUseContext.setInProgressToolUseIDs(prev => {
-    const next = new Set(prev)
-    next.delete(toolUseID)
-    return next
-  })
 }
