@@ -121,6 +121,7 @@ export function ResumeConversation({
   } | null>(null);
   const [crossProjectCommand, setCrossProjectCommand] = React.useState<string | null>(null);
   const sessionLogResultRef = React.useRef<SessionLogResult | null>(null);
+  const pageLoadRef = React.useRef<SessionLogResult | null>(null);
   // Mirror of logs.length so loadMoreLogs can compute value indices outside
   // the setLogs updater (keeping it pure per React's contract).
   const logCountRef = React.useRef(0);
@@ -144,6 +145,7 @@ export function ResumeConversation({
   const isResumeWithRenameEnabled = isCustomTitleEnabled();
 
   React.useEffect(() => {
+    sessionLogResultRef.current = null;
     loadSameRepoMessageLogsProgressive(worktreePaths)
       .then(result => {
         sessionLogResultRef.current = result;
@@ -158,28 +160,47 @@ export function ResumeConversation({
   }, [worktreePaths]);
 
   const loadMoreLogs = React.useCallback((count: number) => {
-    const ref = sessionLogResultRef.current;
-    if (!ref || ref.nextIndex >= ref.allStatLogs.length) return;
+    const owner = sessionLogResultRef.current;
+    if (!owner || owner.nextIndex >= owner.allStatLogs.length || pageLoadRef.current === owner) return;
 
-    void enrichLogs(ref.allStatLogs, ref.nextIndex, count).then(result => {
-      ref.nextIndex = result.nextIndex;
-      if (result.logs.length > 0) {
-        // enrichLogs returns fresh unshared objects — safe to mutate in place.
-        // Offset comes from logCountRef so the setLogs updater stays pure.
-        const offset = logCountRef.current;
-        result.logs.forEach((log, i) => {
-          log.value = offset + i;
-        });
-        setLogs(prev => prev.concat(result.logs));
-        logCountRef.current += result.logs.length;
-      } else if (ref.nextIndex < ref.allStatLogs.length) {
-        loadMoreLogs(count);
+    pageLoadRef.current = owner;
+    void (async () => {
+      try {
+        while (sessionLogResultRef.current === owner && owner.nextIndex < owner.allStatLogs.length) {
+          const result = await enrichLogs(owner.allStatLogs, owner.nextIndex, count);
+          if (sessionLogResultRef.current !== owner) return;
+
+          owner.nextIndex = result.nextIndex;
+          if (result.logs.length === 0) continue;
+
+          // enrichLogs returns fresh unshared objects — safe to mutate in place.
+          // Offset comes from logCountRef so the setLogs updater stays pure.
+          const offset = logCountRef.current;
+          result.logs.forEach((log, i) => {
+            if (sessionLogResultRef.current !== owner) return;
+            log.value = offset + i;
+          });
+          if (sessionLogResultRef.current !== owner) return;
+
+          setLogs(prev => prev.concat(result.logs));
+          logCountRef.current += result.logs.length;
+          return;
+        }
+      } catch (error) {
+        if (sessionLogResultRef.current === owner) {
+          logError(error);
+        }
+      } finally {
+        if (pageLoadRef.current === owner) {
+          pageLoadRef.current = null;
+        }
       }
-    });
+    })();
   }, []);
 
   const loadLogs = React.useCallback(
     (allProjects: boolean) => {
+      sessionLogResultRef.current = null;
       setLoading(true);
       const promise = allProjects
         ? loadAllProjectsMessageLogsProgressive()
@@ -207,7 +228,6 @@ export function ResumeConversation({
   }, [showAllProjects, loadLogs]);
 
   function onCancel() {
-    // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(1);
   }
 
@@ -233,16 +253,12 @@ export function ResumeConversation({
       }
 
       if (feature('COORDINATOR_MODE')) {
-        /* eslint-disable @typescript-eslint/no-require-imports */
         const coordinatorModule =
           require('../coordinator/coordinatorMode.js') as typeof import('../coordinator/coordinatorMode.js');
-        /* eslint-enable @typescript-eslint/no-require-imports */
         const warning = coordinatorModule.matchSessionMode(result.mode);
         if (warning) {
-          /* eslint-disable @typescript-eslint/no-require-imports */
           const { getAgentDefinitionsWithOverrides, getActiveAgentsFromList } =
             require('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js') as typeof import('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js');
-          /* eslint-enable @typescript-eslint/no-require-imports */
           getAgentDefinitionsWithOverrides.cache.clear?.();
           const freshAgentDefs = await getAgentDefinitionsWithOverrides(getOriginalCwd());
           setAppState(prev => ({
@@ -274,11 +290,9 @@ export function ResumeConversation({
       setAppState(prev => ({ ...prev, agent: resolvedAgentDef?.agentType }));
 
       if (feature('COORDINATOR_MODE')) {
-        /* eslint-disable @typescript-eslint/no-require-imports */
         const { saveMode } = require('../utils/sessionStorage.js');
         const { isCoordinatorMode } =
           require('../coordinator/coordinatorMode.js') as typeof import('../coordinator/coordinatorMode.js');
-        /* eslint-enable @typescript-eslint/no-require-imports */
         saveMode(isCoordinatorMode() ? 'coordinator' : 'normal');
       }
 
@@ -306,11 +320,9 @@ export function ResumeConversation({
       }
 
       if (feature('CONTEXT_COLLAPSE')) {
-        /* eslint-disable @typescript-eslint/no-require-imports */
         (
           require('../services/contextCollapse/persist.js') as typeof import('../services/contextCollapse/persist.js')
         ).restoreFromEntries(result.contextCollapseCommits ?? [], result.contextCollapseSnapshot);
-        /* eslint-enable @typescript-eslint/no-require-imports */
       }
 
       logEvent('tengu_session_resumed', {
@@ -410,7 +422,6 @@ function NoConversationsMessage(): React.ReactNode {
   useKeybinding(
     'app:interrupt',
     () => {
-      // eslint-disable-next-line custom-rules/no-process-exit
       process.exit(1);
     },
     { context: 'Global' },
@@ -427,7 +438,6 @@ function NoConversationsMessage(): React.ReactNode {
 function CrossProjectMessage({ command }: { command: string }): React.ReactNode {
   React.useEffect(() => {
     const timeout = setTimeout(() => {
-      // eslint-disable-next-line custom-rules/no-process-exit
       process.exit(0);
     }, 100);
     return () => clearTimeout(timeout);

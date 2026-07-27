@@ -124,6 +124,9 @@ export function ConsoleOAuthFlow({
   // copy the code from the browser and paste it in the terminal
   const [showPastePrompt, setShowPastePrompt] = useState(false);
   const [urlCopied, setUrlCopied] = useState(false);
+  const pastePromptTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const urlCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const activeOAuthUrlRef = useRef<string | undefined>(undefined);
 
   const textInputColumns = useTerminalSize().columns - PASTE_HERE_MSG.length - 1;
 
@@ -189,10 +192,15 @@ export function ConsoleOAuthFlow({
 
   useEffect(() => {
     if (pastedCode === 'c' && oauthStatus.state === 'waiting_for_login' && showPastePrompt && !urlCopied) {
-      void setClipboard(oauthStatus.url).then(raw => {
+      const url = oauthStatus.url;
+      void setClipboard(url).then(raw => {
+        if (activeOAuthUrlRef.current !== url) return;
         if (raw) process.stdout.write(raw);
         setUrlCopied(true);
-        setTimeout(setUrlCopied, 2000, false);
+        clearTimeout(urlCopiedTimerRef.current);
+        urlCopiedTimerRef.current = setTimeout(() => {
+          if (activeOAuthUrlRef.current === url) setUrlCopied(false);
+        }, 2000);
       });
       setPastedCode('');
     }
@@ -235,8 +243,15 @@ export function ConsoleOAuthFlow({
       const result = await oauthService
         .startOAuthFlow(
           async url => {
+            clearTimeout(pastePromptTimerRef.current);
+            clearTimeout(urlCopiedTimerRef.current);
+            activeOAuthUrlRef.current = url;
+            setShowPastePrompt(false);
+            setUrlCopied(false);
             setOAuthStatus({ state: 'waiting_for_login', url });
-            setTimeout(setShowPastePrompt, 3000, true);
+            pastePromptTimerRef.current = setTimeout(() => {
+              if (activeOAuthUrlRef.current === url) setShowPastePrompt(true);
+            }, 3000);
           },
           {
             loginWithClaudeAi,
@@ -339,9 +354,11 @@ export function ConsoleOAuthFlow({
     }
   }, [mode, oauthStatus, loginWithClaudeAi, onDone]);
 
-  // Cleanup OAuth service when component unmounts
+  // Cleanup OAuth service and OAuth URL timers when component unmounts
   useEffect(() => {
     return () => {
+      clearTimeout(pastePromptTimerRef.current);
+      clearTimeout(urlCopiedTimerRef.current);
       oauthService.cleanup();
     };
   }, [oauthService]);
@@ -467,7 +484,7 @@ function OAuthStatusMessage({
                 {
                   label: (
                     <Text>
-                      China LLM Providers · <Text dimColor>DeepSeek, Zhipu GLM, Qwen, MiMo</Text>
+                      China LLM Providers · <Text dimColor>{CHINA_LLM_PROVIDERS.map(p => p.label).join(', ')}</Text>
                       {'\n'}
                     </Text>
                   ),
@@ -1455,6 +1472,9 @@ function OAuthStatusMessage({
         const baseUrl = resolveChinaProviderBaseURL(provider.id, accessMode);
         const env: Record<string, string | undefined> = {
           OPENAI_AUTH_MODE: undefined,
+          // OPENAI_MODEL outranks every OPENAI_DEFAULT_*_MODEL, so a leftover
+          // value would silently send an old model id to the new base URL.
+          OPENAI_MODEL: undefined,
           OPENAI_BASE_URL: baseUrl,
           OPENAI_API_KEY: chinaKeyValue.trim(),
           OPENAI_DEFAULT_SONNET_MODEL: modelId,

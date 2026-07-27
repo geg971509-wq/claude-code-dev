@@ -616,5 +616,5 @@ export function usePipeIpc({
       }
       pp.setPipeRelay(null)
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [])
 }

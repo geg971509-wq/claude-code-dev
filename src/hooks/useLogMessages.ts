@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 import { useAppState } from '../state/AppState.js'
 import type { Message } from '../types/message.js'
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js'
+import { logError } from '../utils/log.js'
 import {
   cleanMessagesForLogging,
   isChainParticipant,
@@ -76,17 +77,24 @@ export function useLogMessages(messages: Message[], ignore: boolean = false) {
         : {},
       parentHint,
       messages,
-    ).then(lastRecordedUuid => {
-      // For compaction/full array case (!isIncremental): use the async return
-      // value. After compaction, messagesToKeep in the array are skipped
-      // (already in transcript), so the sync loop would find a wrong UUID.
-      // Skip if a newer effect already ran (stale closure would overwrite the
-      // fresher sync update from the subsequent incremental render).
-      if (seq !== callSeqRef.current) return
-      if (lastRecordedUuid && !isIncremental) {
-        lastParentUuidRef.current = lastRecordedUuid
-      }
-    })
+    )
+      .then(lastRecordedUuid => {
+        // For compaction/full array case (!isIncremental): use the async return
+        // value. After compaction, messagesToKeep in the array are skipped
+        // (already in transcript), so the sync loop would find a wrong UUID.
+        // Skip if a newer effect already ran (stale closure would overwrite the
+        // fresher sync update from the subsequent incremental render).
+        if (seq !== callSeqRef.current) return
+        if (lastRecordedUuid && !isIncremental) {
+          lastParentUuidRef.current = lastRecordedUuid
+        }
+      })
+      .catch(error => {
+        // Runs ~20x per turn. appendEntryToFile's fallback write is unguarded, so a
+        // full disk or read-only ~/.claude rejects here — and an unhandled rejection
+        // exits the CLI mid-turn instead of just losing the transcript append.
+        logError(error)
+      })
 
     // Sync-walk safe for: incremental (pure new-tail slice), first-render
     // (no messagesToKeep interleaving), and same-head shrink. Shrink is the
