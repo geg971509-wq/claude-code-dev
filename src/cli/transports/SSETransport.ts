@@ -21,6 +21,8 @@ const RECONNECT_MAX_DELAY_MS = 30_000
 const RECONNECT_GIVE_UP_MS = 600_000
 /** Server sends keepalives every 15s; treat connection as dead after 45s of silence. */
 const LIVENESS_TIMEOUT_MS = 45_000
+/** Abort the fetch if the server accepts the TCP connection but stalls before sending response headers. */
+const CONNECT_TIMEOUT_MS = 30_000
 
 /**
  * HTTP status codes that indicate a permanent server-side rejection.
@@ -204,9 +206,15 @@ export class SSETransport implements Transport {
     logForDiagnosticsNoPII('info', 'cli_sse_connect_opening')
 
     this.abortController = new AbortController()
+    let connectTimedOut = false
+    const connectTimeoutId = setTimeout(() => {
+      connectTimedOut = true
+      logForDebugging('SSETransport: connect timeout', { level: 'error' })
+      logForDiagnosticsNoPII('error', 'cli_sse_connect_timeout')
+      this.abortController?.abort()
+    }, CONNECT_TIMEOUT_MS)
 
     try {
-      // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
       const response = await fetch(sseUrl.href, {
         headers,
         signal: this.abortController.signal,
@@ -223,22 +231,26 @@ export class SSETransport implements Transport {
         })
 
         if (isPermanent) {
+          clearTimeout(connectTimeoutId)
           this.state = 'closed'
           this.onCloseCallback?.(response.status)
           return
         }
 
+        clearTimeout(connectTimeoutId)
         this.handleConnectionError()
         return
       }
 
       if (!response.body) {
         logForDebugging('SSETransport: No response body')
+        clearTimeout(connectTimeoutId)
         this.handleConnectionError()
         return
       }
 
       // Successfully connected
+      clearTimeout(connectTimeoutId)
       const connectDuration = Date.now() - connectStartTime
       logForDebugging('SSETransport: Connected')
       logForDiagnosticsNoPII('info', 'cli_sse_connect_connected', {
@@ -253,16 +265,19 @@ export class SSETransport implements Transport {
       // Read the SSE stream
       await this.readStream(response.body)
     } catch (error) {
-      if (this.abortController?.signal.aborted) {
+      clearTimeout(connectTimeoutId)
+      if (!connectTimedOut && this.abortController?.signal.aborted) {
         // Intentional close
         return
       }
 
-      logForDebugging(
-        `SSETransport: Connection error: ${errorMessage(error)}`,
-        { level: 'error' },
-      )
-      logForDiagnosticsNoPII('error', 'cli_sse_connect_error')
+      if (!connectTimedOut) {
+        logForDebugging(
+          `SSETransport: Connection error: ${errorMessage(error)}`,
+          { level: 'error' },
+        )
+        logForDiagnosticsNoPII('error', 'cli_sse_connect_error')
+      }
       this.handleConnectionError()
     }
   }
@@ -270,7 +285,6 @@ export class SSETransport implements Transport {
   /**
    * Read and process the SSE stream body.
    */
-  // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
   private async readStream(body: ReadableStream<Uint8Array>): Promise<void> {
     const reader = body.getReader()
     const decoder = new TextDecoder()

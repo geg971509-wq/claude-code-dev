@@ -751,14 +751,25 @@ function parseProgram(P: ParseState): TsNode {
   return mk(P, 'program', progStart, progEnd, children)
 }
 
-/** Packed as (b << 16) | i — avoids heap alloc on every backtrack. */
+/**
+ * Both offsets packed into one number — avoids heap alloc on every backtrack.
+ *
+ * The field width is 2**32, not 2**16, because these are absolute offsets into
+ * the whole command: a 16-bit field silently wraps past 65535 chars, and
+ * restoreLex then seeks *backward* to a bogus position, so the statement loop in
+ * parseProgram re-parses the same text until the deadline aborts it — every
+ * command longer than 65535 chars returned null. A double holds integers
+ * exactly to 2**53, so 2**32 per field is safe arithmetic (hence * and %, not
+ * the bitwise ops, which would coerce back to 32 bits total).
+ */
 type LexSave = number
+const LEX_SAVE_FIELD = 0x1_0000_0000
 function saveLex(L: Lexer): LexSave {
-  return L.b * 0x10000 + L.i
+  return L.b * LEX_SAVE_FIELD + L.i
 }
 function restoreLex(L: Lexer, s: LexSave): void {
-  L.i = s & 0xffff
-  L.b = s >>> 16
+  L.i = s % LEX_SAVE_FIELD
+  L.b = Math.floor(s / LEX_SAVE_FIELD)
 }
 
 /**

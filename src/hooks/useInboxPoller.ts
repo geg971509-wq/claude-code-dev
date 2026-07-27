@@ -136,9 +136,9 @@ export function useInboxPoller({
   const inboxMessageCount = useAppState(s => s.inbox.messages.length)
   const terminal = useTerminalNotification()
 
-  const poll = useCallback(async () => {
-    if (!enabled) return
-
+  // Split from `poll` only so the error boundary there can wrap this whole body
+  // without adding an indent level to it.
+  const pollOnce = useCallback(async () => {
     // Use ref to avoid dependency on appState object (prevents infinite loop)
     const currentAppState = store.getState()
     const agentName = getAgentNameToPoll(currentAppState)
@@ -625,7 +625,7 @@ export function useInboxPoller({
           permissionMode: modeToInherit,
         }
 
-        void writeToMailbox(
+        writeToMailbox(
           m.from,
           {
             from: TEAM_LEAD_NAME,
@@ -633,7 +633,7 @@ export function useInboxPoller({
             timestamp: new Date().toISOString(),
           },
           teamName,
-        )
+        ).catch(() => undefined)
 
         // Update in-process teammate task state if applicable
         const taskId = findInProcessTeammateTaskId(m.from, currentAppState)
@@ -863,7 +863,6 @@ export function useInboxPoller({
     // will be re-read on the next poll cycle instead of being silently dropped.
     markRead()
   }, [
-    enabled,
     isLoading,
     focusedInputDialog,
     onSubmitTeammateMessage,
@@ -871,6 +870,21 @@ export function useInboxPoller({
     terminal,
     store,
   ])
+
+  const poll = useCallback(async () => {
+    if (!enabled) return
+
+    try {
+      await pollOnce()
+    } catch (error) {
+      // Runs on a 1s interval, and readMailbox re-throws everything but ENOENT
+      // (oversized mailbox, truncated JSON, EACCES). An unhandled rejection here
+      // exits the CLI via the global unhandledRejection handler, and the interval
+      // would re-trigger it immediately on restart. Unread messages stay unread
+      // and are retried on the next tick.
+      logForDebugging(`[InboxPoller] poll failed: ${error}`, { level: 'error' })
+    }
+  }, [enabled, pollOnce])
 
   // When session becomes idle, deliver any pending messages and clean up processed ones
   useEffect(() => {

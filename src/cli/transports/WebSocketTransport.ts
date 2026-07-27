@@ -28,6 +28,8 @@ const DEFAULT_MAX_RECONNECT_DELAY = 30000
 const DEFAULT_RECONNECT_GIVE_UP_MS = 600_000
 const DEFAULT_PING_INTERVAL = 10000
 const DEFAULT_KEEPALIVE_INTERVAL = 120_000 // 2 minutes — must be under Bun's 255s idleTimeout
+/** Abort handshake if the server accepts TCP but never sends the HTTP 101 upgrade. */
+const CONNECT_TIMEOUT_MS = 30_000
 
 /**
  * Threshold for detecting system sleep/wake. If the gap between consecutive
@@ -132,6 +134,7 @@ export class WebSocketTransport implements Transport {
   // Captured at connect() time for handleOpenEvent timing.
   private connectStartTime = 0
   private connectAttempt = 0
+  private connectHandshakeTimer: ReturnType<typeof setTimeout> | null = null
 
   private refreshHeaders?: () => Record<string, string>
 
@@ -187,7 +190,6 @@ export class WebSocketTransport implements Transport {
         // close() may race after state='reconnecting'
         if (!this.ownsConnectAttempt(attempt)) return
         // Bun's WebSocket supports headers/proxy options but the DOM typings don't
-        // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
         const ws = new globalThis.WebSocket(this.url.href, {
           headers,
           proxy: getWebSocketProxyUrl(this.url.href),
@@ -232,6 +234,18 @@ export class WebSocketTransport implements Transport {
             // The new socket already owns the transport.
           }
         }
+      }
+      if (this.ws && this.ownsConnectAttempt(attempt)) {
+        const handshakeWs = this.ws
+        this.clearHandshakeTimeout()
+        this.connectHandshakeTimer = setTimeout(() => {
+          if (this.ws !== handshakeWs || this.state !== 'reconnecting') return
+          logForDebugging('WebSocketTransport: handshake timeout', {
+            level: 'error',
+          })
+          logForDiagnosticsNoPII('error', 'cli_websocket_handshake_timeout')
+          this.handleConnectionError()
+        }, CONNECT_TIMEOUT_MS)
       }
     } catch (error) {
       if (setupWs && this.ws === setupWs) this.ws = null
@@ -294,7 +308,6 @@ export class WebSocketTransport implements Transport {
     ws.addEventListener('open', listeners.open)
     ws.addEventListener('message', listeners.message)
     ws.addEventListener('error', listeners.error)
-    // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
     ws.addEventListener('close', listeners.close)
     // 'pong' is Bun-specific — not in DOM typings.
     ws.addEventListener('pong', listeners.pong)
@@ -355,6 +368,7 @@ export class WebSocketTransport implements Transport {
   }
 
   private handleOpenEvent(): void {
+    this.clearHandshakeTimeout()
     const connectDuration = Date.now() - this.connectStartTime
     logForDebugging('WebSocketTransport: Connected')
     logForDiagnosticsNoPII('info', 'cli_websocket_connect_connected', {
@@ -428,7 +442,6 @@ export class WebSocketTransport implements Transport {
       nws.removeEventListener('open', listeners.open)
       nws.removeEventListener('message', listeners.message)
       nws.removeEventListener('error', listeners.error)
-      // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
       nws.removeEventListener('close', listeners.close)
       // 'pong' is Bun-specific — not in DOM typings
       nws.removeEventListener('pong' as 'message', listeners.pong)
@@ -783,6 +796,13 @@ export class WebSocketTransport implements Transport {
       return ` subtype=${subtype} request_id=${request_id}`
     }
     return ''
+  }
+
+  private clearHandshakeTimeout(): void {
+    if (this.connectHandshakeTimer !== null) {
+      clearTimeout(this.connectHandshakeTimer)
+      this.connectHandshakeTimer = null
+    }
   }
 
   private startPingInterval(): void {

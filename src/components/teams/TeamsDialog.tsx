@@ -70,7 +70,6 @@ export function TeamsDialog({ initialTeams, onDone }: Props): React.ReactNode {
 
   const teammateStatuses = useMemo(() => {
     return getTeammateStatuses(dialogLevel.teamName);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dialogLevel.teamName, refreshKey]);
 
   // Periodically refresh to pick up mode changes from teammates
@@ -575,7 +574,7 @@ function sendModeChangeToTeammate(teammateName: string, teamName: string, target
     mode: targetMode,
     from: 'team-lead',
   });
-  void writeToMailbox(
+  writeToMailbox(
     teammateName,
     {
       from: 'team-lead',
@@ -583,7 +582,7 @@ function sendModeChangeToTeammate(teammateName: string, teamName: string, target
       timestamp: new Date().toISOString(),
     },
     teamName,
-  );
+  ).catch(() => undefined);
   logForDebugging(`[TeamsDialog] Sent mode change to ${teammateName}: ${targetMode}`);
 }
 
@@ -635,7 +634,7 @@ function cycleAllTeammateModes(teammates: TeammateStatus[], teamName: string, is
       mode: targetMode,
       from: 'team-lead',
     });
-    void writeToMailbox(
+    writeToMailbox(
       teammate.name,
       {
         from: 'team-lead',
@@ -643,7 +642,7 @@ function cycleAllTeammateModes(teammates: TeammateStatus[], teamName: string, is
         timestamp: new Date().toISOString(),
       },
       teamName,
-    );
+    ).catch(() => undefined);
   }
   logForDebugging(`[TeamsDialog] Sent mode change to all ${teammates.length} teammates: ${targetMode}`);
 }

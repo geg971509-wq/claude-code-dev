@@ -10,6 +10,7 @@
  */
 
 import type { CheckOptions, LockOptions, UnlockOptions } from 'proper-lockfile'
+import { logError } from './log.js'
 
 type Lockfile = typeof import('proper-lockfile')
 
@@ -17,21 +18,26 @@ let _lockfile: Lockfile | undefined
 
 function getLockfile(): Lockfile {
   if (!_lockfile) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     _lockfile = require('proper-lockfile') as Lockfile
   }
   return _lockfile
+}
+
+// proper-lockfile's default onCompromised throws inside an fs.stat timer
+// callback — uncatchable in Bun, causing process.exit(1). Log instead.
+function safeOptions(opts?: LockOptions): LockOptions {
+  return { onCompromised: logError, ...opts }
 }
 
 export function lock(
   file: string,
   options?: LockOptions,
 ): Promise<() => Promise<void>> {
-  return getLockfile().lock(file, options)
+  return getLockfile().lock(file, safeOptions(options))
 }
 
 export function lockSync(file: string, options?: LockOptions): () => void {
-  return getLockfile().lockSync(file, options)
+  return getLockfile().lockSync(file, safeOptions(options))
 }
 
 export function unlock(file: string, options?: UnlockOptions): Promise<void> {
