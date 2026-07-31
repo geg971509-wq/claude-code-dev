@@ -4,6 +4,7 @@
 
 import { type ExecaError, execa } from 'execa'
 import { getCwd } from '../utils/cwd.js'
+import { getFauxExecScriptPath } from './envUtils.js'
 import { logError } from './log.js'
 
 export { execSyncWithDefaults_DEPRECATED } from './execFileNoThrowPortable.js'
@@ -105,6 +106,27 @@ export function execFileNoThrowWithCwd(
     maxBuffer: 1_000_000,
   },
 ): Promise<{ stdout: string; stderr: string; code: number; error?: string }> {
+  // Scripted-subprocess seam, checked before spawning anything. Mirrors the
+  // faux provider's placement inside queryModel: one env check at the single
+  // point both exported functions funnel through. require() is lazy so the
+  // script loader stays out of the import graph of all 65 consumers.
+  const fauxExecScript = getFauxExecScriptPath()
+  if (fauxExecScript) {
+    try {
+      const { resolveFauxExec } =
+        require('./fauxExec.js') as typeof import('./fauxExec.js')
+      return Promise.resolve(resolveFauxExec(fauxExecScript, file, args))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return Promise.resolve({
+        stdout: '',
+        stderr: '',
+        code: 1,
+        error: `[faux exec] ${message}`,
+      })
+    }
+  }
+
   return new Promise(resolve => {
     // Use execa for cross-platform .bat/.cmd compatibility on Windows
     execa(file, args, {

@@ -31,6 +31,7 @@ import {
 import { getModelBetas, modelSupportsStructuredOutputs } from './betas.js'
 import { logForDebugging } from './debug.js'
 import { errorMessage } from './errors.js'
+import { isFauxProviderEnabled } from './envUtils.js'
 import { getAPIProvider } from './model/providers.js'
 import { normalizeModelStringForAPI } from './model/model.js'
 import { getGrokClient } from '../services/api/grok/client.js'
@@ -196,6 +197,11 @@ function messageParamsToInternalMessages(
  * await sideQuery({ querySource: 'model_validation', model, max_tokens: 1, messages: [{ role: 'user', content: 'Hi' }] })
  */
 export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
+  if (isFauxProviderEnabled()) {
+    throw new Error(
+      '[sideQuery] faux provider is active — side queries bypass the real API gate and are suppressed in eval/faux mode',
+    )
+  }
   const {
     model,
     system,
@@ -533,6 +539,11 @@ async function collectAnthropicStreamToBetaMessage(
           try {
             parsed = JSON.parse(rawInput)
           } catch {
+            // Malformed tool-call arguments from the provider — keep the `{}`
+            // fallback, but leave a trace so this isn't silently invisible.
+            logForDebugging(
+              'Failed to parse streamed tool-call arguments as JSON; falling back to {}',
+            )
             parsed = {}
           }
         } else if (rawInput && typeof rawInput === 'object') {
@@ -764,7 +775,13 @@ async function sideQueryViaOpenAICompatible(
         let input: unknown = {}
         try {
           input = JSON.parse(fn.arguments || '{}')
-        } catch {}
+        } catch {
+          // Malformed tool-call arguments from the provider — keep the `{}`
+          // fallback, but leave a trace so this isn't silently invisible.
+          logForDebugging(
+            `Failed to parse tool-call arguments for ${fn.name} as JSON; falling back to {}`,
+          )
+        }
         contentBlocks.push({
           type: 'tool_use',
           id: tc.id ?? `toolu_${Date.now()}`,

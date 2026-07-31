@@ -18,12 +18,26 @@ import type {
 } from '../types/message.js'
 import { getCwd } from '../utils/cwd.js'
 import { env } from '../utils/env.js'
-import { getClaudeConfigHomeDir, isEnvTruthy } from '../utils/envUtils.js'
+import {
+  getClaudeConfigHomeDir,
+  isEnvTruthy,
+  isFauxProviderEnabled,
+} from '../utils/envUtils.js'
 import { getErrnoCode } from '../utils/errors.js'
 import { normalizeMessagesForAPI } from '../utils/messages.js'
 import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
 
 function shouldUseVCR(): boolean {
+  // VCR and the faux provider are mutually exclusive stream seams: both stand
+  // in for the real API, and VCR wraps the queryModel call, so it would demand
+  // a recorded fixture before the faux dispatch inside queryModel is ever
+  // reached. Faux is the more specific signal (an explicit script path), so it
+  // wins. Without this, an in-process faux call under NODE_ENV=test dies on a
+  // missing fixture before queryModel can dispatch to faux.
+  if (isFauxProviderEnabled()) {
+    return false
+  }
+
   if (process.env.NODE_ENV === 'test') {
     return true
   }

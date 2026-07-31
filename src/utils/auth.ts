@@ -52,6 +52,7 @@ import {
   getClaudeConfigHomeDir,
   isBareMode,
   isEnvTruthy,
+  isFauxProviderEnabled,
   isRunningOnHomespace,
 } from './envUtils.js'
 import { errorMessage } from './errors.js'
@@ -230,6 +231,15 @@ export function getAnthropicApiKeyWithSource(
   key: null | string
   source: ApiKeySource
 } {
+  // Faux provider: queryModel short-circuits before any provider dispatch, so
+  // no credential is ever read. Returning early keeps evals off the keychain
+  // (which can prompt on macOS) and, critically, skips the CI-branch throw
+  // below — CI=true is set automatically by GitHub Actions, so without this a
+  // scripted offline run would fail for want of a key it never uses.
+  if (isFauxProviderEnabled()) {
+    return { key: null, source: 'none' }
+  }
+
   // --bare: hermetic auth. Only ANTHROPIC_API_KEY env or apiKeyHelper from
   // the --settings flag. Never touches keychain, config file, or approval
   // lists. 3P (Bedrock/Vertex/Foundry) uses provider creds, not this path.
@@ -1047,6 +1057,11 @@ export function prefetchAwsCredentialsAndBedRockInfoIfSafe(): void {
 export const getApiKeyFromConfigOrMacOSKeychain = memoize(
   (): { key: string; source: ApiKeySource } | null => {
     if (isBareMode()) return null
+    // Faux provider reads no credentials. getAnthropicApiKeyWithSource already
+    // returns early, but statusNoticeDefinitions.tsx calls this directly, and on
+    // darwin that spawns a sync `security` read which can prompt for keychain
+    // access. Memoized, so a single unguarded call poisons the whole session.
+    if (isFauxProviderEnabled()) return null
     // TODO: migrate to SecureStorage
     if (process.platform === 'darwin') {
       // keychainPrefetch.ts fires this read at main.tsx top-level in parallel
@@ -1252,6 +1267,13 @@ export const getClaudeAIOAuthTokens = memoize((): OAuthTokens | null => {
   // --bare: API-key-only. No OAuth env tokens, no keychain, no credentials file.
   if (isBareMode()) return null
 
+  // Faux provider reads no credentials. Without this the storage read below
+  // still reaches the macOS keychain, which is the one credential path that can
+  // block on a user prompt. A null token is a supported state here:
+  // checkAndRefreshOAuthTokenIfNeededImpl returns false on a missing
+  // refreshToken rather than throwing or retrying.
+  if (isFauxProviderEnabled()) return null
+
   // Check for force-set OAuth token from environment variable
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
     // Return an inference-only token (unknown refresh and expiry)
@@ -1394,6 +1416,9 @@ async function handleOAuth401ErrorImpl(
  */
 export async function getClaudeAIOAuthTokensAsync(): Promise<OAuthTokens | null> {
   if (isBareMode()) return null
+  // Same reason as the sync version: this is a separate entry point to the same
+  // storage read, so guarding only the memoized one would leave a hole.
+  if (isFauxProviderEnabled()) return null
 
   // Env var and FD tokens are sync and don't hit the keychain
   if (

@@ -1,14 +1,30 @@
 /**
- * Shared mock for `src/utils/auth.js`. Use it via:
+ * Shared mock for `src/utils/auth.js`.
  *
- *   import { authMock } from '../../tests/mocks/auth'
+ * `mock.module` is process-global and last-write-wins, and a factory REPLACES
+ * the whole module — every export the factory omits becomes undefined for every
+ * other test file loaded afterwards in the same process. A partial mock of a
+ * 57-export module is therefore a pollution source, not a local decision.
+ *
+ * So there are two entry points, and the choice between them is not stylistic:
+ *
+ *   // Whole module, default shape:
  *   mock.module('src/utils/auth.js', authMock)
  *
- * Tests that need different return values can override the helper used by
- * the suite (e.g. by extending this object and re-registering with mock.module).
- * Always extend here rather than inlining a different shape per test, so the
- * surface stays consistent when `auth.ts` exports change.
+ *   // Only some exports differ, the rest stay real:
+ *   mock.module('src/utils/auth.js', await authMockWith({
+ *     getClaudeAIOAuthTokens: () => ({ accessToken: 'test-token' }),
+ *   }))
+ *
+ * Prefer authMockWith. It spreads the real module first, so an export this file
+ * has never heard of still resolves, and adding an export to auth.ts does not
+ * silently blank it out for unrelated suites.
+ *
+ * Use bare authMock only where importing the real auth.ts is itself the problem
+ * (import cycles, or module-level side effects the suite has already stubbed).
  */
+
+/** Default shape. Only the exports listed here exist under this mock. */
 export const authMock = () => ({
   // Mirrors the production contract: src/utils/auth.ts returns
   // Promise<boolean> ("did the access token change") and a token object that
@@ -29,3 +45,20 @@ export const authMock = () => ({
   isMaxSubscriber: () => false,
   isTeamSubscriber: () => false,
 })
+
+/**
+ * Real module with `overrides` applied on top.
+ *
+ * Async because it imports the real auth.ts. Await it at module scope, before
+ * the `mock.module` call, the same way the suites that already spread
+ * `realAuth` by hand do:
+ *
+ *   mock.module('src/utils/auth.js', await authMockWith({ ... }))
+ */
+export async function authMockWith(
+  overrides: Record<string, unknown>,
+): Promise<() => Record<string, unknown>> {
+  const real = (await import('src/utils/auth.js')) as Record<string, unknown>
+  const merged = { ...real, ...overrides }
+  return () => merged
+}

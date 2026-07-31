@@ -36,6 +36,43 @@ export function isEnvTruthy(envVar: string | boolean | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(normalizedValue)
 }
 
+/**
+ * True when the scripted offline faux provider is active.
+ *
+ * Lives in this leaf module rather than next to the provider itself because
+ * every consumer is on an early-startup or hot path — credential lookup, the
+ * VCR gate, the queryModel dispatch — and none of them should pull the
+ * Anthropic SDK into their import graph just to read one env var.
+ *
+ * Deliberately an exact `'1'` match rather than isEnvTruthy: this seam
+ * suppresses real API calls and credential reads, so it must be impossible to
+ * switch on by accident. An inherited `CLAUDE_CODE_USE_FAUX=true` from an
+ * unrelated parent process must not silently stub out a real session.
+ */
+export function isFauxProviderEnabled(): boolean {
+  return process.env.CLAUDE_CODE_USE_FAUX === '1'
+}
+
+/**
+ * Path of the scripted-subprocess file, or undefined when the seam is off.
+ *
+ * Same pattern as isFauxProviderEnabled and here for the same reason: the one
+ * consumer (execFileNoThrowWithCwd) is on a hot path imported by 65 modules and
+ * must not pull the script loader into its import graph to read one env var.
+ *
+ * Requires BOTH vars, and CLAUDE_CODE_USE_FAUX_EXEC must be exactly '1'. The
+ * blast radius here is wider than the provider seam — it intercepts every
+ * subprocess routed through the wrapper, not one API dispatch — so an inherited
+ * truthy value from a parent process must not be able to switch it on.
+ */
+export function getFauxExecScriptPath(): string | undefined {
+  if (process.env.CLAUDE_CODE_USE_FAUX_EXEC !== '1') {
+    return undefined
+  }
+  const path = process.env.CLAUDE_CODE_FAUX_EXEC_SCRIPT
+  return path ? path : undefined
+}
+
 export function isEnvDefinedFalsy(
   envVar: string | boolean | undefined,
 ): boolean {
