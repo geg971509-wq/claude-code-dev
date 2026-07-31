@@ -244,6 +244,11 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
   }
 }
 
+/**
+ * CONTRACT: must not throw. QueryEngine.submitMessage consumes this generator
+ * directly while resuming an orphaned permission, so tool failures must remain
+ * result messages rather than rejecting the resumed iteration.
+ */
 export async function* handleOrphanedPermission(
   orphanedPermission: OrphanedPermission,
   tools: Tools,

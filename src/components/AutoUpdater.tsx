@@ -69,10 +69,16 @@ export function AutoUpdater({
       return;
     }
 
+    // Bail before any network fetch: this fork updates via `ccb update` (npm
+    // path), so the Anthropic auto-updater is opt-in only
+    // (ENABLE_AUTOUPDATER=1) and must not phone npm/GCS when disabled.
+    if (isAutoUpdaterDisabled()) {
+      return;
+    }
+
     const currentVersion = MACRO.VERSION;
     const channel = getInitialSettings()?.autoUpdatesChannel ?? 'latest';
     let latestVersion = await getLatestVersion(channel);
-    const isDisabled = isAutoUpdaterDisabled();
 
     // Check if max version is set (server-side kill switch for auto-updates)
     const maxVersion = await getMaxVersion();
@@ -93,13 +99,7 @@ export function AutoUpdater({
     setVersions({ global: currentVersion, latest: latestVersion });
 
     // Check if update needed and perform update
-    if (
-      !isDisabled &&
-      currentVersion &&
-      latestVersion &&
-      !gte(currentVersion, latestVersion) &&
-      !shouldSkipVersion(latestVersion)
-    ) {
+    if (currentVersion && latestVersion && !gte(currentVersion, latestVersion) && !shouldSkipVersion(latestVersion)) {
       const startTime = Date.now();
       onChangeIsUpdating(true);
 

@@ -7,6 +7,7 @@ import { clearPolicyLimitsCache } from '../../services/policyLimits/index.js';
 // flushTelemetry is loaded lazily to avoid pulling in ~1.1MB of OpenTelemetry at startup
 import { clearRemoteManagedSettingsCache } from '../../services/remoteManagedSettings/index.js';
 import { removeChatGPTAuth } from '../../services/api/openai/chatgptAuth.js';
+import { removeKimiAuth } from '../../services/api/openai/kimiAuth.js';
 import { getClaudeAIOAuthTokens, removeApiKey } from '../../utils/auth.js';
 import { clearBetasCaches } from '../../utils/betas.js';
 import { saveGlobalConfig } from '../../utils/config.js';
@@ -23,6 +24,7 @@ export async function performLogout({ clearOnboarding = false }): Promise<void> 
 
   await removeApiKey();
   await removeChatGPTAuth();
+  await removeKimiAuth();
   clearChatGPTSettingsAuthMode();
 
   // Wipe all secure storage data on logout

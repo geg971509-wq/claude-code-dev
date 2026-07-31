@@ -6,8 +6,16 @@
  * extension (packages/claude-vscode/src/common-host/sessionStorage.ts).
  */
 
-import type { UUID } from 'crypto'
-import { open as fsOpen, readdir, realpath, stat } from 'fs/promises'
+import { randomBytes, type UUID } from 'crypto'
+import {
+  chmod,
+  open as fsOpen,
+  readdir,
+  realpath,
+  rename,
+  stat,
+  unlink,
+} from 'fs/promises'
 import { join } from 'path'
 import { getClaudeConfigHomeDir } from './envUtils.js'
 import { getWorktreePathsPortable } from './getWorktreePathsPortable.js'
@@ -787,5 +795,60 @@ export async function readTranscriptForLoad(
     boundaryStartOffset: s.boundaryStartOffset,
     postBoundaryBuf: s.out.buf.subarray(0, s.out.len),
     hasPreservedSegment: s.hasPreservedSegment,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Atomic full-file rewrite
+// ---------------------------------------------------------------------------
+
+/**
+ * Atomically replace a file's full contents: write a temp file in the same
+ * directory, fsync, then rename over the target. A crash mid-write can only
+ * damage the temp file, never the target. Used for full rewrites of session
+ * transcripts (tombstone removal, remote hydration) where a truncating
+ * writeFile could destroy the whole transcript. The target's existing
+ * permissions are preserved across the rename; `options.mode` applies only
+ * when creating a new file (matching fs.promises.writeFile semantics).
+ */
+export async function atomicWriteFile(
+  filePath: string,
+  content: string,
+  options: { encoding?: BufferEncoding; mode?: number } = {},
+): Promise<void> {
+  let targetMode = options.mode
+  try {
+    // Preserve the target's permissions — rename would otherwise replace
+    // them with the temp file's umask-masked creation mode.
+    targetMode = (await stat(filePath)).mode
+  } catch {
+    // Target does not exist yet — fall back to the requested creation mode.
+  }
+
+  const suffix = randomBytes(4).toString('hex')
+  const tmpPath = `${filePath}.tmp.${process.pid}.${suffix}`
+  let renamed = false
+  try {
+    const fh = await fsOpen(tmpPath, 'w', targetMode)
+    try {
+      await fh.writeFile(content, { encoding: options.encoding ?? 'utf8' })
+      await fh.sync()
+    } finally {
+      await fh.close()
+    }
+    // chmod defeats umask, so the renamed file has exactly the intended mode.
+    if (targetMode !== undefined) {
+      await chmod(tmpPath, targetMode)
+    }
+    await rename(tmpPath, filePath)
+    renamed = true
+  } finally {
+    if (!renamed) {
+      try {
+        await unlink(tmpPath)
+      } catch {
+        // Best-effort cleanup — the original file is untouched either way.
+      }
+    }
   }
 }

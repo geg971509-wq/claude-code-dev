@@ -44,7 +44,6 @@ import {
   type FilesApiConfig,
   parseFileSpecs,
 } from './services/api/filesApi.js';
-import { prefetchPassesEligibility } from './services/api/referral.js';
 import type { McpSdkServerConfig, McpServerConfig, ScopedMcpServerConfig } from './services/mcp/types.js';
 import {
   isPolicyAllowed,
@@ -2846,11 +2845,11 @@ async function run(): Promise<CommanderCommand> {
         }
       }
 
-      // Check quota status, fast mode, passes eligibility, and bootstrap data
+      // Check quota status, fast mode, and bootstrap data
       // after trust is established. These make API calls which could trigger
       // apiKeyHelper execution.
       // --bare / SIMPLE: skip — these are cache-warms for the REPL's
-      // first-turn responsiveness (quota, passes, fastMode, bootstrap data). Fast
+      // first-turn responsiveness (quota, fastMode, bootstrap data). Fast
       // mode doesn't apply to the Agent SDK anyway (see getFastModeUnavailableReason).
       const bgRefreshThrottleMs = getFeatureValue_CACHED_MAY_BE_STALE('tengu_cicada_nap_ms', 0);
       const lastPrefetched = getGlobalConfig().startupPrefetchedAt ?? 0;
@@ -2868,7 +2867,8 @@ async function run(): Promise<CommanderCommand> {
         void fetchBootstrapData();
 
         // TODO: Consolidate other prefetches into a single bootstrap request.
-        void prefetchPassesEligibility();
+        // NOTE: referral/passes eligibility prefetch removed — this fork does
+        // not phone api.anthropic.com for referral state at startup.
         if (!getFeatureValue_CACHED_MAY_BE_STALE('tengu_miraculo_the_bard', false)) {
           void prefetchFastModeStatus();
         } else {

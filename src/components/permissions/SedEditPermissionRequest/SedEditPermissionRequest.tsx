@@ -97,6 +97,7 @@ function SedEditPermissionRequestInner({
       ...parsed,
       _simulatedSedEdit: {
         filePath,
+        oldContent,
         newContent,
       },
     };

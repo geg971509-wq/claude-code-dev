@@ -70,7 +70,7 @@ import {
   getSonnet1mExpTreatmentEnabled,
 } from '../../utils/context.js'
 import { resolveAppliedEffort } from '../../utils/effort.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
+import { isEnvTruthy, isFauxProviderEnabled } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
 import { captureAPIRequest, logError } from '../../utils/log.js'
 import {
@@ -770,6 +770,17 @@ export async function queryModelWithoutStreaming({
   return assistantMessage
 }
 
+/**
+ * CONTRACT: yields API failures as SystemAPIErrorMessage rather than throwing.
+ * A throw here is a bug, and the three consumers absorb one at different
+ * depths, so none of them is a place to add a guard instead:
+ *   - query.ts's deps.callModel — inside queryLoop's own try/catch, which
+ *     converts a throw into a model_error terminal. Fully protected.
+ *   - compact.ts's streamCompactSummary — its own try has only a finally, but
+ *     both call sites catch, so a throw surfaces as a failed compaction.
+ *   - WebSearchTool's ApiSearchAdapter.search — no local catch at all; it
+ *     relies on the tool-execution harness to turn a throw into a tool error.
+ */
 export async function* queryModelWithStreaming({
   messages,
   systemPrompt,
@@ -1055,6 +1066,16 @@ async function* queryModel(
   StreamEvent | AssistantMessage | SystemAPIErrorMessage,
   void
 > {
+  // Faux provider: scripted offline responses for evals and e2e tests.
+  // Hoisted before any awaits (GrowthBook init, bedrock credential fetch)
+  // so a faux run never touches a network or reads a credential, regardless
+  // of provider configuration.
+  if (isFauxProviderEnabled()) {
+    const { queryModelFaux } = await import('./faux/index.js')
+    yield* queryModelFaux(messages, systemPrompt, tools, signal, options)
+    return
+  }
+
   // Check cheap conditions first — the off-switch await blocks on GrowthBook
   // init (~10ms). For non-Opus models (haiku, sonnet) this skips the await
   // entirely. Subscribers don't hit this path at all.

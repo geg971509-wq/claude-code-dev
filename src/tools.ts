@@ -97,6 +97,13 @@ import { TaskListTool } from '@claude-code-best/builtin-tools/tools/TaskListTool
 import uniqBy from 'lodash-es/uniqBy.js'
 import { isSearchExtraToolsEnabledOptimistic } from './utils/searchExtraTools.js'
 import { isTodoV2Enabled } from './utils/tasks.js'
+import { setAgentLaunchThrottle } from '@claude-code-best/builtin-tools/tools/AgentTool/launchThrottle.js'
+import { acquireLaunchSlot } from './services/api/agentLaunchController.js'
+
+// Wire the agent launch throttle (src) into builtin-tools' runAgent without
+// a packages→src reverse import (boundary ratchet): builtin-tools exposes a
+// setter, src registers its implementation here at startup.
+setAgentLaunchThrottle(acquireLaunchSlot)
 // Dead code elimination: conditional import for CLAUDE_CODE_VERIFY_PLAN
 const VerifyPlanExecutionTool =
   process.env.CLAUDE_CODE_VERIFY_PLAN === 'true'

@@ -90,8 +90,15 @@ export async function withConnectionTimeout<T>(
 
   const timeoutPromise = new Promise<never>((_, reject) => {
     const timeoutId = setTimeout(async () => {
-      await onTimeout()
-      reject(new Error(`MCP connection timed out after ${timeoutMs}ms`))
+      try {
+        await onTimeout()
+      } catch {
+        // Cleanup failure must not prevent the timeout from settling — and
+        // must not escape this fire-and-forget callback as an unhandled
+        // rejection either.
+      } finally {
+        reject(new Error(`MCP connection timed out after ${timeoutMs}ms`))
+      }
     }, timeoutMs)
 
     // Clean up timeout if connect resolves or rejects

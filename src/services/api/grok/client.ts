@@ -1,5 +1,6 @@
 import OpenAI from 'openai'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
+import { getApiTimeoutMs } from 'src/utils/timeouts.js'
 
 /**
  * Environment variables:
@@ -31,7 +32,7 @@ export function getGrokClient(options?: {
     apiKey,
     baseURL,
     maxRetries,
-    timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
+    timeout: getApiTimeoutMs(),
     dangerouslyAllowBrowser: true,
     fetchOptions: getProxyFetchOptions({ forAnthropicAPI: false }),
     ...(options?.fetchOverride && { fetch: options.fetchOverride }),

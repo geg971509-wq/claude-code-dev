@@ -49,6 +49,13 @@ export type ShellCommand = {
 const SIGKILL = 137
 const SIGTERM = 143
 
+// Grace period between SIGTERM and the SIGKILL escalation when terminating
+// the process tree — gives processes a chance to clean up temp files,
+// buffers, and their own children before being force-killed. Kept short
+// (vs. the 5s typical for background task managers) because this is an
+// interactive CLI: the user is usually staring at a killed command.
+const SIGTERM_GRACE_MS = 1_500
+
 // Background tasks write stdout/stderr directly to a file fd (no JS involvement),
 // so a stuck append loop can fill the disk. Poll file size and kill when exceeded.
 const SIZE_WATCHDOG_INTERVAL_MS = 5_000
@@ -120,6 +127,11 @@ class ShellCommandImpl implements ShellCommand {
   #timeoutId: NodeJS.Timeout | null = null
   #sizeWatchdog: NodeJS.Timeout | null = null
   #killedForSize = false
+  // Set when the child process actually exits ('exit' event) — distinct from
+  // the exit-code promise, which #doKill resolves immediately with the
+  // nominal code. Guards the SIGKILL escalation timer.
+  #exited = false
+  #sigkillTimer: NodeJS.Timeout | null = null
   #maxOutputBytes: number
   #abortSignal: AbortSignal
   #onTimeoutCallback:
@@ -193,6 +205,13 @@ class ShellCommandImpl implements ShellCommand {
   }
 
   #exitHandler(code: number | null, signal: NodeJS.Signals | null): void {
+    this.#exited = true
+    // Cancel the pending SIGKILL escalation — the process is gone.
+    const sigkillTimer = this.#sigkillTimer
+    if (sigkillTimer) {
+      clearTimeout(sigkillTimer)
+      this.#sigkillTimer = null
+    }
     const exitCode =
       code !== null && code !== undefined
         ? code
@@ -336,10 +355,42 @@ class ShellCommandImpl implements ShellCommand {
 
   #doKill(code?: number): void {
     this.#status = 'killed'
-    if (this.#childProcess.pid) {
-      treeKill(this.#childProcess.pid, 'SIGKILL')
+    const pid = this.#childProcess.pid
+    if (pid && !this.#exited) {
+      this.#terminateTree(pid)
     }
+    // Resolve immediately with the nominal code — callers (timeout message,
+    // interrupted flag) must not wait for the SIGTERM grace period, and the
+    // process may still be shutting down when the result is reported.
     this.#resolveExitCode(code ?? SIGKILL)
+  }
+
+  // Two-phase termination: SIGTERM the whole tree first so processes can
+  // clean up (temp files, buffered output, their own children), then SIGKILL
+  // whatever survives after the grace period. tree-kill only sends a single
+  // signal per call, so the escalation is scheduled separately.
+  #terminateTree(pid: number): void {
+    treeKill(pid, 'SIGTERM')
+    const pending = this.#sigkillTimer
+    if (pending) {
+      clearTimeout(pending)
+    }
+    this.#sigkillTimer = setTimeout(() => {
+      this.#sigkillTimer = null
+      if (this.#exited) {
+        return
+      }
+      try {
+        // Signal 0 probes liveness — throws ESRCH once the process is gone.
+        // Uses the captured pid, never #childProcess: cleanup() may have
+        // nulled that field before this timer fires.
+        process.kill(pid, 0)
+      } catch {
+        return
+      }
+      treeKill(pid, 'SIGKILL')
+    }, SIGTERM_GRACE_MS)
+    this.#sigkillTimer.unref()
   }
 
   kill(): void {

@@ -436,82 +436,93 @@ export const FileEditTool = buildTool({
     }
 
     // 2. Load current state and confirm no changes since last read
-    // Please avoid async operations between here and writing to disk to preserve atomicity
-    const {
-      content: originalFileContents,
-      fileExists,
-      encoding,
-      lineEndings: endings,
-    } = readFileForEdit(absoluteFilePath)
+    // Please avoid async operations between here and writing to disk to preserve
+    // atomicity. The block is synchronous, which is what makes the
+    // read-check-patch-write sequence atomic on a single-threaded runtime; the
+    // IIFE only scopes it.
+    const { originalFileContents, patch, actualOldString } = (() => {
+      const {
+        content: originalFileContents,
+        fileExists,
+        encoding,
+        lineEndings: endings,
+      } = readFileForEdit(absoluteFilePath)
 
-    if (fileExists) {
-      const lastWriteTime = getFileModificationTime(absoluteFilePath)
-      const lastRead = readFileState.get(absoluteFilePath)
-      if (!lastRead || lastWriteTime > lastRead.timestamp) {
-        // Timestamp indicates modification, but on Windows timestamps can change
-        // without content changes (cloud sync, antivirus, etc.). For full reads,
-        // compare content as a fallback to avoid false positives.
-        const isFullRead =
-          lastRead &&
-          lastRead.offset === undefined &&
-          lastRead.limit === undefined
-        const contentUnchanged =
-          isFullRead && originalFileContents === lastRead.content
-        if (!contentUnchanged) {
-          throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
+      if (fileExists) {
+        const lastWriteTime = getFileModificationTime(absoluteFilePath)
+        const lastRead = readFileState.get(absoluteFilePath)
+        if (!lastRead || lastWriteTime > lastRead.timestamp) {
+          // Timestamp indicates modification, but on Windows timestamps can change
+          // without content changes (cloud sync, antivirus, etc.). For full reads,
+          // compare content as a fallback to avoid false positives.
+          const isFullRead =
+            lastRead &&
+            lastRead.offset === undefined &&
+            lastRead.limit === undefined
+          const contentUnchanged =
+            isFullRead && originalFileContents === lastRead.content
+          if (!contentUnchanged) {
+            throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
+          }
         }
       }
-    }
 
-    // 3. Find the exact string in file content
-    const actualOldString =
-      findActualString(originalFileContents, old_string) || old_string
+      // 3. Find the exact string in file content
+      const actualOldString =
+        findActualString(originalFileContents, old_string) || old_string
 
-    // 4. Generate patch
-    const { patch, updatedFile } = getPatchForEdit({
-      filePath: absoluteFilePath,
-      fileContents: originalFileContents,
-      oldString: actualOldString,
-      newString: new_string,
-      replaceAll: replace_all,
-    })
+      // 4. Generate patch
+      const { patch, updatedFile } = getPatchForEdit({
+        filePath: absoluteFilePath,
+        fileContents: originalFileContents,
+        oldString: actualOldString,
+        newString: new_string,
+        replaceAll: replace_all,
+      })
 
-    // 5. Write to disk
-    writeTextContent(absoluteFilePath, updatedFile, encoding, endings)
+      // 5. Write to disk
+      writeTextContent(absoluteFilePath, updatedFile, encoding, endings)
 
-    // Notify LSP servers about file modification (didChange) and save (didSave)
-    const lspManager = getLspServerManager()
-    if (lspManager) {
-      // Clear previously delivered diagnostics so new ones will be shown
-      clearDeliveredDiagnosticsForFile(`file://${absoluteFilePath}`)
-      // didChange: Content has been modified
-      lspManager
-        .changeFile(absoluteFilePath, updatedFile)
-        .catch((err: Error) => {
+      // Notify LSP servers about file modification (didChange) and save (didSave)
+      const lspManager = getLspServerManager()
+      if (lspManager) {
+        // Clear previously delivered diagnostics so new ones will be shown
+        clearDeliveredDiagnosticsForFile(`file://${absoluteFilePath}`)
+        // didChange: Content has been modified
+        lspManager
+          .changeFile(absoluteFilePath, updatedFile)
+          .catch((err: Error) => {
+            logForDebugging(
+              `LSP: Failed to notify server of file change for ${absoluteFilePath}: ${err.message}`,
+            )
+            logError(err)
+          })
+        // didSave: File has been saved to disk (triggers diagnostics in TypeScript server)
+        lspManager.saveFile(absoluteFilePath).catch((err: Error) => {
           logForDebugging(
-            `LSP: Failed to notify server of file change for ${absoluteFilePath}: ${err.message}`,
+            `LSP: Failed to notify server of file save for ${absoluteFilePath}: ${err.message}`,
           )
           logError(err)
         })
-      // didSave: File has been saved to disk (triggers diagnostics in TypeScript server)
-      lspManager.saveFile(absoluteFilePath).catch((err: Error) => {
-        logForDebugging(
-          `LSP: Failed to notify server of file save for ${absoluteFilePath}: ${err.message}`,
-        )
-        logError(err)
+      }
+
+      // Notify VSCode about the file change for diff view
+      notifyVscodeFileUpdated(
+        absoluteFilePath,
+        originalFileContents,
+        updatedFile,
+      )
+
+      // 6. Update read timestamp, to invalidate stale writes
+      readFileState.set(absoluteFilePath, {
+        content: updatedFile,
+        timestamp: getFileModificationTime(absoluteFilePath),
+        offset: undefined,
+        limit: undefined,
       })
-    }
 
-    // Notify VSCode about the file change for diff view
-    notifyVscodeFileUpdated(absoluteFilePath, originalFileContents, updatedFile)
-
-    // 6. Update read timestamp, to invalidate stale writes
-    readFileState.set(absoluteFilePath, {
-      content: updatedFile,
-      timestamp: getFileModificationTime(absoluteFilePath),
-      offset: undefined,
-      limit: undefined,
-    })
+      return { originalFileContents, patch, actualOldString }
+    })()
 
     // 7. Log events
     if (absoluteFilePath.endsWith(`${sep}CLAUDE.md`)) {

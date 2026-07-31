@@ -16,6 +16,12 @@ import {
   type ChatGPTDeviceCode,
 } from '../services/api/openai/chatgptAuth.js';
 import { clearOpenAIClientCache } from '../services/api/openai/client.js';
+import {
+  completeKimiDeviceLogin,
+  removeKimiAuth,
+  requestKimiDeviceCode,
+  type KimiDeviceCode,
+} from '../services/api/openai/kimiAuth.js';
 import { OAuthService } from '../services/oauth/index.js';
 import { getOauthAccountInfo, validateForceLoginOrg } from '../utils/auth.js';
 import { openBrowser } from '../utils/browser.js';
@@ -68,9 +74,17 @@ type OAuthStatus =
       opusModel: string;
       activeField: 'base_url' | 'api_key' | 'haiku_model' | 'sonnet_model' | 'opus_model';
     } // Gemini Generate Content API platform
+  | {
+      state: 'kimi_subscription';
+      provider: ProviderPreset;
+      modelId: string;
+      phase: 'requesting' | 'waiting';
+      deviceCode?: KimiDeviceCode;
+    } // Kimi Code subscription via OAuth device flow (RFC 8628)
   | { state: 'china_provider_select'; activeIndex: number } // China LLM: pick provider
   | { state: 'china_mode_select'; provider: ProviderPreset; activeIndex: number } // China LLM: pick access mode
   | { state: 'china_model_select'; provider: ProviderPreset; mode: 'api' | 'coding-plan'; activeIndex: number } // China LLM: pick model
+  | { state: 'china_auth_select'; provider: ProviderPreset; modelId: string; activeIndex: number } // China LLM coding plan: pick auth method
   | { state: 'china_apikey'; provider: ProviderPreset; mode: 'api' | 'coding-plan'; modelId: string; apiKey: string } // China LLM: enter API key
   | { state: 'ready_to_start' } // Flow started, waiting for browser to open
   | { state: 'waiting_for_login'; url: string } // Browser opened, waiting for user to login
@@ -1395,7 +1409,7 @@ function OAuthStatusMessage({
 
     case 'china_model_select': {
       const { provider, mode: accessMode } = oauthStatus;
-      const models = provider.models;
+      const models = accessMode === 'coding-plan' ? (provider.codingPlanModels ?? provider.models) : provider.models;
       return (
         <Box flexDirection="column" gap={1} marginTop={1}>
           <Text bold>
@@ -1407,7 +1421,9 @@ function OAuthStatusMessage({
                 ...models.map(m => {
                   const priceLabel =
                     m.inputPricePerMTok === 0 && m.outputPricePerMTok === 0
-                      ? 'Free'
+                      ? accessMode === 'coding-plan'
+                        ? 'Plan'
+                        : 'Free'
                       : `¥${m.inputPricePerMTok}/¥${m.outputPricePerMTok}`;
                   const tagLabel = m.tags?.length ? ` [${m.tags.join(', ')}]` : '';
                   return {
@@ -1437,10 +1453,175 @@ function OAuthStatusMessage({
               ]}
               onChange={value => {
                 logEvent('tengu_china_model_selected', {});
-                setOAuthStatus({ state: 'china_apikey', provider, mode: accessMode, modelId: value, apiKey: '' });
+                // Custom model names are entered in the china_apikey screen,
+                // which is API-key only — OAuth keeps preset model ids.
+                if (accessMode === 'coding-plan' && provider.codingPlanOAuth && value !== '__custom__') {
+                  setOAuthStatus({ state: 'china_auth_select', provider, modelId: value, activeIndex: 0 });
+                } else {
+                  setOAuthStatus({ state: 'china_apikey', provider, mode: accessMode, modelId: value, apiKey: '' });
+                }
               }}
             />
           </Box>
+        </Box>
+      );
+    }
+
+    case 'china_auth_select': {
+      const { provider, modelId } = oauthStatus;
+      const authOptions = [
+        {
+          id: 'oauth' as const,
+          label: 'Sign in with Kimi account',
+          desc: 'OAuth device flow, no API key needed (Recommended)',
+        },
+        { id: 'apikey' as const, label: 'Use API Key', desc: 'Paste a Coding Plan credential manually' },
+      ];
+      useKeybinding(
+        'confirm:no',
+        () => {
+          setOAuthStatus({ state: 'china_model_select', provider, mode: 'coding-plan', activeIndex: 0 });
+        },
+        { context: 'Confirmation' },
+      );
+      return (
+        <Box flexDirection="column" gap={1} marginTop={1}>
+          <Text bold>
+            {provider.icon} {provider.label} — Coding Plan Sign-in
+          </Text>
+          <Box>
+            <Select
+              options={authOptions.map(o => ({
+                label: (
+                  <Text>
+                    {o.label} · <Text dimColor>{o.desc}</Text>
+                    {'\n'}
+                  </Text>
+                ),
+                value: o.id,
+              }))}
+              onChange={value => {
+                if (value === 'oauth') {
+                  setOAuthStatus({ state: 'kimi_subscription', provider, modelId, phase: 'requesting' });
+                } else {
+                  setOAuthStatus({ state: 'china_apikey', provider, mode: 'coding-plan', modelId, apiKey: '' });
+                }
+              }}
+            />
+          </Box>
+          <Text dimColor>Esc to go back</Text>
+        </Box>
+      );
+    }
+
+    case 'kimi_subscription': {
+      const { provider, modelId, phase, deviceCode } = oauthStatus as {
+        state: 'kimi_subscription';
+        provider: ProviderPreset;
+        modelId: string;
+        phase: 'requesting' | 'waiting';
+        deviceCode?: KimiDeviceCode;
+      };
+      const startedRef = useRef(false);
+
+      useKeybinding(
+        'confirm:no',
+        () => {
+          setOAuthStatus({ state: 'china_auth_select', provider, modelId, activeIndex: 0 });
+        },
+        { context: 'Confirmation' },
+      );
+
+      useEffect(() => {
+        if (startedRef.current) return;
+        startedRef.current = true;
+        let cancelled = false;
+        const controller = new AbortController();
+        async function runLogin() {
+          try {
+            const code = await requestKimiDeviceCode();
+            if (cancelled) return;
+            setOAuthStatus({ state: 'kimi_subscription', provider, modelId, phase: 'waiting', deviceCode: code });
+            void openBrowser(code.verificationUrl);
+            await completeKimiDeviceLogin(code, controller.signal);
+            if (cancelled) return;
+            const env: Record<string, string | undefined> = {
+              OPENAI_AUTH_MODE: 'kimi',
+              OPENAI_BASE_URL: provider.codingPlan?.baseURL ?? 'https://api.kimi.com/coding/v1',
+              // The OAuth access token lives in kimi-auth.json and is mirrored
+              // into OPENAI_API_KEY per request (see streamAttempt.ts) — never
+              // persist it in settings.
+              OPENAI_API_KEY: undefined,
+              // OPENAI_MODEL outranks every OPENAI_DEFAULT_*_MODEL, so a
+              // leftover value would silently send an old model id upstream.
+              OPENAI_MODEL: undefined,
+              OPENAI_DEFAULT_SONNET_MODEL: modelId,
+              OPENAI_DEFAULT_HAIKU_MODEL: modelId,
+              OPENAI_DEFAULT_OPUS_MODEL: modelId,
+            };
+            const settingsUpdate: Parameters<typeof updateSettingsForSource>[1] = {
+              modelType: 'openai',
+              env: env as unknown as Record<string, string>,
+            };
+            const { error } = updateSettingsForSource('userSettings', settingsUpdate);
+            if (error) {
+              throw new Error('Failed to save settings. Please try again.');
+            }
+            for (const [k, v] of Object.entries(env)) {
+              if (v === undefined) {
+                delete process.env[k];
+              } else {
+                process.env[k] = v;
+              }
+            }
+            // Drop any cached OpenAI client and ChatGPT auth so the new
+            // credentials take effect on the next request.
+            clearOpenAIClientCache();
+            void removeChatGPTAuth().catch(() => {});
+            logEvent('tengu_kimi_login_success', {});
+            setOAuthStatus({ state: 'success' });
+            void onDone();
+          } catch (err) {
+            if (cancelled) return;
+            setOAuthStatus({
+              state: 'error',
+              message: (err as Error).message,
+              toRetry: { state: 'kimi_subscription', provider, modelId, phase: 'requesting' },
+            });
+          }
+        }
+        void runLogin();
+        return () => {
+          cancelled = true;
+          controller.abort();
+        };
+      }, [setOAuthStatus, onDone, provider, modelId]);
+
+      return (
+        <Box flexDirection="column" gap={1}>
+          <Text bold>Kimi Code Subscription Setup</Text>
+          {phase === 'requesting' && (
+            <Box>
+              <Spinner />
+              <Text>Requesting sign-in code…</Text>
+            </Box>
+          )}
+          {phase === 'waiting' && deviceCode && (
+            <Box flexDirection="column" gap={1}>
+              <Text>Open this link and sign in with your Kimi account:</Text>
+              <Link url={deviceCode.verificationUrl}>
+                <Text dimColor>{deviceCode.verificationUrl}</Text>
+              </Link>
+              <Text>
+                Enter code: <Text bold>{deviceCode.userCode}</Text>
+              </Text>
+              <Box>
+                <Spinner />
+                <Text>Waiting for Kimi authorization…</Text>
+              </Box>
+            </Box>
+          )}
+          <Text dimColor>Esc to go back. Device codes expire after 15 minutes.</Text>
         </Box>
       );
     }
@@ -1500,10 +1681,11 @@ function OAuthStatusMessage({
               process.env[k] = v;
             }
           }
-          // Drop any cached OpenAI client and ChatGPT auth so the new
+          // Drop any cached OpenAI client and subscription auths so the new
           // provider/credentials take effect on the next request.
           clearOpenAIClientCache();
           void removeChatGPTAuth().catch(() => {});
+          void removeKimiAuth().catch(() => {});
           logEvent('tengu_china_login_success', {});
           setOAuthStatus({ state: 'success' });
           void onDone();

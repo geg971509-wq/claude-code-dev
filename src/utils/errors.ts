@@ -33,6 +33,20 @@ export function isAbortError(e: unknown): boolean {
 }
 
 /**
+ * Thrown (or used as an abort reason) when the user cancels an operation.
+ * name stays 'AbortError' so isAbortError() catches it; the userCancelled
+ * flag distinguishes user cancellation from timeouts and other aborts.
+ */
+export class UserCancellationError extends Error {
+  readonly userCancelled = true
+
+  constructor() {
+    super('Aborted by the user')
+    this.name = 'AbortError'
+  }
+}
+
+/**
  * Custom error class for configuration file parsing errors
  * Includes the file path and the default configuration that should be used
  */

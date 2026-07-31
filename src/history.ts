@@ -103,6 +103,14 @@ function deserializeLogEntry(line: string): LogEntry {
   return jsonParse(line) as LogEntry
 }
 
+/**
+ * CONTRACT: must not throw. An unreadable history.jsonl yields nothing instead.
+ * All three exported readers funnel through here and reach UI consumers that
+ * cannot absorb a throw — useArrowKeyHistory.tsx has try/finally with no catch,
+ * useHistorySearch.ts has no try at all, and HistorySearchDialog.tsx iterates
+ * inside `void (async () => ...)` where a rejection is unhandled and the global
+ * handler exits the process. Keep the catch below exhaustive.
+ */
 async function* makeLogEntryReader(): AsyncGenerator<LogEntry> {
   const currentSession = getSessionId()
 
@@ -138,7 +146,12 @@ async function* makeLogEntryReader(): AsyncGenerator<LogEntry> {
     if (code === 'ENOENT') {
       return
     }
-    throw e
+    // Any other errno (EACCES, EISDIR, EIO) degrades to an empty history
+    // rather than propagating. Rethrowing took down the input widget: two of
+    // the three UI consumers have no catch at all, and HistorySearchDialog's
+    // `void (async () => ...)` turned it into an unhandled rejection, which
+    // the global handler in gracefulShutdown.ts answers by exiting.
+    logForDebugging(`Failed to read history file: ${e}`)
   }
 }
 

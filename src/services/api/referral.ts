@@ -8,7 +8,6 @@ import {
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { logError } from '../../utils/log.js'
-import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
 import { getOAuthHeaders, prepareApiRequest } from '../../utils/teleport/api.js'
 import type {
   ReferralCampaign,
@@ -266,16 +265,4 @@ export async function getCachedOrFetchPassesEligibility(): Promise<ReferralEligi
   logForDebugging('Passes: Using fresh cached eligibility data')
   const { timestamp, ...response } = cachedEntry
   return response as ReferralEligibilityResponse
-}
-
-/**
- * Prefetch passes eligibility on startup
- */
-export async function prefetchPassesEligibility(): Promise<void> {
-  // Skip network requests if nonessential traffic is disabled
-  if (isEssentialTrafficOnly()) {
-    return
-  }
-
-  void getCachedOrFetchPassesEligibility()
 }

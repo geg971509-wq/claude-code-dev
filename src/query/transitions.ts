@@ -8,6 +8,7 @@ export type Terminal =
   | { reason: 'prompt_too_long' }
   | { reason: 'stop_hook_prevented' }
   | { reason: 'hook_stopped' }
+  | { reason: 'tool_loop' }
   | { reason: 'max_turns'; turnCount: number }
 
 export type Continue =

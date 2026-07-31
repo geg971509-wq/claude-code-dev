@@ -531,6 +531,11 @@ export class StreamingToolExecutor {
   /**
    * Wait for remaining tools and yield their results as they complete
    * Also yields progress messages as they become available
+   *
+   * CONTRACT: must not throw. Both normal completion and abort cleanup consume
+   * this generator to preserve one `tool_result` for every `tool_use`. Settle
+   * tool promises and convert failures locally so the next request never sees
+   * an unpaired tool block.
    */
   async *getRemainingResults(): AsyncGenerator<MessageUpdate, void> {
     if (this.discarded) {

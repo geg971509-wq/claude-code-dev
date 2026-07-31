@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -147,5 +153,56 @@ describe('getSessionMessages bounded cache (memory leak fix)', () => {
       await getSessionMessages(asUuid(`refill-${i}`))
     }
     expect(cache.size).toBe(MAX_CACHED_ENTRIES)
+  })
+})
+
+describe('walkChainBeforeParse parentUuid-first-key invariant', () => {
+  // walkChainBeforeParse uses {"parentUuid": as a byte-level line prefix to
+  // distinguish transcript messages from metadata without full JSON parsing.
+  // This yields 80-93% parse savings on fork-heavy sessions (>5 MB), and it
+  // relies on two things both being true:
+  //   1. JSON.stringify preserves insertion order even when a later spread
+  //      overwrites the value of an already-declared key.
+  //   2. The transcriptMessage literal in insertMessageChain declares
+  //      parentUuid as its FIRST key so the above guarantee applies.
+
+  test('JSON.stringify preserves key insertion order even when spread overwrites a value', () => {
+    // insertMessageChain does: { parentUuid, isSidechain, ...message, ...stamps }
+    // If `message` carries its own `parentUuid`, the spread overwrites the value
+    // but does NOT move the key — JSON.stringify still emits it first.
+    const entry = {
+      parentUuid: 'original-value',
+      isSidechain: false,
+      // Simulates `...message` where message has its own parentUuid field:
+      ...({ type: 'user', uuid: 'u1', parentUuid: 'from-spread' } as Record<
+        string,
+        unknown
+      >),
+      sessionId: 's1',
+      timestamp: '2026-01-01T00:00:00.000Z',
+    }
+    // Value comes from the spread (last write wins):
+    expect(entry.parentUuid).toBe('from-spread')
+    // Key position comes from first insertion — still first in JSON:
+    expect(JSON.stringify(entry)).toMatch(/^\{"parentUuid":/)
+  })
+
+  test('insertMessageChain literal declares parentUuid as its first key', () => {
+    // Source-level guard: inserting any field before parentUuid in the object
+    // literal would silently break walkChainBeforeParse on sessions larger than
+    // SKIP_PRECOMPACT_THRESHOLD (5 MB), causing dead fork branches to survive
+    // the pre-parse excision step — a performance regression with no compile
+    // error and no runtime assertion.
+    const src = readFileSync(
+      new URL('../sessionStorage.ts', import.meta.url),
+      'utf8',
+    )
+    const idx = src.indexOf('transcriptMessage: TranscriptMessage = {')
+    expect(idx).toBeGreaterThan(-1)
+    // The first `word:` after the opening brace must be `parentUuid`.
+    const firstKey = src
+      .slice(idx)
+      .match(/TranscriptMessage = \{\s*(\w+)\s*:/)?.[1]
+    expect(firstKey).toBe('parentUuid')
   })
 })

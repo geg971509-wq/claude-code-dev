@@ -53,6 +53,7 @@ import {
   getToolResultPath,
   PREVIEW_SIZE_BYTES,
 } from 'src/utils/toolResultStorage.js';
+import { FILE_UNEXPECTEDLY_MODIFIED_ERROR } from '../FileEditTool/constants.js';
 import { userFacingName as fileEditUserFacingName } from '../FileEditTool/UI.js';
 import { trackGitOperations } from '../shared/gitOperationTracking.js';
 import {
@@ -326,6 +327,7 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
     _simulatedSedEdit: z
       .object({
         filePath: z.string(),
+        oldContent: z.string(),
         newContent: z.string(),
       })
       .optional()
@@ -499,11 +501,11 @@ type SimulatedSedEditContext = Pick<ToolUseContext, 'readFileState' | 'updateFil
  * is exactly what gets written to the file.
  */
 async function applySedEdit(
-  simulatedEdit: { filePath: string; newContent: string },
+  simulatedEdit: { filePath: string; oldContent: string; newContent: string },
   toolUseContext: SimulatedSedEditContext,
   parentMessage?: AssistantMessage,
 ): Promise<SimulatedSedEditResult> {
-  const { filePath, newContent } = simulatedEdit;
+  const { filePath, oldContent, newContent } = simulatedEdit;
   const absoluteFilePath = expandPath(filePath);
   const fs = getFsImplementation();
 
@@ -530,7 +532,11 @@ async function applySedEdit(
     await fileHistoryTrackEdit(toolUseContext.updateFileHistoryState, absoluteFilePath, parentMessage.uuid);
   }
 
-  // Detect line endings and write new content
+  const currentContent = fs.readFileSync(absoluteFilePath, { encoding }).replaceAll('\r\n', '\n');
+  if (currentContent !== oldContent) {
+    throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR);
+  }
+
   const endings = detectLineEndings(absoluteFilePath);
   writeTextContent(absoluteFilePath, newContent, encoding, endings);
 
@@ -1007,7 +1013,7 @@ async function* runShellCommand({
   void
 > {
   const { command, description, timeout, run_in_background } = input;
-  const timeoutMs = timeout || getDefaultTimeoutMs();
+  const timeoutMs = Math.min(Math.max(timeout || getDefaultTimeoutMs(), 1), getMaxTimeoutMs());
 
   let fullOutput = '';
   let lastProgressOutput = '';

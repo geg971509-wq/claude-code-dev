@@ -319,145 +319,150 @@ export const NotebookEditTool = buildTool({
     }
 
     try {
-      // readFileSyncWithMetadata gives content + encoding + line endings in
-      // one safeResolvePath + readFileSync pass, replacing the previous
-      // detectFileEncoding + readFile + detectLineEndings chain (each of
-      // which redid safeResolvePath and/or a 4KB readSync).
-      const { content, encoding, lineEndings } =
-        readFileSyncWithMetadata(fullPath)
-      // Must use non-memoized jsonParse here: safeParseJSON caches by content
-      // string and returns a shared object reference, but we mutate the
-      // notebook in place below (cells.splice, targetCell.source = ...).
-      // Using the memoized version poisons the cache for validateInput() and
-      // any subsequent call() with the same file content.
-      let notebook: NotebookContent
-      try {
-        notebook = jsonParse(content) as NotebookContent
-      } catch {
-        return {
-          data: {
-            new_source,
-            cell_type: cell_type ?? 'code',
-            language: 'python',
-            edit_mode: 'replace',
-            error: 'Notebook is not valid JSON.',
-            cell_id,
-            notebook_path: fullPath,
-            original_file: '',
-            updated_file: '',
-          },
-        }
-      }
-
-      let cellIndex
-      if (!cell_id) {
-        cellIndex = 0 // Default to inserting at the beginning if no cell_id is provided
-      } else {
-        // First try to find the cell by its actual ID
-        cellIndex = notebook.cells.findIndex(
-          (cell: NotebookCell) => cell.id === cell_id,
-        )
-
-        // If not found, try to parse as a numeric index (cell-N format)
-        if (cellIndex === -1) {
-          const parsedCellIndex = parseCellId(cell_id)
-          if (parsedCellIndex !== undefined) {
-            cellIndex = parsedCellIndex
+      // The section is synchronous; the IIFE preserves the return semantics
+      // and scoping of the original block without adding any lock overhead.
+      return (() => {
+        // readFileSyncWithMetadata gives content + encoding + line endings in
+        // one safeResolvePath + readFileSync pass, replacing the previous
+        // detectFileEncoding + readFile + detectLineEndings chain (each of
+        // which redid safeResolvePath and/or a 4KB readSync).
+        const { content, encoding, lineEndings } =
+          readFileSyncWithMetadata(fullPath)
+        // Must use non-memoized jsonParse here: safeParseJSON caches by content
+        // string and returns a shared object reference, but we mutate the
+        // notebook in place below (cells.splice, targetCell.source = ...).
+        // Using the memoized version poisons the cache for validateInput() and
+        // any subsequent call() with the same file content.
+        let notebook: NotebookContent
+        try {
+          notebook = jsonParse(content) as NotebookContent
+        } catch {
+          return {
+            data: {
+              new_source,
+              cell_type: cell_type ?? 'code',
+              language: 'python',
+              edit_mode: 'replace',
+              error: 'Notebook is not valid JSON.',
+              cell_id,
+              notebook_path: fullPath,
+              original_file: '',
+              updated_file: '',
+            },
           }
         }
 
-        if (originalEditMode === 'insert') {
-          cellIndex += 1 // Insert after the cell with this ID
-        }
-      }
-
-      // Convert replace to insert if trying to replace one past the end
-      let edit_mode = originalEditMode
-      if (edit_mode === 'replace' && cellIndex === notebook.cells.length) {
-        edit_mode = 'insert'
-        if (!cell_type) {
-          cell_type = 'code' // Default to code if no cell_type specified
-        }
-      }
-
-      const language = notebook.metadata.language_info?.name ?? 'python'
-      let new_cell_id
-      if (
-        (notebook.nbformat ?? 4) > 4 ||
-        ((notebook.nbformat ?? 4) === 4 && (notebook.nbformat_minor ?? 0) >= 5)
-      ) {
-        if (edit_mode === 'insert') {
-          new_cell_id = Math.random().toString(36).substring(2, 15)
-        } else if (cell_id !== null) {
-          new_cell_id = cell_id
-        }
-      }
-
-      if (edit_mode === 'delete') {
-        // Delete the specified cell
-        notebook.cells.splice(cellIndex, 1)
-      } else if (edit_mode === 'insert') {
-        let new_cell: NotebookCell
-        if (cell_type === 'markdown') {
-          new_cell = {
-            cell_type: 'markdown',
-            id: new_cell_id,
-            source: new_source,
-            metadata: {},
-          }
+        let cellIndex
+        if (!cell_id) {
+          cellIndex = 0 // Default to inserting at the beginning if no cell_id is provided
         } else {
-          new_cell = {
-            cell_type: 'code',
-            id: new_cell_id,
-            source: new_source,
-            metadata: {},
-            execution_count: null,
-            outputs: [],
+          // First try to find the cell by its actual ID
+          cellIndex = notebook.cells.findIndex(
+            (cell: NotebookCell) => cell.id === cell_id,
+          )
+
+          // If not found, try to parse as a numeric index (cell-N format)
+          if (cellIndex === -1) {
+            const parsedCellIndex = parseCellId(cell_id)
+            if (parsedCellIndex !== undefined) {
+              cellIndex = parsedCellIndex
+            }
+          }
+
+          if (originalEditMode === 'insert') {
+            cellIndex += 1 // Insert after the cell with this ID
           }
         }
-        // Insert the new cell
-        notebook.cells.splice(cellIndex, 0, new_cell)
-      } else {
-        // Find the specified cell
-        const targetCell = notebook.cells[cellIndex]! // validateInput ensures cell_number is in bounds
-        targetCell.source = new_source
-        if (targetCell.cell_type === 'code') {
-          // Reset execution count and clear outputs since cell was modified
-          targetCell.execution_count = null
-          targetCell.outputs = []
+
+        // Convert replace to insert if trying to replace one past the end
+        let edit_mode = originalEditMode
+        if (edit_mode === 'replace' && cellIndex === notebook.cells.length) {
+          edit_mode = 'insert'
+          if (!cell_type) {
+            cell_type = 'code' // Default to code if no cell_type specified
+          }
         }
-        if (cell_type && cell_type !== targetCell.cell_type) {
-          targetCell.cell_type = cell_type
+
+        const language = notebook.metadata.language_info?.name ?? 'python'
+        let new_cell_id
+        if (
+          (notebook.nbformat ?? 4) > 4 ||
+          ((notebook.nbformat ?? 4) === 4 &&
+            (notebook.nbformat_minor ?? 0) >= 5)
+        ) {
+          if (edit_mode === 'insert') {
+            new_cell_id = Math.random().toString(36).substring(2, 15)
+          } else if (cell_id !== null) {
+            new_cell_id = cell_id
+          }
         }
-      }
-      // Write back to file
-      const IPYNB_INDENT = 1
-      const updatedContent = jsonStringify(notebook, null, IPYNB_INDENT)
-      writeTextContent(fullPath, updatedContent, encoding, lineEndings)
-      // Update readFileState with post-write mtime (matches FileEditTool/
-      // FileWriteTool). offset:undefined breaks FileReadTool's dedup match —
-      // without this, Read→NotebookEdit→Read in the same millisecond would
-      // return the file_unchanged stub against stale in-context content.
-      readFileState.set(fullPath, {
-        content: updatedContent,
-        timestamp: getFileModificationTime(fullPath),
-        offset: undefined,
-        limit: undefined,
-      })
-      const data = {
-        new_source,
-        cell_type: cell_type ?? 'code',
-        language,
-        edit_mode: edit_mode ?? 'replace',
-        cell_id: new_cell_id || undefined,
-        error: '',
-        notebook_path: fullPath,
-        original_file: content,
-        updated_file: updatedContent,
-      }
-      return {
-        data,
-      }
+
+        if (edit_mode === 'delete') {
+          // Delete the specified cell
+          notebook.cells.splice(cellIndex, 1)
+        } else if (edit_mode === 'insert') {
+          let new_cell: NotebookCell
+          if (cell_type === 'markdown') {
+            new_cell = {
+              cell_type: 'markdown',
+              id: new_cell_id,
+              source: new_source,
+              metadata: {},
+            }
+          } else {
+            new_cell = {
+              cell_type: 'code',
+              id: new_cell_id,
+              source: new_source,
+              metadata: {},
+              execution_count: null,
+              outputs: [],
+            }
+          }
+          // Insert the new cell
+          notebook.cells.splice(cellIndex, 0, new_cell)
+        } else {
+          // Find the specified cell
+          const targetCell = notebook.cells[cellIndex]! // validateInput ensures cell_number is in bounds
+          targetCell.source = new_source
+          if (targetCell.cell_type === 'code') {
+            // Reset execution count and clear outputs since cell was modified
+            targetCell.execution_count = null
+            targetCell.outputs = []
+          }
+          if (cell_type && cell_type !== targetCell.cell_type) {
+            targetCell.cell_type = cell_type
+          }
+        }
+        // Write back to file
+        const IPYNB_INDENT = 1
+        const updatedContent = jsonStringify(notebook, null, IPYNB_INDENT)
+        writeTextContent(fullPath, updatedContent, encoding, lineEndings)
+        // Update readFileState with post-write mtime (matches FileEditTool/
+        // FileWriteTool). offset:undefined breaks FileReadTool's dedup match —
+        // without this, Read→NotebookEdit→Read in the same millisecond would
+        // return the file_unchanged stub against stale in-context content.
+        readFileState.set(fullPath, {
+          content: updatedContent,
+          timestamp: getFileModificationTime(fullPath),
+          offset: undefined,
+          limit: undefined,
+        })
+        const data = {
+          new_source,
+          cell_type: cell_type ?? 'code',
+          language,
+          edit_mode: edit_mode ?? 'replace',
+          cell_id: new_cell_id || undefined,
+          error: '',
+          notebook_path: fullPath,
+          original_file: content,
+          updated_file: updatedContent,
+        }
+        return {
+          data,
+        }
+      })()
     } catch (error) {
       if (error instanceof Error) {
         const data = {

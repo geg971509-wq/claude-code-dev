@@ -104,6 +104,23 @@ mock.module('src/services/tools/toolExecution.js', () => ({
       }
       throw new Error('must not append a second terminal result')
     }
+    if (scenario === 'modifier-throws') {
+      yield {
+        message: toolResultMessage(
+          block.id,
+          'tool completed before modifier failed',
+          false,
+          'completed raw result',
+        ),
+        contextModifier: {
+          toolUseID: block.id,
+          modifyContext: () => {
+            throw new Error('synthetic context modifier failure')
+          },
+        },
+      }
+      return
+    }
 
     throw new Error(`unknown test scenario: ${scenario}`)
   },
@@ -131,6 +148,7 @@ mock.module('src/services/langfuse/index.js', () => ({
 const { StreamingToolExecutor } = await import(
   'src/services/tools/StreamingToolExecutor.js'
 )
+const { runTools } = await import('src/services/tools/toolOrchestration.js')
 
 function makeMinimalContext(): ToolUseContext {
   const abortController = new AbortController()
@@ -245,6 +263,43 @@ beforeEach(() => {
 
 afterAll(() => {
   mock.restore()
+})
+
+describe('runTools context modifier failures', () => {
+  test.each([
+    ['serial', false],
+    ['concurrent', true],
+  ] as const)('preserves the tool result without throwing in the %s path', async (_path, concurrencySafe) => {
+    const tool = makeTool('FakeTool')
+    tool.isConcurrencySafe = () => concurrencySafe
+    const context = makeMinimalContext()
+    const block = {
+      type: 'tool_use',
+      id: `modifier-${_path}`,
+      name: 'FakeTool',
+      input: { scenario: 'modifier-throws' },
+    } as ToolUseBlock
+    const parent = {
+      ...assistantMessage,
+      message: { content: [block] },
+    } as AssistantMessage
+    const updates: ResultUpdate[] = []
+
+    for await (const update of runTools(
+      [block],
+      [parent],
+      () => true as any,
+      context,
+      [tool],
+    )) {
+      updates.push(update as ResultUpdate)
+    }
+
+    expect(updates.filter(update => update.message)).toHaveLength(1)
+    expect(resultFor(updates, block.id).message?.toolUseResult).toBe(
+      'completed raw result',
+    )
+  })
 })
 
 describe('StreamingToolExecutor unexpected generator throws', () => {

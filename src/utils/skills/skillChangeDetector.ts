@@ -259,22 +259,29 @@ function scheduleReload(changedPath: string): void {
     reloadTimer = null
     const paths = [...pendingChangedPaths]
     pendingChangedPaths.clear()
-    // Fire ConfigChange hook once for the batch — the hook query is always
-    // 'skills' so firing per-path (which can be hundreds during a git
-    // operation) just spams the hook matcher with identical queries. Pass the
-    // first path as a representative; hooks can inspect all paths via the
-    // skills directory if they need the full set.
-    const results = await executeConfigChangeHooks('skills', paths[0]!)
-    if (hasBlockingResult(results)) {
-      logForDebugging(
-        `ConfigChange hook blocked skill reload (${paths.length} paths)`,
-      )
-      return
+    // This timer callback must never reject: an unhandled rejection here
+    // escalates to the process-level unhandledRejection handler and tears
+    // down the whole CLI over a routine file save.
+    try {
+      // Fire ConfigChange hook once for the batch — the hook query is always
+      // 'skills' so firing per-path (which can be hundreds during a git
+      // operation) just spams the hook matcher with identical queries. Pass the
+      // first path as a representative; hooks can inspect all paths via the
+      // skills directory if they need the full set.
+      const results = await executeConfigChangeHooks('skills', paths[0]!)
+      if (hasBlockingResult(results)) {
+        logForDebugging(
+          `ConfigChange hook blocked skill reload (${paths.length} paths)`,
+        )
+        return
+      }
+      clearSkillCaches()
+      clearCommandsCache()
+      resetSentSkillNames()
+      skillsChanged.emit()
+    } catch (error) {
+      logForDebugging(`Skill reload failed: ${error}`)
     }
-    clearSkillCaches()
-    clearCommandsCache()
-    resetSentSkillNames()
-    skillsChanged.emit()
   }, testOverrides?.reloadDebounce ?? RELOAD_DEBOUNCE_MS)
 }
 

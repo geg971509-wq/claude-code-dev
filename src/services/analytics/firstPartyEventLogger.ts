@@ -17,7 +17,6 @@ import { getPlatform, getWslVersion } from '../../utils/platform.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { profileCheckpoint } from '../../utils/startupProfiler.js'
 import { getCoreUserData } from '../../utils/user.js'
-import { isAnalyticsDisabled } from './config.js'
 import { FirstPartyEventLoggingExporter } from './firstPartyEventLoggingExporter.js'
 import type { GrowthBookUserAttributes } from './growthbook.js'
 import { getDynamicConfig_CACHED_MAY_BE_STALE } from './growthbook.js'
@@ -129,18 +128,14 @@ export async function shutdown1PEventLogging(): Promise<void> {
 
 /**
  * Check if 1P event logging is enabled.
- * Respects the same opt-outs as other analytics sinks:
- * - Test environment
- * - Third-party cloud providers (Bedrock/Vertex)
- * - Global telemetry opt-outs
- * - Non-essential traffic disabled
  *
- * Note: Unlike BigQuery metrics, event logging does NOT check organization-level
- * metrics opt-out via API. It follows the same pattern as Statsig event logging.
+ * This fork hard-disables 1P (tengu_*) event logging unconditionally: the
+ * pipeline never initializes, never sends to
+ * api.anthropic.com/api/event_logging/batch, and never persists failed
+ * batches to ~/.claude/telemetry/ — regardless of env vars.
  */
 export function is1PEventLoggingEnabled(): boolean {
-  // Respect standard analytics opt-outs
-  return !isAnalyticsDisabled()
+  return false
 }
 
 /**

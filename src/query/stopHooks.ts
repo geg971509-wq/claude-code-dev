@@ -54,6 +54,11 @@ type StopHookResult = {
   preventContinuation: boolean
 }
 
+/**
+ * CONTRACT: must not throw. queryLoop invokes this after its model-request error
+ * boundary, so hook failures are converted here into warning system messages
+ * rather than relying on query()'s terminal no-throw fallback.
+ */
 export async function* handleStopHooks(
   messagesForQuery: Message[],
   assistantMessages: AssistantMessage[],

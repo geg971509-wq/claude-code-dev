@@ -6,6 +6,7 @@ import memoize from 'lodash-es/memoize.js'
 import { createConnection } from 'net'
 import * as os from 'os'
 import { basename, join, sep as pathSeparator, resolve } from 'path'
+import { pipeline } from 'stream/promises'
 import { logEvent } from 'src/services/analytics/index.js'
 import { getIsScrollDraining, getOriginalCwd } from '../bootstrap/state.js'
 import { callIdeRpc } from '../services/mcp/client.js'
@@ -1446,13 +1447,11 @@ async function installFromArtifactory(command: string): Promise<string> {
         responseType: 'stream',
       })
 
-      // Write the downloaded file to disk
+      // Write the downloaded file to disk. pipeline() propagates errors from
+      // BOTH the source (HTTP response) and the destination stream — a plain
+      // pipe() would hang forever here if the network read fails mid-stream.
       const writeStream = getFsImplementation().createWriteStream(tempVsixPath)
-      await new Promise<void>((resolve, reject) => {
-        vsixResponse.data.pipe(writeStream)
-        writeStream.on('finish', resolve)
-        writeStream.on('error', reject)
-      })
+      await pipeline(vsixResponse.data, writeStream)
 
       // Install the .vsix file
       // Add delay to prevent code command crashes

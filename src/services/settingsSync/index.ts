@@ -53,6 +53,14 @@ const DEFAULT_MAX_RETRIES = 3
 const MAX_FILE_SIZE_BYTES = 500 * 1024 // 500 KB per file (matches backend limit)
 
 /**
+ * Settings cloud sync is hard-disabled in this fork: the CLI never GETs or
+ * PUTs user settings to api.anthropic.com/api/claude_code/user_settings.
+ */
+function isSettingsSyncEnabled(): boolean {
+  return false
+}
+
+/**
  * Upload local settings to remote (interactive CLI only).
  * Called from main.tsx preAction.
  * Runs in background - caller should not await unless needed.
@@ -60,6 +68,7 @@ const MAX_FILE_SIZE_BYTES = 500 * 1024 // 500 KB per file (matches backend limit
 export async function uploadUserSettingsInBackground(): Promise<void> {
   try {
     if (
+      !isSettingsSyncEnabled() ||
       !feature('UPLOAD_USER_SETTINGS') ||
       !getFeatureValue_CACHED_MAY_BE_STALE(
         'tengu_enable_settings_sync_push',
@@ -160,6 +169,7 @@ async function doDownloadUserSettings(
   if (feature('DOWNLOAD_USER_SETTINGS')) {
     try {
       if (
+        !isSettingsSyncEnabled() ||
         !getFeatureValue_CACHED_MAY_BE_STALE('tengu_strap_foyer', false) ||
         !isUsingOAuth()
       ) {

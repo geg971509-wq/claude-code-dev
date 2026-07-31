@@ -804,7 +804,7 @@ async function* runPowerShellCommand({
   void
 > {
   const { command, description, timeout, run_in_background, dangerouslyDisableSandbox } = input;
-  const timeoutMs = Math.min(timeout || getDefaultTimeoutMs(), getMaxTimeoutMs());
+  const timeoutMs = Math.min(Math.max(timeout || getDefaultTimeoutMs(), 1), getMaxTimeoutMs());
 
   let fullOutput = '';
   let lastProgressOutput = '';

@@ -83,6 +83,7 @@ import { logError } from './log.js'
 import { extractTag, isCompactBoundaryMessage } from './messages.js'
 import { sanitizePath } from './path.js'
 import {
+  atomicWriteFile,
   extractJsonStringField,
   extractLastJsonStringField,
   LITE_READ_BUF_SIZE,
@@ -665,27 +666,47 @@ class Project {
 
       let content = ''
       const resolvers: Array<() => void> = []
-
-      for (const { entry, resolve } of batch) {
-        const line = jsonStringify(entry) + '\n'
-
-        if (content.length + line.length >= this.MAX_CHUNK_BYTES) {
-          // Flush chunk and resolve its entries before starting a new one
-          await this.appendToFile(filePath, content)
-          for (const r of resolvers) {
-            r()
-          }
-          resolvers.length = 0
-          content = ''
-        }
-
-        content += line
-        resolvers.push(resolve)
+      // Every resolver in the batch must be called exactly once, even when a
+      // write fails partway — enqueueWrite callers await these, and leaving
+      // them pending hangs the caller forever.
+      const pendingResolvers = new Set(batch.map(({ resolve }) => resolve))
+      const resolveFlushed = (r: () => void): void => {
+        r()
+        pendingResolvers.delete(r)
       }
 
-      if (content.length > 0) {
-        await this.appendToFile(filePath, content)
-        for (const r of resolvers) {
+      try {
+        for (const { entry, resolve } of batch) {
+          const line = jsonStringify(entry) + '\n'
+
+          if (content.length + line.length >= this.MAX_CHUNK_BYTES) {
+            // Flush chunk and resolve its entries before starting a new one
+            await this.appendToFile(filePath, content)
+            for (const r of resolvers) {
+              resolveFlushed(r)
+            }
+            resolvers.length = 0
+            content = ''
+          }
+
+          content += line
+          resolvers.push(resolve)
+        }
+
+        if (content.length > 0) {
+          await this.appendToFile(filePath, content)
+          for (const r of resolvers) {
+            resolveFlushed(r)
+          }
+        }
+      } catch (error) {
+        // Write failed (ENOSPC/EACCES/...). The batch is already spliced out
+        // of the queue, so these entries are lost — but swallow the error
+        // here after logging it: other files' queues must still drain, and
+        // scheduleDrain's fire-and-forget callback must never reject.
+        logError(error)
+      } finally {
+        for (const r of pendingResolvers) {
           r()
         }
       }
@@ -963,9 +984,9 @@ class Project {
             return true // Keep malformed lines
           }
         })
-        await writeFile(this.sessionFile, lines.join('\n'), {
-          encoding: 'utf8',
-        })
+        // Atomic rewrite — a crash mid-write must not destroy the
+        // transcript, so this goes through tmp+fsync+rename.
+        await atomicWriteFile(this.sessionFile, lines.join('\n'))
       } catch {
         // Silently ignore errors - the file might not exist yet
       }
@@ -1639,10 +1660,11 @@ export async function hydrateRemoteSession(
 
     const sessionFile = getTranscriptPathForSession(sessionId)
 
-    // Replace local logs with remote logs. writeFile truncates, so no
-    // unlink is needed; an empty remoteLogs array produces an empty file.
+    // Replace local logs with remote logs; an empty remoteLogs array
+    // produces an empty file. Atomic rewrite (tmp+rename) so a crash
+    // mid-write cannot destroy the local transcript.
     const content = remoteLogs.map(e => jsonStringify(e) + '\n').join('')
-    await writeFile(sessionFile, content, { encoding: 'utf8', mode: 0o600 })
+    await atomicWriteFile(sessionFile, content, { mode: 0o600 })
 
     logForDebugging(`Hydrated ${remoteLogs.length} entries from remote`)
     return remoteLogs.length > 0
@@ -1691,10 +1713,11 @@ export async function hydrateFromCCRv2InternalEvents(
     const projectDir = getProjectDir(getOriginalCwd())
     await mkdir(projectDir, { recursive: true, mode: 0o700 })
 
-    // Write foreground transcript
+    // Write foreground transcript (atomic — same crash-safety rationale as
+    // hydrateRemoteSession above)
     const sessionFile = getTranscriptPathForSession(sessionId)
     const fgContent = events.map(e => jsonStringify(e.payload) + '\n').join('')
-    await writeFile(sessionFile, fgContent, { encoding: 'utf8', mode: 0o600 })
+    await atomicWriteFile(sessionFile, fgContent, { mode: 0o600 })
 
     logForDebugging(
       `Hydrated ${events.length} foreground entries from CCR v2 internal events`,
@@ -1727,10 +1750,7 @@ export async function hydrateFromCCRv2InternalEvents(
           const agentContent = entries
             .map(p => jsonStringify(p) + '\n')
             .join('')
-          await writeFile(agentFile, agentContent, {
-            encoding: 'utf8',
-            mode: 0o600,
-          })
+          await atomicWriteFile(agentFile, agentContent, { mode: 0o600 })
         }
 
         logForDebugging(

@@ -3042,6 +3042,12 @@ async function getLSPDiagnosticAttachments(
   }
 }
 
+/**
+ * CONTRACT: must not throw. queryLoop and the user-input and slash-command paths
+ * consume this as a best-effort attachment source. Individual failures are
+ * degraded to empty results upstream so one unreadable file does not abort the
+ * surrounding operation.
+ */
 export async function* getAttachmentMessages(
   input: string | null,
   toolUseContext: ToolUseContext,

@@ -20,10 +20,7 @@ import {
   type GitHubActionsMetadata,
   getUserForGrowthBook,
 } from '../../utils/user.js'
-import {
-  is1PEventLoggingEnabled,
-  logGrowthBookExperimentTo1P,
-} from './firstPartyEventLogger.js'
+import { logGrowthBookExperimentTo1P } from './firstPartyEventLogger.js'
 
 /**
  * User attributes sent to GrowthBook for targeting.
@@ -495,8 +492,11 @@ function isGrowthBookEnabled(): boolean {
   if (process.env.CLAUDE_GB_ADAPTER_URL && process.env.CLAUDE_GB_ADAPTER_KEY) {
     return true
   }
-  // GrowthBook depends on 1P event logging.
-  return is1PEventLoggingEnabled()
+  // This fork never fetches gates from api.anthropic.com: the GrowthBook
+  // client is never created, so no remote-eval request is made and no user
+  // attributes are sent. Feature gates resolve locally via
+  // LOCAL_GATE_DEFAULTS (bypassable with CLAUDE_CODE_DISABLE_LOCAL_GATES=1).
+  return false
 }
 
 /**
