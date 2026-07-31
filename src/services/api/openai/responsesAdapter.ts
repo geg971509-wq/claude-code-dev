@@ -542,7 +542,25 @@ function assertRetainedSSEBufferWithinLimit(byteLength: number): void {
   )
 }
 
-/** Exported for focused framing tests (LF / CRLF / trailing frame). */
+/**
+ * Exported for focused framing tests (LF / CRLF / trailing frame).
+ *
+ * SHAPE: every throw below surfaces at the consumer's first `.next()`, never at
+ * the three construction sites, because a generator body does not run until
+ * iterated. The sites are createChatGPTResponsesStream, and both paths of
+ * createOfficialResponsesStream (SDK-client via parseSSE, explicit base/key via
+ * parseSSEWithCleanup). Two consequences worth knowing before editing:
+ *
+ * - The guard is not the nearest `try`. createOfficialResponsesStream's own
+ *   `catch (err)` has already exited by the time iteration starts, so it never
+ *   sees the no-body throw — the `finally` in parseSSEWithCleanup is what
+ *   releases the response on that path.
+ * - The real handler is three wrappers away: the stream is threaded through
+ *   withOpenAIStreamIdleTimeout → logOpenAIRawStream → adaptPreparedOpenAIStream
+ *   and consumed by the `for await` in openai/index.ts, inside a try whose catch
+ *   records streamError and lets `retryable` drive the transient-retry loop.
+ *   Hence `retryable: true` here: a body-less response is worth one more attempt.
+ */
 export async function* parseSSE(
   response: Response,
 ): AsyncGenerator<Record<string, unknown>, void> {

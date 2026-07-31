@@ -1,34 +1,18 @@
 /**
- * Pure utility functions for building OpenAI request bodies and detecting
- * thinking mode. Extracted from index.ts so tests can import them without
- * triggering heavy module side-effects (OpenAI client, stream adapter, etc.).
+ * Pure utility functions for building OpenAI request bodies.
+ * Provider-specific quirks live in sibling files:
+ *   deepseek.ts — DeepSeek / MiMo thinking mode
+ *   kimi.ts     — Moonshot Kimi reasoning effort
  */
 import type { ChatCompletionCreateParamsStreaming } from 'openai/resources/chat/completions/completions.mjs'
 import { isEnvTruthy, isEnvDefinedFalsy } from '../../../utils/envUtils.js'
-
-/**
- * Detect whether thinking mode should be enabled for this model.
- *
- * Enabled when:
- * 1. OPENAI_ENABLE_THINKING=1 is set (explicit enable), OR
- * 2. Model name contains "deepseek" or "mimo" (auto-detect, case-insensitive)
- *
- * Disabled when:
- * - OPENAI_ENABLE_THINKING=0/false/no/off is explicitly set (overrides model detection)
- *
- * @param model - The resolved OpenAI model name
- */
-export function isOpenAIThinkingEnabled(model: string): boolean {
-  // Explicit disable takes priority (overrides model auto-detect)
-  if (isEnvDefinedFalsy(process.env.OPENAI_ENABLE_THINKING)) return false
-  // Explicit enable
-  if (isEnvTruthy(process.env.OPENAI_ENABLE_THINKING)) return true
-  // Auto-detect from model name (DeepSeek and MiMo models support thinking mode).
-  // Grok is intentionally excluded — Grok reasoning models reason automatically
-  // and do NOT require thinking/enable_thinking request body parameters.
-  const modelLower = model.toLowerCase()
-  return modelLower.includes('deepseek') || modelLower.includes('mimo')
-}
+import {
+  isKimiModel,
+  toKimiReasoningEffort,
+  type KimiReasoningEffort,
+} from './kimi.js'
+export { isOpenAIThinkingEnabled } from './deepseek.js'
+export { isKimiModel, toKimiReasoningEffort, type KimiReasoningEffort }
 
 function parsePositiveInteger(
   value: number | string | undefined,
@@ -72,57 +56,6 @@ export function isOpenAIReasoningChatModel(model: string): boolean {
 export function supportsOpenAIReasoningEffortNone(model: string): boolean {
   const match = model.toLowerCase().match(/^gpt-5\.(\d+)(?:-|$)/)
   return match ? Number(match[1]) >= 1 : false
-}
-
-/**
- * Moonshot Kimi models on the OpenAI-compatible endpoint.
- *
- * Matched on the resolved model id only — this path never sees a base URL or
- * provider id, so the id is the one honest signal available.
- *
- * Anchored to the start of the id or a `vendor/` prefix (`kimi-k3`,
- * `moonshotai/kimi-k2`) rather than matching `kimi` anywhere, because the two
- * quirks gated on this are subtractive: a false positive silently strips
- * `temperature` from a model that wanted it, with nothing in the response to
- * indicate why. Router and gateway deployments rename models freely, and
- * `my-kimi-route` or `kimi-proxy-fallback` naming a non-Moonshot upstream is
- * ordinary. A hyphen is required after `kimi` so the match is a family prefix
- * and not a word that merely starts with it.
- *
- * The reverse miss — a Moonshot model not named `kimi-*` — degrades to sending
- * `temperature`, which surfaces as a loud 400 rather than a silent wrong answer.
- * That asymmetry is why this errs toward matching less.
- */
-const KIMI_FAMILY_RE = /(?:^|\/)kimi-/i
-
-export function isKimiModel(model: string): boolean {
-  return KIMI_FAMILY_RE.test(model)
-}
-
-/** Effort levels Moonshot accepts. Anything else is a hard 400. */
-export type KimiReasoningEffort = 'low' | 'high' | 'max'
-
-/**
- * Clamp Claude Code's six effort levels onto the three Moonshot accepts,
- * mirroring the aliasing the Kimi gateway documents.
- *
- * `max` is included for completeness — streamAttempt.ts converts `max` to
- * `xhigh` before this module sees it, so `xhigh` is what restores that intent.
- */
-export function toKimiReasoningEffort(
-  effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh',
-): KimiReasoningEffort {
-  switch (effort) {
-    case 'none':
-    case 'minimal':
-    case 'low':
-      return 'low'
-    case 'medium':
-    case 'high':
-      return 'high'
-    case 'xhigh':
-      return 'max'
-  }
 }
 
 /**

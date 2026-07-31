@@ -1,5 +1,13 @@
 import { randomUUID } from 'crypto'
-import { appendFileSync, chmodSync, mkdirSync } from 'fs'
+import {
+  appendFileSync,
+  chmodSync,
+  closeSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  statSync,
+} from 'fs'
 import { dirname, join, resolve } from 'path'
 import { getSessionId } from '../../../bootstrap/state.js'
 import {
@@ -73,6 +81,8 @@ type TestOverrides = {
   enabled?: boolean
   path?: string
   argv?: readonly string[]
+  maxFileBytes?: number
+  maxEntryCodeUnits?: number
 }
 
 type WriterEntry = {
@@ -80,9 +90,48 @@ type WriterEntry = {
   users: number
 }
 
+// A single provider event can carry a multi-megabyte payload, and one resumed
+// session appends for as long as it lives, so both dimensions need a ceiling:
+// without them a single session file reached 2 GB.
+const MAX_LOG_ENTRY_CODE_UNITS = 64 * 1024
+const MAX_LOG_FILE_BYTES = 256 * 1024 * 1024
+
 const writers = new Map<string, WriterEntry>()
 let cleanupRegistered = false
 let testOverrides: TestOverrides | null = null
+
+function createLogCappedMarker(limit: number): string {
+  return `${JSON.stringify({
+    timestamp: new Date().toISOString(),
+    lifecycle: 'log-capped',
+    limitBytes: limit,
+  })}\n`
+}
+
+function hasLogCappedMarker(path: string, fileBytes: number): boolean {
+  const tailBytes = Math.min(fileBytes, 4096)
+  if (tailBytes === 0) return false
+
+  let fd: number | undefined
+  try {
+    fd = openSync(path, 'r')
+    const buffer = Buffer.allocUnsafe(tailBytes)
+    const bytesRead = readSync(fd, buffer, 0, tailBytes, fileBytes - tailBytes)
+    return buffer
+      .toString('utf8', 0, bytesRead)
+      .includes('"lifecycle":"log-capped"')
+  } catch {
+    return false
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd)
+      } catch {
+        // Best-effort diagnostics must not alter request behavior.
+      }
+    }
+  }
+}
 
 export function isOpenAIRawStreamLoggingEnabled(
   argv: readonly string[] = process.argv,
@@ -106,8 +155,12 @@ export function getOpenAIRawStreamLogPath(): string {
 
 function createWriter(path: string): BufferedWriter {
   let permissionsReady = false
+  let fileBytes: number | null = null
+  let capReached = false
+
   return createBufferedWriter({
     writeFn: content => {
+      if (capReached) return
       const dir = dirname(path)
       try {
         if (!permissionsReady) {
@@ -118,11 +171,46 @@ function createWriter(path: string): BufferedWriter {
         return
       }
 
+      if (fileBytes === null) {
+        // A resumed session appends to an existing file, so the cap has to
+        // account for what previous runs already wrote.
+        try {
+          fileBytes = statSync(path).size
+        } catch {
+          fileBytes = 0
+        }
+      }
+
+      const limit = testOverrides?.maxFileBytes ?? MAX_LOG_FILE_BYTES
+      if (fileBytes >= limit) {
+        if (!hasLogCappedMarker(path, fileBytes)) {
+          try {
+            const marker = createLogCappedMarker(limit)
+            appendFileSync(path, marker, { mode: 0o600 })
+            fileBytes += Buffer.byteLength(marker)
+          } catch {
+            // Raw stream diagnostics remain best effort when the file is full.
+          }
+        }
+        capReached = true
+        return
+      }
+
+      let payload = content
+      if (fileBytes + Buffer.byteLength(content) >= limit) {
+        // The crossing batch is written whole rather than split. Batches
+        // coalesce while the event loop is busy, so the overshoot is that
+        // batch's size, not one flush threshold.
+        capReached = true
+        payload += createLogCappedMarker(limit)
+      }
+
       try {
-        appendFileSync(path, content, { mode: 0o600 })
+        appendFileSync(path, payload, { mode: 0o600 })
       } catch {
         return
       }
+      fileBytes += Buffer.byteLength(payload)
 
       permissionsReady = true
       try {
@@ -173,12 +261,30 @@ function releaseWriter(path: string, entry: WriterEntry): void {
   if (writers.get(path) === entry) writers.delete(path)
 }
 
+// Truncates the event payload rather than slicing the serialized line, so every
+// row stays parseable JSON. Metadata fields are bounded by construction.
+function serializeEntry(entry: Record<string, unknown>): string {
+  const limit = testOverrides?.maxEntryCodeUnits ?? MAX_LOG_ENTRY_CODE_UNITS
+  const serialized = JSON.stringify(entry)
+  if (serialized.length <= limit || !('event' in entry)) return serialized
+
+  const payload = JSON.stringify(entry.event) ?? ''
+  return JSON.stringify({
+    ...entry,
+    event: {
+      truncated: true,
+      codeUnits: payload.length,
+      preview: payload.slice(0, limit),
+    },
+  })
+}
+
 function logRawEvent(
   writer: BufferedWriter,
   entry: Record<string, unknown>,
 ): void {
   try {
-    writer.write(`${JSON.stringify(entry)}\n`)
+    writer.write(`${serializeEntry(entry)}\n`)
   } catch {
     // Serialization and writer setup are best-effort diagnostics.
   }

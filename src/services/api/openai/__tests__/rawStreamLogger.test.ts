@@ -474,3 +474,131 @@ describe('logOpenAIRawLifecycle', () => {
     rmSync(root, { recursive: true, force: true })
   })
 })
+
+describe('raw stream log caps', () => {
+  test('truncates an oversized event payload but keeps the row parseable', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openai-raw-log-'))
+    const path = join(root, 'events.openai.jsonl')
+    _setOpenAIRawStreamLoggerForTesting({
+      enabled: true,
+      path,
+      maxEntryCodeUnits: 200,
+    })
+
+    const fatEvent = { type: 'delta', delta: '中'.repeat(5000) }
+    for await (const _event of logOpenAIRawStream(fromEvents([fatEvent]), {
+      route: 'chat-completions',
+      model: 'grok-4.5',
+    })) {
+      // Drain the stream so the event row is written.
+    }
+    _flushOpenAIRawStreamLogForTesting()
+
+    const rows = readRows(path)
+    const eventRow = rows.find(row => row.lifecycle === 'event')!
+    const logged = eventRow.event as RawEvent
+    expect(logged.truncated).toBe(true)
+    expect(logged.codeUnits).toBeGreaterThan(5000)
+    expect(logged).not.toHaveProperty('bytes')
+    expect((logged.preview as string).length).toBe(200)
+    // The consumer still receives the untruncated event.
+    expect(readFileSync(path, 'utf8')).not.toContain('中'.repeat(1000))
+
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  test('stops writing once the file cap is reached and records why', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openai-raw-log-'))
+    const path = join(root, 'events.openai.jsonl')
+    _setOpenAIRawStreamLoggerForTesting({
+      enabled: true,
+      path,
+      maxFileBytes: 4096,
+    })
+
+    const events = Array.from({ length: 400 }, (_unused, index) => ({
+      type: 'delta',
+      delta: `chunk-${index}-${'y'.repeat(200)}`,
+    }))
+    const seen: RawEvent[] = []
+    for await (const event of logOpenAIRawStream(fromEvents(events), {
+      route: 'chat-completions',
+      model: 'grok-4.5',
+    })) {
+      seen.push(event)
+    }
+    _flushOpenAIRawStreamLogForTesting()
+
+    // Every event still reaches the caller; only the log stops growing.
+    expect(seen.length).toBe(400)
+    const rows = readRows(path)
+    expect(rows.at(-1)).toMatchObject({
+      lifecycle: 'log-capped',
+      limitBytes: 4096,
+    })
+    // No 'complete' row: the cap silences the tail rather than the stream.
+    expect(rows.filter(row => row.lifecycle === 'event').length).toBeLessThan(
+      400,
+    )
+    // The crossing batch is written whole, and coalesced batches make it larger
+    // than one flush threshold — bounded, not exact.
+    const cappedSize = statSync(path).size
+    expect(cappedSize).toBeLessThan(4096 + 128 * 1024)
+
+    // A later stream on the same path builds a fresh writer; it must not append.
+    for await (const _event of logOpenAIRawStream(fromEvents([events[0]!]), {
+      route: 'chat-completions',
+      model: 'grok-4.5',
+    })) {
+      // Drain.
+    }
+    _flushOpenAIRawStreamLogForTesting()
+    expect(statSync(path).size).toBe(cappedSize)
+
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  test('marks a resumed file that was already over cap without duplicating the marker', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openai-raw-log-'))
+    const path = join(root, 'events.openai.jsonl')
+    writeFileSync(
+      path,
+      `${JSON.stringify({ lifecycle: 'event', pad: 'z'.repeat(5000) })}\n`,
+    )
+    _setOpenAIRawStreamLoggerForTesting({
+      enabled: true,
+      path,
+      maxFileBytes: 4096,
+    })
+
+    logOpenAIRawLifecycle({
+      route: 'chat-completions',
+      model: 'grok-4.5',
+      lifecycle: 'error',
+      phase: 'stream',
+      error: new Error('after resume'),
+    })
+    _flushOpenAIRawStreamLogForTesting()
+
+    const markedSize = statSync(path).size
+    expect(
+      readRows(path).filter(row => row.lifecycle === 'log-capped'),
+    ).toHaveLength(1)
+
+    logOpenAIRawLifecycle({
+      route: 'chat-completions',
+      model: 'grok-4.5',
+      lifecycle: 'error',
+      phase: 'stream',
+      error: new Error('later event'),
+    })
+    _flushOpenAIRawStreamLogForTesting()
+
+    expect(statSync(path).size).toBe(markedSize)
+    expect(
+      readRows(path).filter(row => row.lifecycle === 'log-capped'),
+    ).toHaveLength(1)
+
+    rmSync(root, { recursive: true, force: true })
+  })
+})

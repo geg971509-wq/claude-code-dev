@@ -38,6 +38,14 @@ export type ProviderPreset = {
     purchasePage: string
     tiers: CodingPlanTier[]
   }
+  /** True when the coding plan supports OAuth device-flow sign-in (no API key). */
+  codingPlanOAuth?: boolean
+  /**
+   * Models offered on the coding-plan endpoint, when they differ from the
+   * pay-as-you-go `models` list (e.g. Moonshot: kimi-k3 on api.moonshot.cn vs
+   * kimi-for-coding on api.kimi.com/coding).
+   */
+  codingPlanModels?: ProviderModel[]
   models: ProviderModel[]
 }
 
@@ -271,6 +279,31 @@ export const CHINA_LLM_PROVIDERS: ProviderPreset[] = [
     modelsPage: 'https://platform.moonshot.cn/docs/pricing/chat',
     freeTier: 'Credits for new users, cache hits ~10x cheaper than fresh input',
     keyFormat: 'sk-...',
+    codingPlan: {
+      baseURL: 'https://api.kimi.com/coding/v1',
+      keyFormat: 'OAuth sign-in (recommended) or API key',
+      purchasePage: 'https://www.kimi.com/code',
+      tiers: [
+        {
+          id: 'kimi-code',
+          label: 'Kimi Code',
+          price: 'See kimi.com/code',
+          credits: 'Flat-rate subscription',
+          description: 'Kimi for Coding, sign in with your Kimi account',
+        },
+      ],
+    },
+    codingPlanOAuth: true,
+    codingPlanModels: [
+      {
+        id: 'kimi-for-coding',
+        label: 'Kimi for Coding',
+        inputPricePerMTok: 0,
+        outputPricePerMTok: 0,
+        contextWindow: '256K',
+        tags: ['Recommended', 'Subscription'],
+      },
+    ],
     models: [
       {
         // The `[1m]` suffix is a client-side context opt-in, not a wire id:

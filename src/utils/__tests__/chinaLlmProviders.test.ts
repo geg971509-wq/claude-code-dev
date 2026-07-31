@@ -48,9 +48,12 @@ describe('findChinaProviderById', () => {
     const moonshot = findChinaProviderById('moonshot')
     expect(moonshot?.label).toBe('Moonshot Kimi')
     expect(moonshot?.baseURL).toBe('https://api.moonshot.cn/v1')
-    // Kimi Code subscription is deliberately out of scope, so the login flow
-    // must skip the mode-select screen for this provider.
-    expect(moonshot?.codingPlan).toBeUndefined()
+    // Kimi Code subscription: separate endpoint + OAuth device-flow sign-in.
+    expect(moonshot?.codingPlan?.baseURL).toBe('https://api.kimi.com/coding/v1')
+    expect(moonshot?.codingPlanOAuth).toBe(true)
+    expect(moonshot?.codingPlanModels?.map(m => m.id)).toEqual([
+      'kimi-for-coding',
+    ])
   })
 
   test('exposes kimi-k3 with a 1M context opt-in', () => {
@@ -73,9 +76,17 @@ describe('resolveChinaProviderBaseURL', () => {
     )
   })
 
-  test('falls back to the api base URL when a provider has no coding plan', () => {
+  test('returns the coding-plan base URL for Moonshot', () => {
     expect(resolveChinaProviderBaseURL('moonshot', 'coding-plan')).toBe(
-      'https://api.moonshot.cn/v1',
+      'https://api.kimi.com/coding/v1',
+    )
+  })
+
+  test('falls back to the api base URL when a provider has no coding plan', () => {
+    const deepseek = findChinaProviderById('deepseek')
+    expect(deepseek?.codingPlan).toBeUndefined()
+    expect(resolveChinaProviderBaseURL('deepseek', 'coding-plan')).toBe(
+      deepseek!.baseURL,
     )
   })
 

@@ -10,6 +10,7 @@ import {
 import { getOrCreateUserID } from '../../../utils/config.js'
 import { isChatGPTAuthEnabled } from './chatgptAuth.js'
 import { getOpenAIClient } from './client.js'
+import { applyKimiAuthToEnv, isKimiAuthEnabled } from './kimiAuth.js'
 import { getOfficialOpenAIPromptCacheKey } from './openaiShared.js'
 import type { OpenAIRawStreamRoute } from './rawStreamLogger.js'
 import {
@@ -115,6 +116,13 @@ export function prepareOpenAIStreamRequest(
           fetchOverride: request.fetchOverride,
           source: request.source,
         })
+      }
+
+      // Kimi Code subscription: mirror the OAuth access token into
+      // OPENAI_API_KEY (refreshing first when near expiry) so the plain
+      // chat-completions path picks it up.
+      if (isKimiAuthEnabled()) {
+        await applyKimiAuthToEnv()
       }
 
       const promise = getOpenAIClient({

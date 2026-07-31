@@ -2,6 +2,7 @@ import OpenAI from 'openai'
 import { openaiAdapter } from 'src/services/providerUsage/adapters/openai.js'
 import { updateProviderBuckets } from 'src/services/providerUsage/store.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
+import { getApiTimeoutMs } from 'src/utils/timeouts.js'
 
 /**
  * Environment variables:
@@ -59,7 +60,7 @@ export function getOpenAIClient(options?: {
     apiKey,
     ...(baseURL && { baseURL }),
     maxRetries,
-    timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
+    timeout: getApiTimeoutMs(),
     dangerouslyAllowBrowser: true,
     ...(process.env.OPENAI_ORG_ID && {
       organization: process.env.OPENAI_ORG_ID,
