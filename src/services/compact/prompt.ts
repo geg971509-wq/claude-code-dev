@@ -289,8 +289,16 @@ export function getPartialCompactPrompt(
   return prompt
 }
 
-export function getCompactPrompt(customInstructions?: string): string {
+export function getCompactPrompt(
+  customInstructions?: string,
+  opts?: { recentTailPreserved?: boolean },
+): string {
   let prompt = NO_TOOLS_PREAMBLE + BASE_COMPACT_PROMPT
+
+  if (opts?.recentTailPreserved) {
+    prompt +=
+      '\n\nNote: The most recent exchanges are preserved verbatim after the summary and are not shown above. Focus the summary on the older context shown here.'
+  }
 
   if (customInstructions && customInstructions.trim() !== '') {
     prompt += `\n\nAdditional Instructions:\n${customInstructions}`

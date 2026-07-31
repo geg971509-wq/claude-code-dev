@@ -44,6 +44,10 @@ import {
 } from './services/api/errors.js'
 import { logAntError, logForDebugging } from './utils/debug.js'
 import {
+  applyToolLoopDetection,
+  createToolLoopTracker,
+} from './services/toolLoopDetection.js'
+import {
   createUserMessage,
   createUserInterruptionMessage,
   normalizeMessagesForAPI,
@@ -221,6 +225,10 @@ function getAutonomyTurnOutcome(params: {
       return { type: 'cancelled' }
     case 'model_error':
       return { type: 'failed', error: terminal.error }
+    case 'tool_loop':
+      // Safety intervention stopped a runaway repeated tool call — the turn
+      // was halted, not failed.
+      return { type: 'cancelled' }
     default:
       return {
         type: 'failed',
@@ -267,6 +275,11 @@ type State = {
   transition: Continue | undefined
 }
 
+/**
+ * CONTRACT: Must not throw. All failures must be yielded as stream events.
+ * Any exception escaping this generator terminates the stream without a proper
+ * error message. Catch errors and yield them; never let them propagate out.
+ */
 export async function* query(
   params: QueryParams,
 ): AsyncGenerator<
@@ -319,7 +332,18 @@ export async function* query(
   } catch (error) {
     didThrow = true
     thrownError = error
-    throw error
+    // Honors the CONTRACT above. Everything outside queryLoop's own
+    // try/catch lands here — the setup awaits and the entire tool loop — and
+    // in the REPL nothing between `for await` and PromptInput's
+    // `void onSubmit(...)` catches, so a rethrow becomes an unhandled
+    // rejection and gracefulShutdown.ts exits the session. Mirroring
+    // queryLoop's model_error terminal keeps the failed-turn signal for
+    // autonomy, and isApiErrorMessage still drives print mode's exit 1.
+    logError(error)
+    yield createAssistantAPIErrorMessage({
+      content: error instanceof Error ? error.message : String(error),
+    })
+    return { reason: 'model_error', error }
   } finally {
     await finalizeAutonomyCommandsForTurn({
       commands: consumedAutonomyCommands,
@@ -374,8 +398,8 @@ export async function* query(
     }
   }
 
-  // Only reached if queryLoop returned normally. Skipped on throw (error
-  // propagates through yield*) and on .return() (Return completion closes
+  // Only reached if queryLoop returned normally. Skipped when the catch above
+  // returns a model_error terminal, and on .return() (Return completion closes
   // both generators). This gives the same asymmetric started-without-completed
   // signal as print.ts's drainCommandQueue when the turn fails.
   for (const uuid of consumedCommandUuids) {
@@ -425,6 +449,14 @@ async function* queryLoop(
     transition: undefined,
   }
   const budgetTracker = feature('TOKEN_BUDGET') ? createBudgetTracker() : null
+
+  // Cross-iteration tool-call streak tracker (TOOL_LOOP_DETECTION). Loop-local
+  // like taskBudgetRemaining: one query() call == one user prompt, which is
+  // exactly the lifetime a consecutive-call streak should have. Null when the
+  // flag is off.
+  const toolLoopTracker = feature('TOOL_LOOP_DETECTION')
+    ? createToolLoopTracker()
+    : null
 
   // task_budget.remaining tracking across compaction boundaries. Undefined
   // until first compact fires — while context is uncompacted the server can
@@ -670,6 +702,7 @@ async function* queryLoop(
         originalMessageCount: messages.length,
         compactedMessageCount:
           compactionResult.summaryMessages.length +
+          (compactionResult.messagesToKeep?.length ?? 0) +
           compactionResult.attachments.length +
           compactionResult.hookResults.length,
         preCompactTokenCount,
@@ -1449,14 +1482,18 @@ async function* queryLoop(
         // on prompt-too-long creates a death spiral: error → hook blocking
         // → retry → error → … (the hook injects more tokens each cycle).
         yield lastMessage!
-        void executeStopFailureHooks(lastMessage!, toolUseContext)
+        void executeStopFailureHooks(lastMessage!, toolUseContext).catch(
+          logError,
+        )
         return { reason: isWithheldMedia ? 'image_error' : 'prompt_too_long' }
       } else if (feature('CONTEXT_COLLAPSE') && isWithheld413) {
         // reactiveCompact compiled out but contextCollapse withheld and
         // couldn't recover (staged queue empty/stale). Surface. Same
         // early-return rationale — don't fall through to stop hooks.
         yield lastMessage
-        void executeStopFailureHooks(lastMessage, toolUseContext)
+        void executeStopFailureHooks(lastMessage, toolUseContext).catch(
+          logError,
+        )
         return { reason: 'prompt_too_long' }
       }
 
@@ -1482,6 +1519,10 @@ async function* queryLoop(
           logEvent('tengu_max_tokens_escalate', {
             escalatedTo: ESCALATED_MAX_TOKENS,
           })
+          // Detach in-flight streaming tools before abandoning this
+          // iteration — otherwise their side effects run detached while
+          // their results are dropped (mirrors the fallback paths above).
+          streamingToolExecutor?.discard()
           const next: State = {
             messages: messagesForQuery,
             toolUseContext,
@@ -1506,6 +1547,9 @@ async function* queryLoop(
             isMeta: true,
           })
 
+          // Detach in-flight streaming tools before abandoning this
+          // iteration — see the escalate path above.
+          streamingToolExecutor?.discard()
           const next: State = {
             messages: [
               ...messagesForQuery,
@@ -1529,7 +1573,9 @@ async function* queryLoop(
           continue
         }
 
-        // Recovery exhausted — surface the withheld error now.
+        // Recovery exhausted — surface the withheld error now. Detach
+        // in-flight streaming tools first (same rationale as above).
+        streamingToolExecutor?.discard()
         yield lastMessage
       }
 
@@ -1538,7 +1584,9 @@ async function* queryLoop(
       // real response — hooks evaluating it create a death spiral:
       // error → hook blocking → retry → error → …
       if (lastMessage?.isApiErrorMessage) {
-        void executeStopFailureHooks(lastMessage, toolUseContext)
+        void executeStopFailureHooks(lastMessage, toolUseContext).catch(
+          logError,
+        )
         return {
           reason: 'model_error',
           error: lastMessage.error ?? lastMessage.apiError ?? 'api_error',
@@ -1667,8 +1715,39 @@ async function* queryLoop(
           requestTools,
         )
 
+    // Tool-loop detection: map tool_use_id → (name, input) so each tool
+    // result can be attributed back to its originating call.
+    const toolLoopCallInfo = toolLoopTracker
+      ? new Map(
+          toolUseBlocks.map(block => [
+            block.id,
+            { name: block.name, input: block.input },
+          ]),
+        )
+      : null
+    let toolLoopForceStop = false
+
     for await (const update of toolUpdates) {
       if (update.message) {
+        // Graduated intervention for repeated identical tool calls: appends
+        // a <system-reminder> to the tool result (r1/r2/r3) or, at the force
+        // stop threshold, marks the turn to end after this batch drains.
+        // Must run before the yield so the UI/transcript see the same text
+        // the API will.
+        if (toolLoopTracker && toolLoopCallInfo) {
+          const loopResult = applyToolLoopDetection(
+            toolLoopTracker,
+            update.message,
+            toolLoopCallInfo,
+          )
+          if (loopResult.maxLevel !== 'none') {
+            logForDebugging(`tool loop detection: level=${loopResult.maxLevel}`)
+          }
+          if (loopResult.forceStop) {
+            toolLoopForceStop = true
+          }
+        }
+
         yield update.message
 
         if (
@@ -1691,7 +1770,16 @@ async function* queryLoop(
         }
       }
     }
+    toolLoopTracker?.endBatch()
     queryCheckpoint('query_tool_execution_end')
+
+    // Force-stop: the same call was repeated past the hard threshold. All
+    // results of this batch have been yielded/drained; end the turn here
+    // (like the model_error early return — stop hooks would have nothing
+    // meaningful to evaluate).
+    if (toolLoopForceStop) {
+      return { reason: 'tool_loop' }
+    }
 
     // Generate tool use summary after tool batch completes — passed to next recursive call
     let nextPendingToolUseSummary:

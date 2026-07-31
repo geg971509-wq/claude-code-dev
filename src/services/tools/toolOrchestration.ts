@@ -8,6 +8,7 @@ import {
 } from '../../Tool.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { all } from '../../utils/generators.js'
+import { logError } from '../../utils/log.js'
 import { type MessageUpdateLazy, runToolUse } from './toolExecution.js'
 import { createToolBatchSpan, endToolBatchSpan } from '../langfuse/index.js'
 
@@ -22,6 +23,23 @@ export type MessageUpdate = {
   newContext: ToolUseContext
 }
 
+function applyContextModifier(
+  context: ToolUseContext,
+  modifier: (context: ToolUseContext) => ToolUseContext,
+): ToolUseContext {
+  try {
+    return modifier(context)
+  } catch (error) {
+    logError(error)
+    return context
+  }
+}
+
+/**
+ * CONTRACT: must not throw. The main query tool loop and orphaned-permission
+ * resume path both consume this generator directly, so failures must remain
+ * tool result messages rather than rejecting either iteration.
+ */
 export async function* runTools(
   toolUseMessages: ToolUseBlock[],
   assistantMessages: AssistantMessage[],
@@ -78,7 +96,7 @@ export async function* runTools(
           continue
         }
         for (const modifier of modifiers) {
-          currentContext = modifier(currentContext)
+          currentContext = applyContextModifier(currentContext, modifier)
         }
       }
       yield { newContext: currentContext }
@@ -167,7 +185,10 @@ async function* runToolsSerially(
       requestTools,
     )) {
       if (update.contextModifier) {
-        currentContext = update.contextModifier.modifyContext(currentContext)
+        currentContext = applyContextModifier(
+          currentContext,
+          update.contextModifier.modifyContext,
+        )
       }
       yield {
         message: update.message,

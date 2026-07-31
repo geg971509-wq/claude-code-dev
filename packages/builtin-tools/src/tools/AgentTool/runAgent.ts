@@ -86,7 +86,13 @@ import {
 import type { ContentReplacementState } from 'src/utils/toolResultStorage.js'
 import { createAgentId } from 'src/utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
+import {
+  lastAssistantText,
+  SUMMARY_CONTINUATION_PROMPT,
+  SUMMARY_MIN_LENGTH,
+} from './summaryGate.js'
 import { filterIncompleteToolCalls } from './filterIncompleteToolCalls.js'
+import { acquireAgentLaunchSlot } from './launchThrottle.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
 
 export { filterIncompleteToolCalls } from './filterIncompleteToolCalls.js'
@@ -772,7 +778,21 @@ export async function* runAgent({
     agentToolUseContext.langfuseTrace = subTrace
   }
 
+  // Tracks whether the main loop exited via the max-turns break (vs. running
+  // to completion) — the summary gate below must not fire after exhaustion.
+  let hitMaxTurns = false
+  // API-shaped messages only (assistant/user) accumulated for a potential
+  // summary-gate continuation turn. Progress/compact_boundary messages are
+  // recordable for the transcript but are not valid query() input.
+  const apiMessages: Message[] = [...initialMessages]
+
   try {
+    // AGENT_LAUNCH_THROTTLE: during API rate limiting, new subagent launches
+    // wait out the cooldown instead of adding N× retry amplification.
+    if (feature('AGENT_LAUNCH_THROTTLE')) {
+      await acquireAgentLaunchSlot(agentAbortController.signal)
+    }
+
     for await (const message of query({
       messages: initialMessages,
       systemPrompt: agentSystemPrompt,
@@ -811,6 +831,7 @@ export async function* runAgent({
 }
 )`,
           )
+          hitMaxTurns = true
           break
         }
         yield message as Message
@@ -818,6 +839,9 @@ export async function* runAgent({
       }
 
       if (isRecordableMessage(message)) {
+        if (message.type === 'assistant' || message.type === 'user') {
+          apiMessages.push(message)
+        }
         // Record only the new message with correct parent (O(1) per message)
         await recordSidechainTranscript(
           [message],
@@ -830,6 +854,67 @@ export async function* runAgent({
           lastRecordedUuid = message.uuid
         }
         yield message
+      }
+    }
+
+    // Summary quality gate (SUBAGENT_SUMMARY_GATE, ported from kimi-code
+    // subagent-host.ts): a too-short final text gives the parent agent a
+    // useless handoff, so grant ONE tool-free expansion turn. Skipped for:
+    // fork children (useExactTools — an extra message breaks the
+    // byte-identical prompt-cache prefix), background agents (their short
+    // result feeds a notification, not a parent), max-turns exhaustion (the
+    // agent is already stuck), and aborts.
+    if (feature('SUBAGENT_SUMMARY_GATE')) {
+      if (
+        !hitMaxTurns &&
+        !useExactTools &&
+        !isAsync &&
+        !agentAbortController.signal.aborted &&
+        lastAssistantText(apiMessages).length < SUMMARY_MIN_LENGTH
+      ) {
+        logForDebugging(
+          `[Agent:${agentDefinition.agentType}] final summary below ${SUMMARY_MIN_LENGTH} chars, requesting one expansion turn`,
+        )
+        for await (const message of query({
+          messages: [
+            ...apiMessages,
+            createUserMessage({
+              content: SUMMARY_CONTINUATION_PROMPT,
+              isMeta: true,
+            }),
+          ],
+          systemPrompt: agentSystemPrompt,
+          userContext: resolvedUserContext,
+          systemContext: resolvedSystemContext,
+          canUseTool,
+          // Tool-free turn: the agent cannot start fresh work (or spawn
+          // further sub-agents) while expanding its summary.
+          toolUseContext: {
+            ...agentToolUseContext,
+            options: { ...agentToolUseContext.options, tools: [] },
+          },
+          querySource,
+          maxTurns: 1,
+        })) {
+          // max_turns_reached and other attachments are expected on this
+          // bounded turn — swallow them instead of surfacing to the parent.
+          if (message.type === 'attachment') {
+            continue
+          }
+          if (isRecordableMessage(message)) {
+            await recordSidechainTranscript(
+              [message],
+              agentId,
+              lastRecordedUuid,
+            ).catch(err =>
+              logForDebugging(`Failed to record sidechain transcript: ${err}`),
+            )
+            if (message.type !== 'progress') {
+              lastRecordedUuid = message.uuid
+            }
+            yield message
+          }
+        }
       }
     }
 

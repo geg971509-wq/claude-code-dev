@@ -19,6 +19,7 @@
 export const FEATURE_FLAGS = [
   'ABLATION_BASELINE', // 消融实验基线模式
   'ACP', // ACP 代理协议，支持外部 agent 接入
+  'AGENT_LAUNCH_THROTTLE', // 子代理启动限速（API 限流冷却期内暂缓新启动）
   'AGENT_MEMORY_SNAPSHOT', // Agent 记忆快照
   'AGENT_TRIGGERS', // 本地 Agent 触发器（工具调用时启动子代理）
   'AGENT_TRIGGERS_REMOTE', // sessionIngress 远程触发器
@@ -39,6 +40,8 @@ export const FEATURE_FLAGS = [
   'CCR_REMOTE_SETUP', // CCR 远程配置
   'CHICAGO_MCP', // Chicago MCP 集成（内部代号）
   'COMMIT_ATTRIBUTION', // Git 提交归属追踪（记录 AI 辅助贡献）
+  'COMPACT_PRESERVE_USER_MESSAGES', // compact 时保留真实用户消息 HEAD+TAIL（借鉴 kimi handoff）
+  'COMPACT_TAIL_PRESERVATION', // compact 后逐字保留最近 N 个 API round（借鉴 opencode tail preservation）
   'COMPACTION_REMINDERS', // 压缩提醒
   'CONNECTOR_TEXT', // Connector 文本块类型，扩展 API 内容格式
   'CONTEXT_COLLAPSE', // 上下文折叠（已禁用：空壳 stub）
@@ -53,6 +56,7 @@ export const FEATURE_FLAGS = [
   'EXPERIMENTAL_SKILL_SEARCH', // 技能搜索
   'EXTRACT_MEMORIES', // 每次 turn 结束提取记忆
   'FILE_PERSISTENCE', // 文件持久化
+  'FILE_MUTATION_QUEUE', // 同文件 mutation 串行化（跨 query loop 文件写互斥）
   'FORK_SUBAGENT', // fork 子代理（已由 Agent tool 等效实现）
   'GOAL', // 持久线程目标命令（src/services/goal）
   'HARD_FAIL', // 硬失败模式
@@ -94,10 +98,12 @@ export const FEATURE_FLAGS = [
   'SLOW_OPERATION_LOGGING', // 慢操作日志
   'SSH_REMOTE', // SSH 远程连接，本地 REPL + 远端工具执行
   'STREAMLINED_OUTPUT', // 精简输出模式
+  'SUBAGENT_SUMMARY_GATE', // 子代理摘要质量门（最终文本过短时追加一轮扩写）
   'TEAMMEM', // Team Memory（已禁用：依赖 COORDINATOR_MODE）
   'TEMPLATES', // 模板任务（new/list/reply 子命令）
   'TERMINAL_PANEL', // 终端面板
   'TOKEN_BUDGET', // Token 预算管理与控制
+  'TOOL_LOOP_DETECTION', // 工具调用死循环分级干预（连击检测 + reminder 注入）
   'TORCH', // Torch 模式
   'TRANSCRIPT_CLASSIFIER', // 对话分类器，用于标注会话类型
   'TREE_SITTER_BASH', // tree-sitter Bash 解析

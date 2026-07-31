@@ -49,6 +49,7 @@ import {
   REPEATED_529_ERROR_MESSAGE,
 } from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
+import { noteRateLimited } from './agentLaunchController.js'
 
 const abortError = () => new APIUserAbortError()
 
@@ -260,6 +261,19 @@ export async function* withRetry<T>(
         `API error (attempt ${attempt}/${maxRetries + 1}): ${error instanceof APIError ? `${error.status} ${error.message}` : errorMessage(error)}`,
         { level: 'error' },
       )
+
+      // Feed account-level rate limiting into the agent launch throttle so
+      // NEW subagent launches pause during the cooldown instead of adding
+      // N× retry amplification (AGENT_LAUNCH_THROTTLE). Note: OpenAI/Grok
+      // compatibility layers bypass withRetry, so their 429s never reach this.
+      if (feature('AGENT_LAUNCH_THROTTLE')) {
+        if (
+          error instanceof APIError &&
+          (error.status === 429 || is529Error(error))
+        ) {
+          noteRateLimited(getRetryAfterMs(error) ?? undefined)
+        }
+      }
 
       // Fast mode fallback: on 429/529, either wait and retry (short delays)
       // or fall back to standard speed (long delays) to avoid cache thrashing.

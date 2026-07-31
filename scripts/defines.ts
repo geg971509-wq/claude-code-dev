@@ -99,4 +99,11 @@ export const DEFAULT_BUILD_FEATURES = [
   // Persistent thread goal command — auto-continuation, JSONL persistence,
   // strict completion/blocked audit. See src/services/goal.
   'GOAL',
+  // Agent 能力增强（借鉴 kimi-code，见 docs/feature-plan-2026-07-30-agent-enhancements.md）
+  'TOOL_LOOP_DETECTION', // 工具调用死循环分级干预
+  'SUBAGENT_SUMMARY_GATE', // 子代理摘要质量门
+  'COMPACT_PRESERVE_USER_MESSAGES', // compact 保留真实用户消息 HEAD+TAIL
+  'COMPACT_TAIL_PRESERVATION', // compact 后逐字保留最近 N 个 API round（预算 = 上下文 25%，2k-8k）
+  'FILE_MUTATION_QUEUE', // 同文件 mutation 串行化
+  'AGENT_LAUNCH_THROTTLE', // 子代理启动限速
 ] as const satisfies readonly FeatureFlagName[]

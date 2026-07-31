@@ -29,6 +29,10 @@ import {
 } from '../../hooks/toolPermission/permissionLogging.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import {
+  getFileMutationLockPath,
+  withFileMutationLock,
+} from './fileMutationQueue.js'
+import {
   findToolByName,
   type Tool,
   type ToolProgress,
@@ -365,6 +369,14 @@ function getMcpServerBaseUrlFromToolName(
   return getLoggingSafeMcpBaseUrl(serverConnection.config)
 }
 
+/**
+ * CONTRACT: must not throw. Tool failures are yielded as `tool_result` messages
+ * with `is_error`, never raised. Of the three call sites only the executor's
+ * (StreamingToolExecutor.ts:363) catches; toolOrchestration.ts:160 has no try,
+ * and 203 has try/`finally` but no catch. So a throw escapes into runTools →
+ * queryHelpers.ts:369 → query.ts and truncates the turn without pairing the
+ * in-flight `tool_use`.
+ */
 export async function* runToolUse(
   toolUse: ToolUseBlock,
   assistantMessage: AssistantMessage,
@@ -1325,6 +1337,21 @@ async function checkPermissionsAndCallTool(
           })
         },
       )
+    // FILE_MUTATION_QUEUE: serialize mutations to the same file across
+    // concurrent query loops (main loop + parallel subagents). The lock is
+    // taken only around tool.call — permission prompts above stay outside.
+    // Keyed on the backfilled input so `~/x` and `/abs/x` share one lock.
+    const mutationLockPath = feature('FILE_MUTATION_QUEUE')
+      ? getFileMutationLockPath(tool, callInput)
+      : null
+    const invokeToolCallSerialized = mutationLockPath
+      ? () =>
+          withFileMutationLock(
+            mutationLockPath,
+            invokeToolCall,
+            toolUseContext.abortController.signal,
+          )
+      : invokeToolCall
     // Fast-path: skip wrapper entirely when skill-learning is disabled to
     // avoid even the cached-import resolution on the hot path.
     const result = isSkillLearningEnabled()
@@ -1335,10 +1362,10 @@ async function checkPermissionsAndCallTool(
             tool.name,
             callInput,
             { sessionId: (toolUseContext as { sessionId?: string }).sessionId },
-            invokeToolCall,
+            invokeToolCallSerialized,
           )
         })()
-      : await invokeToolCall()
+      : await invokeToolCallSerialized()
     const durationMs = Date.now() - startTime
     addToToolDuration(durationMs)
 

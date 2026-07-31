@@ -8,7 +8,7 @@ const sessionTranscriptModule = feature('KAIROS')
 
 import { APIUserAbortError } from '@anthropic-ai/sdk'
 import { markPostCompaction } from 'src/bootstrap/state.js'
-import { getInvokedSkillsForAgent } from '../../bootstrap/state.js'
+import { getInvokedSkillsForAgent, getSdkBetas } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
@@ -41,7 +41,10 @@ import {
   type Attachment,
 } from '../../utils/attachments.js'
 import { getMemoryPath } from '../../utils/config.js'
-import { COMPACT_MAX_OUTPUT_TOKENS } from '../../utils/context.js'
+import {
+  COMPACT_MAX_OUTPUT_TOKENS,
+  getContextWindowForModel,
+} from '../../utils/context.js'
 import {
   analyzeContext,
   tokenStatsToStatsigMetrics,
@@ -116,10 +119,21 @@ import {
 import type { SDKStatus } from '../../entrypoints/agentSdkTypes.js'
 import { groupMessagesByApiRound } from './grouping.js'
 import {
+  formatPreservedSection,
+  selectPreservedUserMessages,
+} from './preservedUserMessages.js'
+import {
   getCompactPrompt,
   getCompactUserSummaryMessage,
   getPartialCompactPrompt,
 } from './prompt.js'
+import {
+  preserveRecentBudget,
+  selectPreservedTail,
+  type TailSelection,
+  tailMaxRounds,
+} from './tailPreservation.js'
+import { truncateToolResultsForCompaction } from './toolResultTruncation.js'
 
 export const POST_COMPACT_MAX_FILES_TO_RESTORE = 5
 export const POST_COMPACT_TOKEN_BUDGET = 50_000
@@ -341,21 +355,33 @@ export function buildPostCompactMessages(result: CompactionResult): Message[] {
 }
 
 /** Release large tool result payloads from kept messages after compaction.
- *  toolUseResult is only used for UI rendering, not API calls. */
+ *  toolUseResult is only used for UI rendering, not API calls.
+ *
+ *  Also strips API usage from preserved assistant messages: that usage
+ *  describes the PRE-compact context (≈ the over-threshold count that
+ *  triggered compaction). If it survived, tokenCountWithEstimation would
+ *  report the stale pre-compact count on the new chain and immediately
+ *  retrigger compaction (same-turn predictive check, next-turn auto check,
+ *  status bar warning). */
 function stripToolUseResults(messages: Message[] | undefined): Message[] {
   if (!messages) return []
   return messages.map(msg => {
+    let next = msg
     if (
-      msg.type === 'user' &&
-      'toolUseResult' in msg &&
-      msg.toolUseResult !== undefined
+      next.type === 'user' &&
+      'toolUseResult' in next &&
+      next.toolUseResult !== undefined
     ) {
-      const { toolUseResult, ...rest } = msg as Message & {
+      const { toolUseResult, ...rest } = next as Message & {
         toolUseResult: unknown
       }
-      return rest as Message
+      next = rest as Message
     }
-    return msg
+    if (next.type === 'assistant' && next.message && 'usage' in next.message) {
+      const { usage: _usage, ...restMessage } = next.message
+      next = { ...next, message: restMessage } as Message
+    }
+    return next
   })
 }
 
@@ -403,6 +429,28 @@ export function mergeHookInstructions(
 }
 
 /**
+ * Mirror of getEffectiveContextWindowSize (autoCompact.ts:33) — duplicated
+ * here because importing autoCompact.ts would close a
+ * compact.ts ↔ autoCompact.ts module cycle. Keep the two in sync.
+ */
+const TAIL_MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
+function getTailEffectiveWindow(model: string): number {
+  const reservedTokensForSummary = Math.min(
+    getMaxOutputTokensForModel(model),
+    TAIL_MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+  )
+  let contextWindow = getContextWindowForModel(model, getSdkBetas())
+  const autoCompactWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+  if (autoCompactWindow) {
+    const parsed = parseInt(autoCompactWindow, 10)
+    if (!Number.isNaN(parsed) && parsed > 0) {
+      contextWindow = Math.min(contextWindow, parsed)
+    }
+  }
+  return contextWindow - reservedTokensForSummary
+}
+
+/**
  * Creates a compact version of a conversation by summarizing older messages
  * and preserving recent conversation history.
  */
@@ -421,6 +469,47 @@ export async function compactConversation(
     }
 
     const preCompactTokenCount = tokenCountWithEstimation(messages)
+
+    // Tail preservation: keep the most recent API rounds verbatim after the
+    // summary instead of replacing the whole history. Skipped when the user
+    // passed custom instructions — an explicit manual compact may intend to
+    // compress everything away. feature() must sit alone in the if condition
+    // (Bun compiler restriction), hence the nested form.
+    const hasUserCustomInstructions = Boolean(customInstructions?.trim())
+    let tailSelection: TailSelection = { head: messages, tail: [] }
+    if (feature('COMPACT_TAIL_PRESERVATION')) {
+      if (!hasUserCustomInstructions) {
+        tailSelection = selectPreservedTail(
+          messages,
+          preserveRecentBudget(
+            getTailEffectiveWindow(context.options.mainLoopModel),
+          ),
+          tailMaxRounds(),
+          round =>
+            roughTokenCountEstimationForMessages(
+              round as Parameters<
+                typeof roughTokenCountEstimationForMessages
+              >[0],
+            ),
+        )
+      }
+    }
+    // Same predicate as partial compact 'up_to': kept messages must not
+    // carry progress entries, stale boundaries, or old summaries.
+    const messagesToKeep = tailSelection.tail.filter(
+      m =>
+        m.type !== 'progress' &&
+        !isCompactBoundaryMessage(m) &&
+        !(m.type === 'user' && m.isCompactSummary),
+    )
+    const tailPreservedTokens =
+      messagesToKeep.length > 0
+        ? roughTokenCountEstimationForMessages(
+            messagesToKeep as Parameters<
+              typeof roughTokenCountEstimationForMessages
+            >[0],
+          )
+        : 0
 
     const appState = context.getAppState()
     void logPermissionContextForAnts(appState.toolPermissionContext, 'summary')
@@ -459,12 +548,14 @@ export async function compactConversation(
       true,
     )
 
-    const compactPrompt = getCompactPrompt(customInstructions)
+    const compactPrompt = getCompactPrompt(customInstructions, {
+      recentTailPreserved: messagesToKeep.length > 0,
+    })
     const summaryRequest = createUserMessage({
       content: compactPrompt,
     })
 
-    let messagesToSummarize = messages
+    let messagesToSummarize = tailSelection.head
     let retryCacheSafeParams = cacheSafeParams
     let summaryResponse: AssistantMessage
     let summary: string | null
@@ -556,6 +647,9 @@ export async function compactConversation(
         preCompactReadFileState,
         context,
         POST_COMPACT_MAX_FILES_TO_RESTORE,
+        // Files already readable in the preserved tail are skipped — no
+        // point re-injecting them as attachments.
+        messagesToKeep,
       ),
       createAsyncAgentAttachmentsIfNeeded(context),
     ])
@@ -636,13 +730,25 @@ export async function compactConversation(
     }
 
     const transcriptPath = getTranscriptPath()
+    let compactSummaryContent = getCompactUserSummaryMessage(
+      summary,
+      suppressFollowUpQuestions,
+      transcriptPath,
+      messagesToKeep.length > 0,
+    )
+    // Preserve real user messages (verbatim HEAD + TAIL) inside the summary
+    // message — see preservedUserMessages.ts. Appended BEFORE
+    // truePostCompactTokenCount below so the retrigger estimate covers it.
+    // Only the head is scanned: tail user messages are already preserved
+    // verbatim in messagesToKeep, so including them here would duplicate them.
+    if (feature('COMPACT_PRESERVE_USER_MESSAGES')) {
+      compactSummaryContent += formatPreservedSection(
+        selectPreservedUserMessages(tailSelection.head),
+      )
+    }
     const summaryMessages: UserMessage[] = [
       createUserMessage({
-        content: getCompactUserSummaryMessage(
-          summary,
-          suppressFollowUpQuestions,
-          transcriptPath,
-        ),
+        content: compactSummaryContent,
         isCompactSummary: true,
         isVisibleInTranscriptOnly: true,
       }),
@@ -662,6 +768,7 @@ export async function compactConversation(
     const truePostCompactTokenCount = roughTokenCountEstimationForMessages([
       boundaryMarker,
       ...summaryMessages,
+      ...messagesToKeep,
       ...postCompactFileAttachments,
       ...hookMessages,
     ] as Parameters<typeof roughTokenCountEstimationForMessages>[0])
@@ -692,6 +799,8 @@ export async function compactConversation(
       isRecompactionInChain: recompactionInfo?.isRecompactionInChain ?? false,
       turnsSincePreviousCompact:
         recompactionInfo?.turnsSincePreviousCompact ?? -1,
+      tailPreservedMessages: messagesToKeep.length,
+      tailPreservedTokens,
       previousCompactTurnId: (recompactionInfo?.previousCompactTurnId ??
         '') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       compactionInputTokens: compactionUsage?.input_tokens,
@@ -739,8 +848,12 @@ export async function compactConversation(
 
     // Write a reduced transcript segment for the pre-compaction messages
     // (assistant mode only). Fire-and-forget — errors are logged internally.
+    // Only the summarized head is written: the preserved tail stays in the
+    // active chain, so writing it here too would duplicate it next compact.
     if (feature('KAIROS')) {
-      void sessionTranscriptModule?.writeSessionTranscriptSegment(messages)
+      void sessionTranscriptModule?.writeSessionTranscriptSegment(
+        tailSelection.head,
+      )
     }
 
     context.onCompactProgress?.({
@@ -763,8 +876,15 @@ export async function compactConversation(
       .join('\n')
 
     return {
-      boundaryMarker,
+      // Suffix-preserving anchor: the last summary message sits immediately
+      // before messagesToKeep in buildPostCompactMessages' ordering.
+      boundaryMarker: annotateBoundaryWithPreservedSegment(
+        boundaryMarker,
+        summaryMessages.at(-1)?.uuid ?? boundaryMarker.uuid,
+        messagesToKeep,
+      ),
       summaryMessages,
+      messagesToKeep,
       attachments: postCompactFileAttachments,
       hookResults: hookMessages,
       userDisplayMessage: combinedUserDisplayMessage || undefined,
@@ -1292,6 +1412,11 @@ async function streamCompactSummary({
     )
     const maxAttempts = retryEnabled ? MAX_COMPACT_STREAMING_RETRIES : 1
 
+    // Truncate long tool results for the summarizer. Fallback-only: the
+    // forked path above needs a byte-identical prefix for cache reuse.
+    // Computed once — the retry loop reuses the same reference every attempt.
+    const fallbackMessages = truncateToolResultsForCompaction(messages)
+
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       // Reset state for retry
       let hasStartedStreaming = false
@@ -1331,7 +1456,7 @@ async function streamCompactSummary({
         messages: normalizeMessagesForAPI(
           stripImagesFromMessages(
             stripReinjectedAttachments([
-              ...getMessagesAfterCompactBoundary(messages),
+              ...getMessagesAfterCompactBoundary(fallbackMessages),
               summaryRequest,
             ]),
           ),
