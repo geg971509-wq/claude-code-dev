@@ -18,6 +18,7 @@ import {
   mock,
   test,
 } from 'bun:test'
+import { authMockWith } from '../../../../tests/mocks/auth.js'
 import { debugMock } from '../../../../tests/mocks/debug.js'
 import { logMock } from '../../../../tests/mocks/log.js'
 import { setupAxiosMock } from '../../../../tests/mocks/axios.js'
@@ -29,9 +30,12 @@ mock.module('src/utils/debug.ts', debugMock)
 const mockAccessToken = 'test-token-triggers'
 const mockOrgUUID = 'org-uuid-triggers'
 
-mock.module('src/utils/auth.js', () => ({
-  getClaudeAIOAuthTokens: () => ({ accessToken: mockAccessToken }),
-}))
+mock.module(
+  'src/utils/auth.js',
+  await authMockWith({
+    getClaudeAIOAuthTokens: () => ({ accessToken: mockAccessToken }),
+  }),
+)
 mock.module('src/services/oauth/client.js', () => ({
   getOrganizationUUID: async () => mockOrgUUID,
 }))

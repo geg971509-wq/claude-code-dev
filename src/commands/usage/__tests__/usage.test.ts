@@ -16,14 +16,30 @@ mock.module('src/utils/log.ts', logMock)
 import { debugMock } from '../../../../tests/mocks/debug.js'
 mock.module('src/utils/debug.ts', debugMock)
 
+import { authMockWith } from '../../../../tests/mocks/auth.js'
+
 mock.module('bun:bundle', () => ({ feature: () => false }))
 
-mock.module('src/utils/auth.ts', () => ({
-  isClaudeAISubscriber: () => false,
-  getOAuthAccount: () => null,
-}))
+// getOAuthAccount used to be stubbed here. auth.ts has never exported it — the
+// real name is getOauthAccountInfo — so the stub was inert while the partial
+// factory blanked the 57 exports that do exist. Spreading the real module makes
+// that class of drift impossible.
+mock.module(
+  'src/utils/auth.ts',
+  await authMockWith({ isClaudeAISubscriber: () => false }),
+)
 
+// Real module spread, not a bare { currentLimits }. mock.module is
+// process-global, and claudeAiLimits.ts re-exports getRateLimitErrorMessage
+// from rateLimitMessages.js — which services/api/errors.ts imports. A partial
+// factory here broke ultrareviewCommand.test.tsx with "Export named
+// 'getRateLimitErrorMessage' not found" whenever it loaded errors.ts after this
+// file. Inlined rather than a shared helper: one call site.
+const realClaudeAiLimits = (await import(
+  'src/services/claudeAiLimits.js'
+)) as Record<string, unknown>
 mock.module('src/services/claudeAiLimits.ts', () => ({
+  ...realClaudeAiLimits,
   currentLimits: { isUsingOverage: false },
 }))
 

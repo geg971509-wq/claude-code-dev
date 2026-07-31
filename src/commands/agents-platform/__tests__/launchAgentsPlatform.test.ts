@@ -16,6 +16,7 @@ import {
   mock,
   test,
 } from 'bun:test'
+import { authMockWith } from '../../../../tests/mocks/auth.js'
 import { debugMock } from '../../../../tests/mocks/debug.js'
 import { logMock } from '../../../../tests/mocks/log.js'
 import { setupAxiosMock } from '../../../../tests/mocks/axios.js'
@@ -35,11 +36,12 @@ mock.module('src/services/analytics/index.js', () => ({
 }))
 
 // ── Auth / OAuth mocks ──────────────────────────────────────────────────────
-const realAuth = await import('src/utils/auth.js')
-mock.module('src/utils/auth.js', () => ({
-  ...realAuth,
-  getClaudeAIOAuthTokens: () => ({ accessToken: 'test-token-ap' }),
-}))
+mock.module(
+  'src/utils/auth.js',
+  await authMockWith({
+    getClaudeAIOAuthTokens: () => ({ accessToken: 'test-token-ap' }),
+  }),
+)
 mock.module('src/services/oauth/client.js', () => ({
   getOrganizationUUID: async () => 'org-uuid-ap',
 }))

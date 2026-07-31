@@ -19,6 +19,7 @@
  *     verbatim (call doesn't parse them itself)
  */
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { authMockWith } from '../../../../tests/mocks/auth.js';
 import { debugMock } from '../../../../tests/mocks/debug.js';
 import { logMock } from '../../../../tests/mocks/log.js';
 import { setupAxiosMock } from '../../../../tests/mocks/axios.js';
@@ -58,11 +59,14 @@ mock.module('src/services/analytics/growthbook.js', () => ({
 }));
 
 // Mock auth utilities
-mock.module('src/utils/auth.js', () => ({
-  isClaudeAISubscriber: () => true,
-  isTeamSubscriber: () => false,
-  isEnterpriseSubscriber: () => false,
-}));
+mock.module(
+  'src/utils/auth.js',
+  await authMockWith({
+    isClaudeAISubscriber: () => true,
+    isTeamSubscriber: () => false,
+    isEnterpriseSubscriber: () => false,
+  }),
+);
 
 // Mock checkOverageGate with a mutable gate result so each test can drive
 // the four branches in ultrareviewCommand.call (not-enabled, low-balance,

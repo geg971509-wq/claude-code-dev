@@ -1,17 +1,38 @@
 import { describe, expect, test, beforeEach, afterEach, mock } from 'bun:test'
+import { authMockWith } from '../../../tests/mocks/auth'
+import { settingsMockWith } from '../../../tests/mocks/settings'
 
 // Mock heavy dependencies to avoid import chain issues
+// Real module spread. Bare { isUltrathinkEnabled } blanked thinking.ts's other
+// 7 exports process-wide, which surfaced in usage.test.ts and
+// ultrareviewCommand.test.tsx as "Export named 'findThinkingTriggerPositions' /
+// 'shouldEnableThinkingByDefault' not found".
+const realThinking = (await import('src/utils/thinking.js')) as Record<
+  string,
+  unknown
+>
 mock.module('src/utils/thinking.js', () => ({
+  ...realThinking,
   isUltrathinkEnabled: () => false,
 }))
-mock.module('src/utils/settings/settings.js', () => ({
-  getInitialSettings: () => ({}),
-}))
-mock.module('src/utils/auth.js', () => ({
-  isProSubscriber: () => false,
-  isMaxSubscriber: () => false,
-  isTeamSubscriber: () => false,
-}))
+// Both spread the real module. A partial factory blanks the rest of the module
+// process-wide — `mock.module` is global and last-write-wins — and a partial
+// auth mock here made getAuthStatus.test.ts fail with "Export named
+// 'getClaudeAIOAuthTokens' not found" whenever the two ran in the same process.
+mock.module(
+  'src/utils/settings/settings.js',
+  await settingsMockWith({
+    getInitialSettings: () => ({}),
+  }),
+)
+mock.module(
+  'src/utils/auth.js',
+  await authMockWith({
+    isProSubscriber: () => false,
+    isMaxSubscriber: () => false,
+    isTeamSubscriber: () => false,
+  }),
+)
 mock.module('src/services/analytics/growthbook.js', () => ({
   getFeatureValue_CACHED_MAY_BE_STALE: (_key: string, defaultValue: unknown) =>
     defaultValue ?? {},

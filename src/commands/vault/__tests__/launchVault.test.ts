@@ -17,6 +17,7 @@ import {
   mock,
   test,
 } from 'bun:test'
+import { authMockWith } from '../../../../tests/mocks/auth.js'
 import { debugMock } from '../../../../tests/mocks/debug.js'
 import { logMock } from '../../../../tests/mocks/log.js'
 import { setupAxiosMock } from '../../../../tests/mocks/axios.js'
@@ -25,9 +26,12 @@ mock.module('src/utils/log.ts', logMock)
 mock.module('src/utils/debug.ts', debugMock)
 
 // ── Auth / OAuth mocks ──────────────────────────────────────────────────────
-mock.module('src/utils/auth.js', () => ({
-  getClaudeAIOAuthTokens: () => ({ accessToken: 'test-token' }),
-}))
+mock.module(
+  'src/utils/auth.js',
+  await authMockWith({
+    getClaudeAIOAuthTokens: () => ({ accessToken: 'test-token' }),
+  }),
+)
 mock.module('src/services/oauth/client.js', () => ({
   getOrganizationUUID: async () => 'org-uuid-test',
 }))
