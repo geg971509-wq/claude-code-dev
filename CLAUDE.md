@@ -230,6 +230,7 @@ Feature flags control which functionality is enabled at runtime. 代码中统一
 - 多 worker: `COORDINATOR_MODE`, `BG_SESSIONS`, `TEMPLATES`
 - 连接器: `CONNECTOR_TEXT`, `COMMIT_ATTRIBUTION`, `DIRECT_CONNECT`
 - 实验性: `EXPERIMENTAL_SKILL_SEARCH`, `EXPERIMENTAL_SEARCH_EXTRA_TOOLS`
+- Agent 增强: `TOOL_LOOP_DETECTION`（工具死循环分级干预）, `SUBAGENT_SUMMARY_GATE`（子代理摘要质量门）, `COMPACT_PRESERVE_USER_MESSAGES`（compact 保留真实用户消息 HEAD+TAIL）, `COMPACT_TAIL_PRESERVATION`（compact 后逐字保留最近 N 个 API round，预算为上下文 25% 夹取 2k-8k，借鉴 opencode）, `FILE_MUTATION_QUEUE`（同文件 mutation 串行化）, `AGENT_LAUNCH_THROTTLE`（子代理启动限速）
 - 模式: `POOR`, `SSH_REMOTE`
 - 已禁用: `CONTEXT_COLLAPSE`, `FORK_SUBAGENT`, `UDS_INBOX`, `LAN_PIPES`, `REVIEW_ARTIFACT`, `TEAMMEM`, `SKILL_LEARNING`
 
@@ -284,7 +285,7 @@ Feature flags control which functionality is enabled at runtime. 代码中统一
 | OpenAI/Gemini/Grok 兼容层 | Restored |
 | Remote Control Server | Restored — 自托管 RCS + Web UI |
 | `packages/shell/`, `packages/swarm/`, `packages/mcp-server/`, `packages/cc-knowledge/` | Removed — 功能合并或废弃 |
-| Analytics / GrowthBook / Sentry | Empty implementations |
+| Analytics / GrowthBook / Sentry | Disabled — 1P analytics（tengu_*）硬关闭：`is1PEventLoggingEnabled()` 恒 false，从不发送 `api/event_logging/batch`、不写 `~/.claude/telemetry/`；GrowthBook 远端拉取禁用，`isGrowthBookEnabled()` 恒 false，feature gates 走 `LOCAL_GATE_DEFAULTS` 本地解析（`CLAUDE_CODE_DISABLE_LOCAL_GATES=1` 可绕过）；Sentry 无 DSN 时为 inert |
 | Magic Docs / LSP Server | Restored — Magic Docs 自动更新 + LSP 服务器管理器 |
 | Plugins / Marketplace | Restored — 插件安装/卸载/启用/禁用 + Marketplace 浏览 |
 | MCP OAuth | Simplified |
@@ -304,6 +305,56 @@ Feature flags control which functionality is enabled at runtime. 代码中统一
 - **共享 mock/fixture**: `tests/mocks/`（api-responses, file-system, fixtures/）
 - **命名**: `describe("functionName")` + `test("behavior description")`，英文
 - **包测试**: `packages/` 下各包也有独立测试（如 `color-diff-napi` 11 tests）
+
+### Faux provider（脚本化离线 LLM）
+
+`CLAUDE_CODE_USE_FAUX=1` + `CLAUDE_CODE_FAUX_SCRIPT=<path>` 让整条 CLI 走 `src/services/api/faux/`，回放脚本里预设的回答，不联网、不读凭据、`total_cost_usd` 恒为 0。用于 e2e 测试和 evals。
+
+```jsonc
+{ "turns": [
+    { "text": "Reading it.",
+      "toolUses": [{ "name": "Read", "input": { "file_path": "/tmp/a" } }] },
+    { "text": "Done." }
+] }
+```
+
+轮次由 transcript 里的 assistant 消息数推导（不是模块级计数器），所以 resume/fork/并行 subagent 都能复现同一结果。`CLAUDE_CODE_FAUX_DELAY_MS` 可给每个事件加延迟，用于观察增量渲染。
+
+**faux 故意不加入 `APIProvider` 联合类型** —— 该联合喂给 `ModelConfig = Record<APIProvider, ModelName>`，加入会连带改 12 处 config 字面量和约 60 处无穷尽性检查的行为分支（betas/thinking/effort/cost/auth/`/status`），而 faux 不需要其中任何一处。它在 `queryModel` 的 dispatch 处按环境变量短路，位置在所有 provider 分支之前。
+
+**faux 与 VCR 互斥，且 faux 优先** —— 两者都是"替换真实 API"的同类接缝，但 `withVCR`/`withStreamingVCR` 包在 `queryModel` **外面**，所以 VCR 会在 faux 短路之前就要求命中 fixture。`shouldUseVCR()` 因此在最前面检查 faux 并返回 `false`。缺这个 guard 时，任何 `NODE_ENV=test` 下的 faux 运行（`bun test` 会设置它，子进程继承）都会死在 "fixture missing" 上 —— 报错信息完全不提 faux，极难定位。
+
+**`isFauxProviderEnabled()` 放在 `src/utils/envUtils.ts`，不在 faux 模块里** —— 四个调用方（`auth.ts` 凭据查找、`vcr.ts` gate、`claude.ts` dispatch、`sideQuery.ts` 兜底 throw）都在启动早期或热路径上，不应为读一个环境变量而把 Anthropic SDK 拖进 import 图。该函数刻意用 `=== '1'` 精确匹配而非 `isEnvTruthy`：这个开关会屏蔽真实 API 调用和凭据读取，必须无法被误开（继承来的 `CLAUDE_CODE_USE_FAUX=true` 不能算）。
+
+### Evals harness
+
+`src/evals/runner.ts` 用 faux provider 跑完整 CLI 子进程做离线 e2e 断言：
+
+```ts
+const result = await runEvalAndClean({
+  prompt: 'Say hello',
+  fauxScript: [{ text: 'Hello from faux!' }],
+})
+expect(result.output).toContain('Hello from faux!')
+```
+
+`fauxScript` 支持函数形式 `(dir) => turns` 以引用 `setup(dir)` 创建的 fixture 路径。脚本里的 tool call 会**真实执行**，但 CLI 的权限模型仅允许 cwd（项目根目录）内的文件操作 —— `dir` 是 `/tmp` 下的临时目录，在根目录之外，工具调用会被静默拒绝（exit 0，无错误输出）。需要断言文件系统副作用时，fixture 必须放在项目根目录内，用绝对路径在 faux script 里引用。用 `runEval` + `cleanupEval(result)` 保留 `dir` 做事后文本/文件断言；纯文本输出断言用 `runEvalAndClean`。
+
+子进程跑的是 `bun src/entrypoints/cli.tsx`（不是 `dist/cli.js`），cwd 固定为项目根目录 —— `src/*` 路径别名从 cwd 最近的 `tsconfig.json` 解析，cwd 换成临时目录会解析失败。用源码入口也意味着不需要预先 build，且永远测的是当前代码。fixture 文件放在 `dir`（绝对路径引用），不受 cwd 影响，但如上所述，工具操作 `dir` 内文件会被权限系统拦截。
+
+### Transcript 格式兼容路径
+
+Transcript 文件是 append-only JSONL，加新字段不破坏旧读取，但有三条已编码的历史兼容路径，修改 load 路径时需避免破坏它们：
+
+1. **pre-PR #24099 `progressBridge`**（`isLegacyProgressEntry` / `progressBridge` Map）— 旧格式的 progress 条目在 transcript 中留有 `type:'progress'` 行。加载时在 parse 循环内用 `progressBridge` Map 跨行累积，最终重写后续条目的 `parentUuid`。这是跨条目的有状态变换，不是 per-entry 转换。
+
+2. **pre-PR #23537 progress-fork**（`recoverOrphanedParallelToolResults`）— 并行工具调用的 progress fork 留下孤儿分支，通过 `recoverOrphanedParallelToolResults` 在 chain 构建阶段修复，不在 parse 阶段。
+
+3. **pre-last-prompt `extractFirstPromptFromChunk` 回退**（load path line ~4900）— 早于 last-prompt 条目存在之前写入的 session 没有 last-prompt 元数据行，用 `extractFirstPromptFromChunk` 从内容中提取。
+
+**不要新增 `schemaVersion` 字段**：`version`（CLI semver）已经戳在每条 transcript entry 上（`sessionStorage.ts:1084`），`src/utils/semver.ts` 已提供 `lt`/`order`，但 load 路径没有任何代码读取它。上述三条兼容路径都是 shape-detect（检查字段是否存在/类型），而非 version-key。新的格式变更也应遵循 shape-detect 模式，不要引入第二套版本号概念。
+
+**`{"parentUuid":` 是 byte-level line 前缀不变式**：`walkChainBeforeParse`（`sessionStorage.ts:3399`）在 JSON parse 之前用该前缀区分 transcript 消息行与元数据行，对 >5 MB session 实测节省 80-93% parse 时间。该不变式依赖 `JSON.stringify` 按插入顺序序列化 key，以及 `insertMessageChain` 的 `transcriptMessage` 对象字面量以 `parentUuid` 为第一个 key。在 `insertMessageChain` 字面量中，**不得在 `parentUuid` 之前插入任何字段**——这不会产生编译错误，但会在大 session 上静默退化为全量解析。此不变式已在 `src/utils/__tests__/sessionStorage.test.ts` 的 `walkChainBeforeParse parentUuid-first-key invariant` 测试组中锁定。
 
 ### Mock 使用规范
 
@@ -401,6 +452,7 @@ bun run precheck
 - **`@ts-expect-error` 维护** — 只在下方代码确实有类型错误时保留 `@ts-expect-error`。如果类型系统已更新导致 directive 变为 unused（TS2578），直接移除注释。MACRO 替换产生的永假比较（如 `'production' === 'development'`）仍需保留 `@ts-expect-error`。
 - **Ink 框架在 `packages/@ant/ink/`** — 不是 `src/ink/`（该目录不存在）。Ink 相关的组件、hooks、keybindings 都在 packages 中。
 - **Provider 优先级** — `modelType` 参数 > 环境变量 > 默认 `firstParty`。新增 provider 需在 `src/utils/model/providers.ts` 注册。
+- **`query()` 不得抛出** — `src/query.ts` 的 `query()` 是 StreamFn 合约：所有失败**必须** yield 为 stream 事件，不能 throw。任何逃逸出该 generator 的异常会静默截断流，不产生错误消息。新增错误路径时必须 `yield` 而非 `throw`。
 
 ## Design Context
 
