@@ -502,14 +502,18 @@ export async function compactConversation(
         !isCompactBoundaryMessage(m) &&
         !(m.type === 'user' && m.isCompactSummary),
     )
-    const tailPreservedTokens =
-      messagesToKeep.length > 0
-        ? roughTokenCountEstimationForMessages(
-            messagesToKeep as Parameters<
-              typeof roughTokenCountEstimationForMessages
-            >[0],
-          )
-        : 0
+    // Single source of truth for "is a tail actually preserved" — the prompt
+    // note, the fork's context override, the summary message and the token
+    // accounting must all agree, or the summarizer is told one thing and fed
+    // another.
+    const recentTailPreserved = messagesToKeep.length > 0
+    const tailPreservedTokens = recentTailPreserved
+      ? roughTokenCountEstimationForMessages(
+          messagesToKeep as Parameters<
+            typeof roughTokenCountEstimationForMessages
+          >[0],
+        )
+      : 0
 
     const appState = context.getAppState()
     void logPermissionContextForAnts(appState.toolPermissionContext, 'summary')
@@ -549,14 +553,19 @@ export async function compactConversation(
     )
 
     const compactPrompt = getCompactPrompt(customInstructions, {
-      recentTailPreserved: messagesToKeep.length > 0,
+      recentTailPreserved,
     })
     const summaryRequest = createUserMessage({
       content: compactPrompt,
     })
 
     let messagesToSummarize = tailSelection.head
-    let retryCacheSafeParams = cacheSafeParams
+    // The forked path summarizes forkContextMessages, not the messages param —
+    // override it or the tail gets summarized too, contradicting the prompt's
+    // "not shown above" note. Same predicate as that note so they can't disagree.
+    let retryCacheSafeParams = recentTailPreserved
+      ? { ...cacheSafeParams, forkContextMessages: messagesToSummarize }
+      : cacheSafeParams
     let summaryResponse: AssistantMessage
     let summary: string | null
     let ptlAttempts = 0
@@ -710,6 +719,7 @@ export async function compactConversation(
     // Execute SessionStart hooks after successful compaction
     const hookMessages = await processSessionStartHooks('compact', {
       model: context.options.mainLoopModel,
+      signal: context.abortController.signal,
     })
 
     // Create the compact boundary marker and summary messages before the
@@ -734,7 +744,7 @@ export async function compactConversation(
       summary,
       suppressFollowUpQuestions,
       transcriptPath,
-      messagesToKeep.length > 0,
+      recentTailPreserved,
     )
     // Preserve real user messages (verbatim HEAD + TAIL) inside the summary
     // message — see preservedUserMessages.ts. Appended BEFORE
@@ -1130,6 +1140,7 @@ export async function partialCompactConversation(
     })
     const hookMessages = await processSessionStartHooks('compact', {
       model: context.options.mainLoopModel,
+      signal: context.abortController.signal,
     })
 
     const postCompactTokenCount = tokenCountFromLastAPIResponse([

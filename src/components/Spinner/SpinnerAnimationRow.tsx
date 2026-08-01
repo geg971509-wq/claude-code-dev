@@ -287,10 +287,13 @@ export function SpinnerAnimationRow({
     ) : null;
 
   // Compaction progress bar. Summary length is unknown up front, so map
-  // streamed tokens through an asymptotic curve (approaches but never reaches
-  // 100%) so it always reads as forward progress. Bar disappears on compact_end.
+  // streamed tokens through an asymptotic curve so it always reads as forward
+  // progress. The Math.min clamp is load-bearing: the raw curve rounds to 100%
+  // at ~6.4k tokens and ProgressBar's remainder glyph BLOCKS[8] is identical to
+  // a full cell, so an unclamped bar renders visually complete while the stream
+  // may still be hung. Do not remove it. Bar disappears on compact_end.
   const isCompacting = compactProgressActiveRef?.current === true;
-  const compactRatio = isCompacting ? 1 - Math.exp(-leaderTokens / 1200) : 0;
+  const compactRatio = isCompacting ? Math.min(0.99, 1 - Math.exp(-leaderTokens / 1200)) : 0;
   const compactBarWidth = Math.max(10, Math.min(30, columns - 20));
 
   const spinnerRow = (

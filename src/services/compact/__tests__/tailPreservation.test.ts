@@ -86,6 +86,12 @@ describe('selectPreservedTail', () => {
     expect(head).toHaveLength(1)
     expect(tail).toHaveLength(2)
     expect((tail[0] as any).message.id).toBe('r2')
+    // head must stay a true prefix and tail its exact remainder:
+    // compactConversation passes head to the fork as forkContextMessages, so a
+    // suffix, a gap or a reorder here would silently break prompt-cache reuse
+    // while every length assertion above still passed.
+    expect(head).toEqual(messages.slice(0, head.length))
+    expect(tail).toEqual(messages.slice(head.length))
   })
 
   test('respects the rounds cap even with budget to spare', () => {

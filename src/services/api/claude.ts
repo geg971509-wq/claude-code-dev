@@ -166,7 +166,7 @@ import {
 import { CLAUDE_IN_CHROME_MCP_SERVER_NAME } from 'src/utils/claudeInChrome/common.js'
 import { CHROME_SEARCH_EXTRA_TOOLS_INSTRUCTIONS } from 'src/utils/claudeInChrome/prompt.js'
 import { getMaxThinkingTokensForModel } from 'src/utils/context.js'
-import { logForDebugging } from 'src/utils/debug.js'
+import { enableDebugLogging, logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from 'src/utils/diagLogs.js'
 import { type EffortValue, modelSupportsEffort } from 'src/utils/effort.js'
 import {
@@ -1987,8 +1987,8 @@ async function* queryModel(
     // kill hung streams. Without this, a silently dropped connection can hang
     // the session indefinitely since the SDK's request timeout only covers the
     // initial fetch(), not the streaming body.
-    const streamWatchdogEnabled = isEnvTruthy(
-      process.env.CLAUDE_ENABLE_STREAM_WATCHDOG,
+    const streamWatchdogEnabled = !isEnvTruthy(
+      process.env.CLAUDE_DISABLE_STREAM_WATCHDOG,
     )
     const STREAM_IDLE_TIMEOUT_MS =
       parseInt(process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS || '', 10) || 90_000
@@ -1996,6 +1996,13 @@ async function* queryModel(
     let streamIdleAborted = false
     // performance.now() snapshot when watchdog fires, for measuring abort propagation delay
     let streamWatchdogFiredAt: number | null = null
+    // Chunk bookkeeping for logStreamIdleDiagnostics below. Declared out here
+    // rather than in the loop's scope so the watchdog callback can read it while
+    // the for-await is still suspended.
+    let chunksReceived = 0
+    let lastChunkType: string | null = null
+    let lastChunkAt: number | null = null
+    const streamLoopStartedAt = Date.now()
     let streamIdleWarningTimer: ReturnType<typeof setTimeout> | null = null
     let streamIdleTimer: ReturnType<typeof setTimeout> | null = null
     function clearStreamIdleTimers(): void {
@@ -2007,6 +2014,71 @@ async function* queryModel(
         clearTimeout(streamIdleTimer)
         streamIdleTimer = null
       }
+    }
+    /**
+     * Dumps every value needed to tell the watchdog's failure modes apart, plus
+     * a stack. "no chunks received" alone can't distinguish a dead socket from a
+     * proxy that sent message_start and stopped, from a request so large the
+     * upstream never began generating — and those have different fixes.
+     * Goes to the debug log (~/.claude/debug/<session>.txt, symlinked as
+     * `latest`) at error level. logForDebugging drops messages from non-ant
+     * users unless debug mode is on, so the watchdog calls
+     * enableDebugLogging() before the first dump.
+     */
+    function logStreamIdleDiagnostics(phase: string, err: unknown): void {
+      const now = Date.now()
+      const ctx = {
+        phase,
+        // Watchdog config
+        timeout_ms: STREAM_IDLE_TIMEOUT_MS,
+        watchdog_enabled: streamWatchdogEnabled,
+        watchdog_fired: streamIdleAborted,
+        // Where the stream got to
+        chunks_received: chunksReceived,
+        last_chunk_type: lastChunkType,
+        ms_since_last_chunk: lastChunkAt === null ? null : now - lastChunkAt,
+        ms_since_stream_loop_start: now - streamLoopStartedAt,
+        ms_since_attempt_start: now - start,
+        ms_since_first_attempt: now - startIncludingRetries,
+        ttft_ms: ttftMs,
+        // Accumulated response state
+        got_message_start: partialMessage !== undefined,
+        content_blocks: contentBlocks.length,
+        stop_reason: stopReason,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_read_input_tokens: usage.cache_read_input_tokens,
+        cache_creation_input_tokens: usage.cache_creation_input_tokens,
+        // Request identity — correlate with server/proxy logs
+        model: options.model,
+        provider: getAPIProvider(),
+        query_source: options.querySource,
+        agent_id: options.agentId ?? null,
+        request_id: streamRequestId ?? null,
+        client_request_id: clientRequestId ?? null,
+        attempt: attemptNumber,
+        // Request shape — a huge request that never starts generating looks
+        // identical to a dead socket without these.
+        request_messages: messagesForAPI.length,
+        max_output_tokens: maxOutputTokens,
+        thinking_type: thinkingConfig.type,
+        thinking_budget_tokens:
+          thinkingConfig.type === 'enabled'
+            ? thinkingConfig.budgetTokens
+            : null,
+        // Tells a user Esc apart from a genuine hang
+        signal_aborted: signal.aborted,
+        error_name: err instanceof Error ? err.name : typeof err,
+        error_message: errorMessage(err),
+      }
+      logForDebugging(
+        `Stream idle timeout diagnostics (${phase}):\ncontext: ${jsonStringify(ctx, null, 2)}\nstack: ${
+          err instanceof Error && err.stack
+            ? err.stack
+            : new Error('stream idle timeout diagnostics').stack
+        }`,
+        { level: 'error' },
+      )
     }
     function resetStreamIdleTimer(): void {
       clearStreamIdleTimers()
@@ -2039,7 +2111,18 @@ async function* queryModel(
             'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
           timeout_ms: STREAM_IDLE_TIMEOUT_MS,
         })
+        // Abort first, diagnose second. This callback is the only thing that can
+        // unblock the hung for-await, so nothing that could throw may run ahead
+        // of it — a serialization failure in the dump would restore the hang.
         releaseStreamResources()
+        // Non-ant users don't write debug logs without --debug, and reading
+        // this dump after the fact is its only purpose. Also covers the
+        // clean_exit_throw / error_exit dumps, which only run after this.
+        enableDebugLogging()
+        logStreamIdleDiagnostics(
+          'watchdog_fired',
+          new Error('Streaming idle timeout - aborting stream'),
+        )
       }, STREAM_IDLE_TIMEOUT_MS)
     }
     resetStreamIdleTimer()
@@ -2056,6 +2139,9 @@ async function* queryModel(
       for await (const part of stream) {
         resetStreamIdleTimer()
         const now = Date.now()
+        chunksReceived++
+        lastChunkType = part.type
+        lastChunkAt = now
 
         // Detect and log streaming stalls (only after first event to avoid counting TTFB)
         if (lastEventTime !== null) {
@@ -2460,7 +2546,12 @@ async function* queryModel(
         // Prevent double-emit: this throw lands in the catch block below,
         // whose exit_path='error' probe guards on streamWatchdogFiredAt.
         streamWatchdogFiredAt = null
-        throw new Error('Stream idle timeout - no chunks received')
+        const idleError = new Error('Stream idle timeout - no chunks received')
+        // Logged here, not in the catch below: this stack is the only one that
+        // shows the real consumer frames. The watchdog's own stack is just the
+        // timer callback, and by the catch the throw site is already unwound.
+        logStreamIdleDiagnostics('clean_exit_throw', idleError)
+        throw idleError
       }
 
       // Detect when the stream completed without producing any assistant messages.
@@ -2550,6 +2641,9 @@ async function* queryModel(
         const exitDelayMs = Math.round(
           performance.now() - streamWatchdogFiredAt,
         )
+        // Complementary to the clean_exit_throw dump: this is the path where the
+        // SDK raised instead of the loop returning, so the stack is the SDK's.
+        logStreamIdleDiagnostics('error_exit', streamingError)
         logForDiagnosticsNoPII(
           'info',
           'cli_stream_loop_exited_after_watchdog_error',

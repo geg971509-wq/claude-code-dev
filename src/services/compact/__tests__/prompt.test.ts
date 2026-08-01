@@ -2,7 +2,8 @@ import { mock, describe, expect, test } from 'bun:test'
 
 mock.module('bun:bundle', () => ({ feature: () => false }))
 
-const { formatCompactSummary } = await import('../prompt')
+const { formatCompactSummary, getCompactPrompt, getCompactUserSummaryMessage } =
+  await import('../prompt')
 
 describe('formatCompactSummary', () => {
   test('strips <analysis>...</analysis> block', () => {
@@ -76,5 +77,36 @@ describe('formatCompactSummary', () => {
     const result = formatCompactSummary(input)
     expect(result).toContain('middle text')
     expect(result).toContain('final')
+  })
+})
+
+// compactConversation derives one `recentTailPreserved` flag and feeds it to
+// both of these plus the fork's forkContextMessages override. If the tail is
+// preserved, the summarizer is told the tail is "not shown above" — so the
+// fork must be given head-only. These lock the two prompt-side consumers so
+// the claim can't drift away from the flag that gates the override.
+const TAIL_NOTE = 'not shown above'
+
+describe('getCompactPrompt', () => {
+  test('claims the tail is withheld only when a tail is preserved', () => {
+    expect(
+      getCompactPrompt(undefined, { recentTailPreserved: true }),
+    ).toContain(TAIL_NOTE)
+    expect(
+      getCompactPrompt(undefined, { recentTailPreserved: false }),
+    ).not.toContain(TAIL_NOTE)
+    expect(getCompactPrompt()).not.toContain(TAIL_NOTE)
+  })
+})
+
+describe('getCompactUserSummaryMessage', () => {
+  test('announces preserved messages only when a tail is preserved', () => {
+    const note = 'Recent messages are preserved verbatim.'
+    expect(getCompactUserSummaryMessage('s', false, undefined, true)).toContain(
+      note,
+    )
+    expect(
+      getCompactUserSummaryMessage('s', false, undefined, false),
+    ).not.toContain(note)
   })
 })
