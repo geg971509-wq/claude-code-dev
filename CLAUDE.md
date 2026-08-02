@@ -83,7 +83,7 @@ bun run docs:dev
 - **Build (Vite)**: `vite.config.ts` + `scripts/post-build.ts`，代码分割模式，chunk 输出到 `dist/chunks/`。post-build 遍历 `dist/` 和 `dist/chunks/` 下所有 `.js` 文件做 `globalThis.Bun` 解构 patch，复制 vendor 文件到 `dist/vendor/`。
 - **Vendor 路径解析**: 构建后 chunk 文件位于 `dist/` 或 `dist/chunks/` 下，vendor 二进制在 `dist/vendor/`。`src/utils/distRoot.ts` 提供共享的 `distRoot` 函数，通过 `import.meta.url` 路径中 `lastIndexOf('dist')` 或 `lastIndexOf('src')` 定位根目录。`ripgrep.ts`、`computerUse/setup.ts`、`claudeInChrome/setup.ts`、`updateCCB.ts` 均使用 `distRoot` 而非内联 `import.meta.url` 路径推算。`packages/audio-capture-napi/src/index.ts` 有独立的 `lastIndexOf('dist')` 逻辑，功能等价。
 - **为什么 Vite 必须代码分割**: Bun/JSC 会全量解析单个大 JS 文件的 bytecode 和 JIT，单文件 17MB 产物导致 RSS 暴涨至 ~1GB（Node/V8 懒解析仅需 ~220MB）。代码分割为 600+ 小 chunk 后 Bun 按需加载，`--version` RSS 从 966MB 降至 35MB，完整加载从 1GB+ 降至 ~500MB。
-- **Dev mode**: `scripts/dev.ts` 通过 Bun `-d` flag 注入 `MACRO.*` defines，运行 `src/entrypoints/cli.tsx`。默认启用全部 feature。
+- **Dev mode**: `scripts/dev.ts` 通过 Bun `-d` flag 注入 `MACRO.*` defines，并以 `--feature` 启用 `DEFAULT_BUILD_FEATURES`（与 build 同一列表，见 `scripts/defines.ts`），另可用 `FEATURE_<NAME>=1` 追加。裸跑 `bun src/entrypoints/cli.tsx` 不会注入任何 feature（全关）。
 - **Module system**: ESM (`"type": "module"`), TSX with `react-jsx` transform.
 - **Monorepo**: Bun workspaces — 20 个 workspace packages（含 package.json，经 `workspace:*` 解析）+ 若干辅助目录 in `packages/`。
 - **Lint/Format**: Biome (`biome.json`)。覆盖 `src/`、`scripts/`、`packages/` 全项目（含 `packages/@ant/`）。`bun run lint` / `bun run lint:fix` / `bun run format` / `bun run check` / `bun run check:fix`。42 条规则因 decompiled 代码被关闭，仅保留 `recommended` 基线。
@@ -220,7 +220,7 @@ Feature flags control which functionality is enabled at runtime. 代码中统一
 
 **启用方式**: 环境变量 `FEATURE_<FLAG_NAME>=1`。例如 `FEATURE_BUDDY=1 bun run dev`。
 
-**Build 默认 features**（65+ 个，见 `build.ts` 中 `DEFAULT_BUILD_FEATURES`）:
+**Build/Dev 默认 features**（见 `scripts/defines.ts` 的 `DEFAULT_BUILD_FEATURES`；`build.ts` / `scripts/dev.ts` / compile / vite 共用）:
 - 基础: `BUDDY`, `TRANSCRIPT_CLASSIFIER`, `BRIDGE_MODE`, `AGENT_TRIGGERS_REMOTE`, `CHICAGO_MCP`, `VOICE_MODE`
 - 统计/缓存: `SHOT_STATS`, `PROMPT_CACHE_BREAK_DETECTION`, `TOKEN_BUDGET`
 - P0 本地: `AGENT_TRIGGERS`, `ULTRATHINK`, `BUILTIN_EXPLORE_PLAN_AGENTS`, `LODESTONE`
@@ -234,7 +234,7 @@ Feature flags control which functionality is enabled at runtime. 代码中统一
 - 模式: `POOR`, `SSH_REMOTE`
 - 已禁用: `CONTEXT_COLLAPSE`, `FORK_SUBAGENT`, `UDS_INBOX`, `LAN_PIPES`, `REVIEW_ARTIFACT`, `TEAMMEM`, `SKILL_LEARNING`
 
-**Dev mode 默认**: 全部启用（见 `scripts/dev.ts`）。
+**Dev mode 默认**: 与 build 相同，启用 `DEFAULT_BUILD_FEATURES`（不是注册表里的全部 flag）；`FEATURE_<NAME>=1` 可追加。裸 `cli.tsx` 全关。
 
 **类型声明**: `src/constants/featureFlags.ts` 是全部 flag 名的注册表（`as const` 数组派生字面量联合类型 `FeatureFlagName`）。`src/types/internal-modules.d.ts` 中 `bun:bundle` 的 `feature(name: FeatureFlagName)` 签名引用该类型，拼错 flag 名会直接 tsc 报错。`DEFAULT_BUILD_FEATURES` 通过 `satisfies readonly FeatureFlagName[]` 校验必须是注册表子集。
 
@@ -439,7 +439,7 @@ bun run precheck
 ## Working with This Codebase
 
 - **precheck must pass** — `bun run precheck`（typecheck + lint fix + test）必须零错误，任何修改都不能引入新的类型/lint/测试错误。
-- **Feature flags** — 默认全部关闭（`feature()` 返回 `false`）。Dev/build 各有自己的默认启用列表。不要在 `cli.tsx` 中重定义 `feature` 函数。
+- **Feature flags** — 默认全部关闭（`feature()` 返回 `false`）。Dev/build/compile 共用 `scripts/defines.ts` 的 `DEFAULT_BUILD_FEATURES`，不是「全部启用」。不要在 `cli.tsx` 中重定义 `feature` 函数。
 - **React Compiler output** — Components have decompiled memoization boilerplate (`const $ = _c(N)`). This is normal.
 - **`bun:bundle` import** — `import { feature } from 'bun:bundle'` 是 Bun 内置模块，由运行时/构建器解析。不要用自定义函数替代它。**`feature()` 只能直接用在 `if` 语句或三元表达式的条件位置**（Bun 编译器限制），不能赋值给变量、不能放在箭头函数体里、不能作为 `&&` 链的一部分。正确：`if (feature('X')) {}` 或 `feature('X') ? a : b`。
 - **`src/` path alias** — tsconfig maps `src/*` to `./src/*`. Imports like `import { ... } from 'src/utils/...'` are valid.

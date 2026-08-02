@@ -3,11 +3,8 @@ import * as React from 'react';
 import { useSyncExternalStore } from 'react';
 import { Box, Text } from '@anthropic/ink';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js';
-import {
-  calculateTokenWarningState,
-  getEffectiveContextWindowSize,
-  isAutoCompactEnabled,
-} from '../services/compact/autoCompact.js';
+import { calculateTokenWarningState, isAutoCompactEnabled } from '../services/compact/autoCompact.js';
+import { getEffectiveContextWindowSize } from '../services/compact/effectiveWindow.js';
 import { useCompactWarningSuppression } from '../services/compact/compactWarningHook.js';
 import { getUpgradeMessage } from '../utils/model/contextWindowUpgradeCheck.js';
 

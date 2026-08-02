@@ -23,18 +23,17 @@ keywords: ["上下文压缩", "Compaction", "token 管理", "对话压缩", "上
 当用户执行 `/compact` 或系统触发自动压缩时，压缩命令按以下优先级尝试：
 
 ```typescript
-// compact.ts:55-99 — 简化后的优先级链
+// 简化后的优先级链
 if (!customInstructions) {
   const sessionMemoryResult = await trySessionMemoryCompaction(messages, ...)
   if (sessionMemoryResult) return sessionMemoryResult      // 优先：SM 压缩
 }
 
-if (reactiveCompact?.isReactiveOnlyMode()) {
-  return await compactViaReactive(messages, ...)            // 次选：Reactive 压缩
-}
-
-// 兜底：传统 API 摘要
-const microcompactResult = await microcompactMessages(messages, context)
+// 兜底：传统 API 摘要。MicroCompact 与缓存参数构建并发执行
+const [microcompactResult, cacheSafeParams] = await Promise.all([
+  microcompactMessages(messages, context),
+  getCacheSharingParams(context, []),
+])
 const messagesForCompact = microcompactResult.messages
 // → 调用 AI 模型生成摘要
 ```
@@ -231,11 +230,11 @@ type SystemMicrocompactBoundaryMessage = {
 
 当压缩后仍然超出 token 限制（`PROMPT_TOO_LONG` 错误），系统会进入紧急降级路径：
 
-1. **Reactive Compact**：`reactiveCompactOnPromptTooLong()` 尝试更激进的压缩
-2. **截断重试**：如果 reactive 也失败，`truncateHeadForPTLRetry()` 直接截断最早的消息
-3. 放弃并报错
+1. **截断重试**：`truncateHeadForPTLRetry()` 丢掉最早的 API round 后重试，最多 `MAX_PTL_RETRIES` 次
+2. 截断已无可丢 或 重试用尽 → 放弃并报错
 
-Reactive Compact 目前在反编译版本中是 stub（`isReactiveOnlyMode() → false`），表明这是 Anthropic 内部的实验性功能。
+截断集要同时穿到 `messagesToSummarize` 和 `cacheSafeParams.forkContextMessages`
+两条路径：forked-agent 路径读的是后者，只改前者会让重试仍然发送原始消息集。
 
 ## 压缩的 Hook 机制
 

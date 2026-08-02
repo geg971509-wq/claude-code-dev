@@ -11,10 +11,10 @@ import { getSystemContext } from '../context.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
   AUTOCOMPACT_BUFFER_TOKENS,
-  getEffectiveContextWindowSize,
   isAutoCompactEnabled,
   MANUAL_COMPACT_BUFFER_TOKENS,
 } from '../services/compact/autoCompact.js'
+import { getEffectiveContextWindowSize } from '../services/compact/effectiveWindow.js'
 import {
   countMessagesTokensWithAPI,
   countTokensViaHaikuFallback,

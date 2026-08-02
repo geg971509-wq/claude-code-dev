@@ -8,7 +8,7 @@ const sessionTranscriptModule = feature('KAIROS')
 
 import { APIUserAbortError } from '@anthropic-ai/sdk'
 import { markPostCompaction } from 'src/bootstrap/state.js'
-import { getInvokedSkillsForAgent, getSdkBetas } from '../../bootstrap/state.js'
+import { getInvokedSkillsForAgent } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
@@ -40,11 +40,9 @@ import {
   getMcpInstructionsDeltaAttachment,
   type Attachment,
 } from '../../utils/attachments.js'
+import { isMemoryFilePath } from '../../utils/claudemd.js'
 import { getMemoryPath } from '../../utils/config.js'
-import {
-  COMPACT_MAX_OUTPUT_TOKENS,
-  getContextWindowForModel,
-} from '../../utils/context.js'
+import { COMPACT_MAX_OUTPUT_TOKENS } from '../../utils/context.js'
 import {
   analyzeContext,
   tokenStatsToStatsigMetrics,
@@ -117,6 +115,7 @@ import {
   roughTokenCountEstimationForMessages,
 } from '../tokenEstimation.js'
 import type { SDKStatus } from '../../entrypoints/agentSdkTypes.js'
+import { getEffectiveContextWindowSize } from './effectiveWindow.js'
 import { groupMessagesByApiRound } from './grouping.js'
 import {
   formatPreservedSection,
@@ -419,35 +418,13 @@ export function annotateBoundaryWithPreservedSegment(
  * User instructions come first; hook instructions are appended.
  * Empty strings normalize to undefined.
  */
-export function mergeHookInstructions(
+function mergeHookInstructions(
   userInstructions: string | undefined,
   hookInstructions: string | undefined,
 ): string | undefined {
   if (!hookInstructions) return userInstructions || undefined
   if (!userInstructions) return hookInstructions
   return `${userInstructions}\n\n${hookInstructions}`
-}
-
-/**
- * Mirror of getEffectiveContextWindowSize (autoCompact.ts:33) — duplicated
- * here because importing autoCompact.ts would close a
- * compact.ts ↔ autoCompact.ts module cycle. Keep the two in sync.
- */
-const TAIL_MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
-function getTailEffectiveWindow(model: string): number {
-  const reservedTokensForSummary = Math.min(
-    getMaxOutputTokensForModel(model),
-    TAIL_MAX_OUTPUT_TOKENS_FOR_SUMMARY,
-  )
-  let contextWindow = getContextWindowForModel(model, getSdkBetas())
-  const autoCompactWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
-  if (autoCompactWindow) {
-    const parsed = parseInt(autoCompactWindow, 10)
-    if (!Number.isNaN(parsed) && parsed > 0) {
-      contextWindow = Math.min(contextWindow, parsed)
-    }
-  }
-  return contextWindow - reservedTokensForSummary
 }
 
 /**
@@ -482,7 +459,7 @@ export async function compactConversation(
         tailSelection = selectPreservedTail(
           messages,
           preserveRecentBudget(
-            getTailEffectiveWindow(context.options.mainLoopModel),
+            getEffectiveContextWindowSize(context.options.mainLoopModel),
           ),
           tailMaxRounds(),
           round =>
@@ -636,91 +613,13 @@ export async function compactConversation(
       throw new Error(summary)
     }
 
-    // Store the current file state before clearing
-    let preCompactReadFileState = cacheToObject(context.readFileState)
-
-    // Clear the cache
-    context.readFileState.clear()
-    context.loadedNestedMemoryPaths?.clear()
-
-    // Intentionally NOT resetting sentSkillNames: re-injecting the full
-    // skill_listing (~4K tokens) post-compact is pure cache_creation with
-    // marginal benefit. The model still has SkillTool in its schema and
-    // invoked_skills attachment (below) preserves used-skill content. Ants
-    // with EXPERIMENTAL_SKILL_SEARCH already skip re-injection via the
-    // early-return in getSkillListingAttachments.
-
-    // Run async attachment generation in parallel
-    const [fileAttachments, asyncAgentAttachments] = await Promise.all([
-      createPostCompactFileAttachments(
-        preCompactReadFileState,
+    const { postCompactFileAttachments, hookMessages } =
+      await buildPostCompactAttachments(
         context,
-        POST_COMPACT_MAX_FILES_TO_RESTORE,
-        // Files already readable in the preserved tail are skipped — no
-        // point re-injecting them as attachments.
         messagesToKeep,
-      ),
-      createAsyncAgentAttachmentsIfNeeded(context),
-    ])
-    // Release the readFileState snapshot — it can hold 25+ MB of file content
-    preCompactReadFileState =
-      undefined as unknown as typeof preCompactReadFileState
-
-    const postCompactFileAttachments: AttachmentMessage[] = [
-      ...fileAttachments,
-      ...asyncAgentAttachments,
-    ]
-    const planAttachment = createPlanAttachmentIfNeeded(context.agentId)
-    if (planAttachment) {
-      postCompactFileAttachments.push(planAttachment)
-    }
-
-    // Add plan mode instructions if currently in plan mode, so the model
-    // continues operating in plan mode after compaction
-    const planModeAttachment = await createPlanModeAttachmentIfNeeded(context)
-    if (planModeAttachment) {
-      postCompactFileAttachments.push(planModeAttachment)
-    }
-
-    // Add skill attachment if skills were invoked in this session
-    const skillAttachment = createSkillAttachmentIfNeeded(context.agentId)
-    if (skillAttachment) {
-      postCompactFileAttachments.push(skillAttachment)
-    }
-
-    // Compaction ate prior delta attachments. Re-announce from the current
-    // state so the model has tool/instruction context on the first
-    // post-compact turn. Empty message history → diff against nothing →
-    // announces the full set.
-    for (const att of getDeferredToolsDeltaAttachment(
-      context.options.tools,
-      context.options.mainLoopModel,
-      [],
-      { callSite: 'compact_full' },
-    )) {
-      postCompactFileAttachments.push(createAttachmentMessage(att))
-    }
-    for (const att of getAgentListingDeltaAttachment(context, [])) {
-      postCompactFileAttachments.push(createAttachmentMessage(att))
-    }
-    for (const att of getMcpInstructionsDeltaAttachment(
-      context.options.mcpClients,
-      context.options.tools,
-      context.options.mainLoopModel,
-      [],
-    )) {
-      postCompactFileAttachments.push(createAttachmentMessage(att))
-    }
-
-    context.onCompactProgress?.({
-      type: 'hooks_start',
-      hookType: 'session_start',
-    })
-    // Execute SessionStart hooks after successful compaction
-    const hookMessages = await processSessionStartHooks('compact', {
-      model: context.options.mainLoopModel,
-      signal: context.abortController.signal,
-    })
+        [],
+        'compact_full',
+      )
 
     // Create the compact boundary marker and summary messages before the
     // event so we can compute the true resulting-context size.
@@ -1072,76 +971,13 @@ export async function partialCompactConversation(
       throw new Error(summary)
     }
 
-    // Store the current file state before clearing
-    let preCompactReadFileState = cacheToObject(context.readFileState)
-    context.readFileState.clear()
-    context.loadedNestedMemoryPaths?.clear()
-    // Intentionally NOT resetting sentSkillNames — see compactConversation()
-    // for rationale (~4K tokens saved per compact event).
-
-    const [fileAttachments, asyncAgentAttachments] = await Promise.all([
-      createPostCompactFileAttachments(
-        preCompactReadFileState,
+    const { postCompactFileAttachments, hookMessages } =
+      await buildPostCompactAttachments(
         context,
-        POST_COMPACT_MAX_FILES_TO_RESTORE,
         messagesToKeep,
-      ),
-      createAsyncAgentAttachmentsIfNeeded(context),
-    ])
-    // Release the readFileState snapshot — it can hold 25+ MB of file content
-    preCompactReadFileState =
-      undefined as unknown as typeof preCompactReadFileState
-
-    const postCompactFileAttachments: AttachmentMessage[] = [
-      ...fileAttachments,
-      ...asyncAgentAttachments,
-    ]
-    const planAttachment = createPlanAttachmentIfNeeded(context.agentId)
-    if (planAttachment) {
-      postCompactFileAttachments.push(planAttachment)
-    }
-
-    // Add plan mode instructions if currently in plan mode
-    const planModeAttachment = await createPlanModeAttachmentIfNeeded(context)
-    if (planModeAttachment) {
-      postCompactFileAttachments.push(planModeAttachment)
-    }
-
-    const skillAttachment = createSkillAttachmentIfNeeded(context.agentId)
-    if (skillAttachment) {
-      postCompactFileAttachments.push(skillAttachment)
-    }
-
-    // Re-announce only what was in the summarized portion — messagesToKeep
-    // is scanned, so anything already announced there is skipped.
-    for (const att of getDeferredToolsDeltaAttachment(
-      context.options.tools,
-      context.options.mainLoopModel,
-      messagesToKeep,
-      { callSite: 'compact_partial' },
-    )) {
-      postCompactFileAttachments.push(createAttachmentMessage(att))
-    }
-    for (const att of getAgentListingDeltaAttachment(context, messagesToKeep)) {
-      postCompactFileAttachments.push(createAttachmentMessage(att))
-    }
-    for (const att of getMcpInstructionsDeltaAttachment(
-      context.options.mcpClients,
-      context.options.tools,
-      context.options.mainLoopModel,
-      messagesToKeep,
-    )) {
-      postCompactFileAttachments.push(createAttachmentMessage(att))
-    }
-
-    context.onCompactProgress?.({
-      type: 'hooks_start',
-      hookType: 'session_start',
-    })
-    const hookMessages = await processSessionStartHooks('compact', {
-      model: context.options.mainLoopModel,
-      signal: context.abortController.signal,
-    })
+        messagesToKeep,
+        'compact_partial',
+      )
 
     const postCompactTokenCount = tokenCountFromLastAPIResponse([
       summaryResponse,
@@ -1582,6 +1418,120 @@ async function streamCompactSummary({
 }
 
 /**
+ * Everything that happens after the summary text is in hand: snapshot and clear
+ * the read-file cache, rebuild the post-compact attachment set, and run the
+ * SessionStart hooks.
+ *
+ * Shared by compactConversation and partialCompactConversation, which had
+ * verbatim copies of this. They differ in exactly two ways, both parameters
+ * below. Bugs here (a wrong fork-tail uuid, a missed abort signal) otherwise
+ * need fixing twice, and a half-applied fix doesn't fail loudly.
+ *
+ * The clear() between snapshot and rebuild is load-bearing and must stay
+ * ordered: createPostCompactFileAttachments re-reads through FileReadTool,
+ * which writes back into readFileState, so its writes ARE the post-compact
+ * cache contents. Rebuilding before the clear would wipe them, leaving the
+ * model unable to edit files whose content it can see.
+ *
+ * @param deltaBaseline Messages to diff the re-announcement against. Full
+ *   compact passes [] (compaction ate the prior deltas, so re-announce the
+ *   whole set); partial passes messagesToKeep (those deltas survive).
+ * @param messagesToKeep Preserved tail, used to skip re-injecting files the
+ *   model can already read there. Separate from deltaBaseline on purpose.
+ */
+async function buildPostCompactAttachments(
+  context: ToolUseContext,
+  messagesToKeep: Message[],
+  deltaBaseline: Message[],
+  callSite: 'compact_full' | 'compact_partial',
+): Promise<{
+  postCompactFileAttachments: AttachmentMessage[]
+  hookMessages: HookResultMessage[]
+}> {
+  // Store the current file state before clearing
+  let preCompactReadFileState = cacheToObject(context.readFileState)
+
+  // Clear the cache
+  context.readFileState.clear()
+  context.loadedNestedMemoryPaths?.clear()
+
+  // Intentionally NOT resetting sentSkillNames: re-injecting the full
+  // skill_listing (~4K tokens) post-compact is pure cache_creation with
+  // marginal benefit. The model still has SkillTool in its schema and
+  // invoked_skills attachment (below) preserves used-skill content. Ants
+  // with EXPERIMENTAL_SKILL_SEARCH already skip re-injection via the
+  // early-return in getSkillListingAttachments.
+
+  // Run async attachment generation in parallel
+  const [fileAttachments, asyncAgentAttachments] = await Promise.all([
+    createPostCompactFileAttachments(
+      preCompactReadFileState,
+      context,
+      POST_COMPACT_MAX_FILES_TO_RESTORE,
+      messagesToKeep,
+    ),
+    createAsyncAgentAttachmentsIfNeeded(context),
+  ])
+  // Release the readFileState snapshot — it can hold 25+ MB of file content
+  preCompactReadFileState =
+    undefined as unknown as typeof preCompactReadFileState
+
+  const postCompactFileAttachments: AttachmentMessage[] = [
+    ...fileAttachments,
+    ...asyncAgentAttachments,
+  ]
+  const planAttachment = createPlanAttachmentIfNeeded(context.agentId)
+  if (planAttachment) {
+    postCompactFileAttachments.push(planAttachment)
+  }
+
+  // Add plan mode instructions if currently in plan mode, so the model
+  // continues operating in plan mode after compaction
+  const planModeAttachment = await createPlanModeAttachmentIfNeeded(context)
+  if (planModeAttachment) {
+    postCompactFileAttachments.push(planModeAttachment)
+  }
+
+  // Add skill attachment if skills were invoked in this session
+  const skillAttachment = createSkillAttachmentIfNeeded(context.agentId)
+  if (skillAttachment) {
+    postCompactFileAttachments.push(skillAttachment)
+  }
+
+  for (const att of getDeferredToolsDeltaAttachment(
+    context.options.tools,
+    context.options.mainLoopModel,
+    deltaBaseline,
+    { callSite },
+  )) {
+    postCompactFileAttachments.push(createAttachmentMessage(att))
+  }
+  for (const att of getAgentListingDeltaAttachment(context, deltaBaseline)) {
+    postCompactFileAttachments.push(createAttachmentMessage(att))
+  }
+  for (const att of getMcpInstructionsDeltaAttachment(
+    context.options.mcpClients,
+    context.options.tools,
+    context.options.mainLoopModel,
+    deltaBaseline,
+  )) {
+    postCompactFileAttachments.push(createAttachmentMessage(att))
+  }
+
+  context.onCompactProgress?.({
+    type: 'hooks_start',
+    hookType: 'session_start',
+  })
+  // Execute SessionStart hooks after successful compaction
+  const hookMessages = await processSessionStartHooks('compact', {
+    model: context.options.mainLoopModel,
+    signal: context.abortController.signal,
+  })
+
+  return { postCompactFileAttachments, hookMessages }
+}
+
+/**
  * Creates attachment messages for recently accessed files to restore them after compaction.
  * This prevents the model from having to re-read files that were recently accessed.
  * Re-reads files using FileReadTool to get fresh content with proper validation.
@@ -1857,7 +1807,10 @@ function truncateToTokens(content: string, maxTokens: number): string {
   return content.slice(0, charBudget) + SKILL_TRUNCATION_MARKER
 }
 
-function shouldExcludeFromPostCompactRestore(
+// Exported only so the two-checks-not-one invariant below can be asserted
+// directly; createPostCompactFileAttachments cannot express it (an excluded
+// file and a nonexistent file both yield []).
+export function shouldExcludeFromPostCompactRestore(
   filename: string,
   agentId?: AgentId,
 ): boolean {
@@ -1872,9 +1825,16 @@ function shouldExcludeFromPostCompactRestore(
     // If we can't get plan file path, continue with other checks
   }
 
-  // Exclude all types of claude.md files
-  // TODO: Refactor to use isMemoryFilePath() from claudemd.ts for consistency
-  // and to also match child directory memory files (.claude/rules/*.md, etc.)
+  // Exclude all types of claude.md files. Two checks, not one: this catches
+  // CLAUDE.md / CLAUDE.local.md / .claude/rules/*.md anywhere in the tree,
+  // including child directories the MEMORY_TYPE_VALUES paths below don't reach.
+  if (isMemoryFilePath(normalizedFilename)) {
+    return true
+  }
+
+  // Still needed after the check above — the AutoMem and TeamMem entrypoints
+  // are both named MEMORY.md, which isMemoryFilePath does not match. Only an
+  // exact path comparison catches them.
   try {
     const normalizedMemoryPaths = new Set(
       MEMORY_TYPE_VALUES.map(type => expandPath(getMemoryPath(type))),

@@ -1,11 +1,9 @@
 import { feature } from 'bun:bundle'
 import { markPostCompaction } from 'src/bootstrap/state.js'
-import { getSdkBetas } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
 import { getGlobalConfig } from '../../utils/config.js'
-import { getContextWindowForModel } from '../../utils/context.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { hasExactErrorMessage } from '../../utils/errors.js'
@@ -22,31 +20,12 @@ import {
   ERROR_MESSAGE_USER_ABORT,
   type RecompactionInfo,
 } from './compact.js'
+import {
+  getEffectiveContextWindowSize,
+  MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+} from './effectiveWindow.js'
 import { runPostCompactCleanup } from './postCompactCleanup.js'
 import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
-
-// Reserve this many tokens for output during compaction
-// Based on p99.99 of compact summary output being 17,387 tokens.
-const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
-
-// Returns the context window size minus the max output tokens for the model
-export function getEffectiveContextWindowSize(model: string): number {
-  const reservedTokensForSummary = Math.min(
-    getMaxOutputTokensForModel(model),
-    MAX_OUTPUT_TOKENS_FOR_SUMMARY,
-  )
-  let contextWindow = getContextWindowForModel(model, getSdkBetas())
-
-  const autoCompactWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
-  if (autoCompactWindow) {
-    const parsed = parseInt(autoCompactWindow, 10)
-    if (!isNaN(parsed) && parsed > 0) {
-      contextWindow = Math.min(contextWindow, parsed)
-    }
-  }
-
-  return contextWindow - reservedTokensForSummary
-}
 
 export type AutoCompactTrackingState = {
   compacted: boolean
@@ -238,9 +217,7 @@ export async function shouldAutoCompact(
   // sessionMemory + manual /compact working.
   //
   // Consult isContextCollapseEnabled (not the raw gate) so the
-  // CLAUDE_CONTEXT_COLLAPSE env override is honored here too. require()
-  // inside the block breaks the init-time cycle (this file exports
-  // getEffectiveContextWindowSize which collapse's index imports).
+  // CLAUDE_CONTEXT_COLLAPSE env override is honored here too.
   if (feature('CONTEXT_COLLAPSE')) {
     const { isContextCollapseEnabled } =
       require('../contextCollapse/index.js') as typeof import('../contextCollapse/index.js')

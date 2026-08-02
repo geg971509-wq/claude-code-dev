@@ -9,37 +9,6 @@ import { logError } from '../../utils/log.js'
 import { logForDebugging } from '../../utils/debug.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 
-export const isReactiveOnlyMode: () => boolean = () => false
-
-export const reactiveCompactOnPromptTooLong: (
-  messages: Message[],
-  cacheSafeParams: Record<string, unknown>,
-  options: { customInstructions?: string; trigger?: string },
-) => Promise<{ ok: boolean; reason?: string; result?: CompactionResult }> =
-  async (messages, cacheSafeParams, options) => {
-    const params = cacheSafeParams as unknown as CacheSafeParams
-    try {
-      const result = await compactConversation(
-        messages,
-        params.toolUseContext,
-        params,
-        true,
-        options.customInstructions,
-        true,
-        {
-          isRecompactionInChain: false,
-          turnsSincePreviousCompact: 0,
-          autoCompactThreshold: 0,
-          querySource: 'compact',
-        },
-      )
-      return { ok: true, result }
-    } catch (error) {
-      logError(error)
-      return { ok: false, reason: String(error) }
-    }
-  }
-
 export const isReactiveCompactEnabled: () => boolean = () => {
   if (isEnvTruthy(process.env.DISABLE_COMPACT)) return false
   return true

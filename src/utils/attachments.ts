@@ -211,10 +211,8 @@ import {
   tokenCountFromLastAPIResponse,
   tokenCountWithEstimation,
 } from './tokens.js'
-import {
-  getEffectiveContextWindowSize,
-  isAutoCompactEnabled,
-} from '../services/compact/autoCompact.js'
+import { isAutoCompactEnabled } from '../services/compact/autoCompact.js'
+import { getEffectiveContextWindowSize } from '../services/compact/effectiveWindow.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
   hasInstructionsLoadedHook,
