@@ -48,7 +48,7 @@ export type SpinnerAnimationRowProps = {
   spinnerSuffix?: string | null;
   verbose: boolean;
   columns: number;
-  /** True while a compaction summary is streaming — renders a token progress bar. */
+  /** True while a compaction summary is streaming — show asymptotic activity bar (not completion %). */
   compactProgressActiveRef?: React.RefObject<boolean>;
 
   // Teammate-derived (computed by parent from tasks)
@@ -286,12 +286,15 @@ export function SpinnerAnimationRow({
       )
     ) : null;
 
-  // Compaction progress bar. Summary length is unknown up front, so map
-  // streamed tokens through an asymptotic curve so it always reads as forward
-  // progress. The Math.min clamp is load-bearing: the raw curve rounds to 100%
-  // at ~6.4k tokens and ProgressBar's remainder glyph BLOCKS[8] is identical to
-  // a full cell, so an unclamped bar renders visually complete while the stream
-  // may still be hung. Do not remove it. Bar disappears on compact_end.
+  // Compaction activity bar (not percent complete). Summary length is unknown
+  // until the stream ends, so map streamed tokens through an asymptotic curve
+  // for forward motion only. The Math.min(0.99) clamp is load-bearing: the raw
+  // curve rounds to 100% at ~6.4k tokens and ProgressBar's remainder glyph
+  // BLOCKS[8] === '█' matches a full cell, so an unclamped bar can look finished
+  // while the stream may still be hung (narrow widths can still look full even
+  // with the clamp). Do not remove the clamp. Do not reintroduce a completion
+  // `%` label without a known total. Residual near-full fill is accepted.
+  // Bar disappears on compact_end.
   const isCompacting = compactProgressActiveRef?.current === true;
   const compactRatio = isCompacting ? Math.min(0.99, 1 - Math.exp(-leaderTokens / 1200)) : 0;
   const compactBarWidth = Math.max(10, Math.min(30, columns - 20));
@@ -325,7 +328,6 @@ export function SpinnerAnimationRow({
       {spinnerRow}
       <Box flexDirection="row">
         <ProgressBar ratio={compactRatio} width={compactBarWidth} fillColor={messageColor} />
-        <Text dimColor> {Math.round(compactRatio * 100)}%</Text>
       </Box>
     </Box>
   );

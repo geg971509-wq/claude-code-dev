@@ -63,7 +63,7 @@ type Props = {
   overrideMessage?: string | null;
   spinnerSuffix?: string | null;
   verbose: boolean;
-  /** True while a compaction summary is streaming — shows a token progress bar. */
+  /** True while a compaction summary is streaming — show asymptotic activity bar (not completion %). */
   compactProgressActiveRef?: React.RefObject<boolean>;
   hasActiveTools?: boolean;
   /** Leader's turn has completed (no active query). Used to suppress stall-red spinner when only teammates are running. */
