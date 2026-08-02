@@ -7,12 +7,10 @@ import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { FallbackTriggeredError } from './services/api/withRetry.js'
 import {
   calculateTokenWarningState,
-  estimateMaxTurnGrowth,
   isAutoCompactEnabled,
   type AutoCompactTrackingState,
 } from './services/compact/autoCompact.js'
 import { buildPostCompactMessages } from './services/compact/compact.js'
-import { getEffectiveContextWindowSize } from './services/compact/effectiveWindow.js'
 const reactiveCompact = feature('REACTIVE_COMPACT')
   ? (require('./services/compact/reactiveCompact.js') as typeof import('./services/compact/reactiveCompact.js'))
   : null
@@ -865,48 +863,6 @@ async function* queryLoop(
           error: 'invalid_request',
         })
         return { reason: 'blocking_limit' }
-      }
-    }
-
-    // Predictive autocompact: estimate if this turn's growth will push
-    // us past the context window. Uses effectiveContextWindow directly
-    // (without the autocompact buffer) to avoid double-reserving with
-    // getAutoCompactThreshold which already subtracts buffer.
-    if (!compactionResult && isAutoCompactEnabled()) {
-      const model = toolUseContext.options.mainLoopModel
-      const currentTokens =
-        tokenCountWithEstimation(messagesForQuery) - snipTokensFreed
-      const estimatedGrowth = estimateMaxTurnGrowth(model)
-      const predictiveThreshold =
-        getEffectiveContextWindowSize(model) - estimatedGrowth
-      if (currentTokens > predictiveThreshold) {
-        const predictiveResult = await deps.autocompact(
-          messagesForQuery,
-          toolUseContext,
-          {
-            systemPrompt,
-            userContext,
-            systemContext,
-            toolUseContext,
-            forkContextMessages: messagesForQuery,
-          },
-          querySource,
-          tracking,
-          snipTokensFreed,
-        )
-        if (predictiveResult.compactionResult) {
-          messagesForQuery = buildPostCompactMessages(
-            predictiveResult.compactionResult,
-          )
-          snipTokensFreed = 0
-          tracking = tracking
-            ? {
-                ...tracking,
-                compacted: true,
-                consecutiveFailures: predictiveResult.consecutiveFailures ?? 0,
-              }
-            : tracking
-        }
       }
     }
 

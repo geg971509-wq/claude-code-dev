@@ -16,6 +16,15 @@ keywords: ["上下文压缩", "Compaction", "token 管理", "对话压缩", "上
 | **Session Memory Compact** | 自动压缩触发（需 feature flag） | `sessionMemoryCompact.ts` | 否 |
 | **传统 API 摘要** | 手动 `/compact` 或 SM 不可用时的自动回退 | `compact.ts` | 是 |
 
+### 测试旋钮：`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+
+仅用于压低自动压缩触发点（`getAutoCompactThreshold` 内 `min(floor(effective × pct/100), 默认阈值)`，**只能更早触发，不能延后**）。非法值（≤0、>100、非数字）忽略。生效时：
+
+- 启动向 stderr 打一行 `[autocompact] …`
+- `/status`（Status 页）显示 `Autocompact override` 行
+
+源码：`getAutocompactPctOverride()`（`autoCompact.ts`）。
+
 ### 压缩入口的优先级链
 
 源码路径：`src/commands/compact/compact.ts`

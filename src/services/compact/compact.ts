@@ -360,8 +360,7 @@ export function buildPostCompactMessages(result: CompactionResult): Message[] {
  *  describes the PRE-compact context (≈ the over-threshold count that
  *  triggered compaction). If it survived, tokenCountWithEstimation would
  *  report the stale pre-compact count on the new chain and immediately
- *  retrigger compaction (same-turn predictive check, next-turn auto check,
- *  status bar warning). */
+ *  retrigger compaction (next-turn auto check, status bar warning). */
 function stripToolUseResults(messages: Message[] | undefined): Message[] {
   if (!messages) return []
   return messages.map(msg => {

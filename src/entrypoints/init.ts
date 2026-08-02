@@ -250,6 +250,21 @@ export const init = memoize(async (): Promise<void> => {
       logForDebugging('[init] ripgrep status check skipped')
     }
 
+    // Surface autocompact test knob once per session (stderr only).
+    try {
+      const { getAutocompactPctOverride } = await import(
+        '../services/compact/autoCompact.js'
+      )
+      const pct = getAutocompactPctOverride()
+      if (pct !== null) {
+        process.stderr.write(
+          `[autocompact] CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${pct} lowers autocompact threshold and status headroom (test knob; can only lower)\n`,
+        )
+      }
+    } catch {
+      logForDebugging('[init] autocompact override check skipped')
+    }
+
     logForDiagnosticsNoPII('info', 'init_completed', {
       duration_ms: Date.now() - initStartTime,
     })

@@ -14,6 +14,7 @@ import { getClaudeAiUserDefaultModelDescription, modelDisplayString } from './mo
 import { getAPIProvider } from './model/providers.js';
 import { getMTLSConfig } from './mtls.js';
 import { checkInstall } from './nativeInstaller/index.js';
+import { getAutocompactPctOverride } from '../services/compact/autoCompact.js';
 import { getProxyUrl } from './proxy.js';
 import { SandboxManager } from './sandbox/sandbox-adapter.js';
 import { getSettingsWithAllErrors } from './settings/allErrors.js';
@@ -433,6 +434,14 @@ export function buildAPIProviderProperties(): Property[] {
         value: process.env.CLAUDE_CODE_CLIENT_KEY,
       });
     }
+  }
+
+  const autocompactPct = getAutocompactPctOverride();
+  if (autocompactPct !== null) {
+    properties.push({
+      label: 'Autocompact override',
+      value: `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${autocompactPct} (lowers threshold only)`,
+    });
   }
 
   return properties;

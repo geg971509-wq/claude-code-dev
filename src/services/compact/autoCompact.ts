@@ -11,7 +11,6 @@ import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { logError } from '../../utils/log.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
-import { getMaxOutputTokensForModel } from '../api/claude.js'
 import { notifyCompaction } from '../api/promptCacheBreakDetection.js'
 import { setLastSummarizedMessageId } from '../SessionMemory/sessionMemoryUtils.js'
 import {
@@ -20,10 +19,7 @@ import {
   ERROR_MESSAGE_USER_ABORT,
   type RecompactionInfo,
 } from './compact.js'
-import {
-  getEffectiveContextWindowSize,
-  MAX_OUTPUT_TOKENS_FOR_SUMMARY,
-} from './effectiveWindow.js'
+import { getEffectiveContextWindowSize } from './effectiveWindow.js'
 import { runPostCompactCleanup } from './postCompactCleanup.js'
 import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
 
@@ -43,11 +39,6 @@ export const WARNING_THRESHOLD_BUFFER_TOKENS = 20_000
 export const ERROR_THRESHOLD_BUFFER_TOKENS = 20_000
 export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
 
-// Conservative estimate for tool result growth per turn.
-// Typical tool results (file reads, grep, bash) average ~5-10K tokens;
-// occasional large reads can spike to 20K+.
-const TOOL_RESULT_GROWTH_ESTIMATE = 15_000
-
 /**
  * Context-aware autocompact buffer. Larger context windows need more
  * headroom because a single turn can produce proportionally more tokens
@@ -60,22 +51,24 @@ export function getAutocompactBufferTokens(model: string): number {
   return AUTOCOMPACT_BUFFER_TOKENS
 }
 
-/**
- * Estimate the maximum token growth a single turn can produce.
- * Used for predictive autocompact checks before the API call.
- */
-export function estimateMaxTurnGrowth(model: string): number {
-  const maxOutput = Math.min(
-    getMaxOutputTokensForModel(model),
-    MAX_OUTPUT_TOKENS_FOR_SUMMARY,
-  )
-  return maxOutput + TOOL_RESULT_GROWTH_ESTIMATE
-}
-
 // Stop trying autocompact after this many consecutive failures.
 // BQ 2026-03-10: 1,279 sessions had 50+ consecutive failures (up to 3,272)
 // in a single session, wasting ~250K API calls/day globally.
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3
+
+/**
+ * Test knob: CLAUDE_AUTOCOMPACT_PCT_OVERRIDE.
+ * Returns the parsed percent when active, else null.
+ * Active iff finite, > 0, and <= 100 (same rules as the threshold branch).
+ * Can only lower the autocompact trigger (see getAutoCompactThreshold).
+ */
+export function getAutocompactPctOverride(): number | null {
+  const envPercent = process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
+  if (!envPercent) return null
+  const parsed = parseFloat(envPercent)
+  if (isNaN(parsed) || parsed <= 0 || parsed > 100) return null
+  return parsed
+}
 
 export function getAutoCompactThreshold(model: string): number {
   const effectiveContextWindow = getEffectiveContextWindowSize(model)
@@ -84,15 +77,12 @@ export function getAutoCompactThreshold(model: string): number {
     effectiveContextWindow - getAutocompactBufferTokens(model)
 
   // Override for easier testing of autocompact
-  const envPercent = process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
-  if (envPercent) {
-    const parsed = parseFloat(envPercent)
-    if (!isNaN(parsed) && parsed > 0 && parsed <= 100) {
-      const percentageThreshold = Math.floor(
-        effectiveContextWindow * (parsed / 100),
-      )
-      return Math.min(percentageThreshold, autocompactThreshold)
-    }
+  const parsed = getAutocompactPctOverride()
+  if (parsed !== null) {
+    const percentageThreshold = Math.floor(
+      effectiveContextWindow * (parsed / 100),
+    )
+    return Math.min(percentageThreshold, autocompactThreshold)
   }
 
   return autocompactThreshold

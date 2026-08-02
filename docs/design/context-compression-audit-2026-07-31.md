@@ -1,9 +1,17 @@
 # Context Compression Logic Audit Report
 
-**Date**: 2026-07-31 (findings verified against source 2026-07-31)
-**Branch**: `fix/stream-lifecycle-hardening`
-**Issue**: Context compression takes too long
+**Date**: 2026-07-31 (findings verified against source 2026-07-31)  
+**Fact-check**: 2026-08-03 — see plan `docs/design/context-compression-fix-plan-2026-08-03.md`  
+**Branch**: `fix/stream-lifecycle-hardening`  
+**Issue**: Context compression takes too long  
 **Reference**: kimi-code implementation at `/Volumes/work/software/install/kimi-code`
+
+### 2026-08-03 errata (post fact-check + fix plan)
+
+- §0 env snapshot (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80`) was **audit-environment local**, not a repo default. Override is now surfaced at startup stderr + `/status` when active.
+- Predictive autocompact path in `query.ts` **removed** (dead outer gate / same-turn double-fire on failure). Mentions of “predictive compact” below are historical unless noted.
+- Two §1 overstatements corrected in place (same-iteration wording; “content always grows”).
+- Floor budgets unchanged; measure via existing `logEvent` fields only if a local sink is on — this fork’s 1P `tengu_*` export is hard-off.
 
 ---
 
@@ -121,30 +129,37 @@ Two mechanisms the original report did not account for:
 
    That is the immediate-retrigger failure mode, already closed.
 
-2. **Same-iteration guard.** `!compactionResult` gates both the blocking-limit check
-   (`query.ts:849`) and the predictive compact (`query.ts:875`), so a second compact cannot
-   fire in the same query-loop iteration.
+2. **Same-iteration proactive path.** After a **successful** proactive compact,
+   `compactionResult` is set and the blocking-limit check is skipped (`!compactionResult`
+   in `query.ts`). Historically a second **predictive** `deps.autocompact` also sat behind
+   that gate and could still run after a **failed** main attempt; that predictive block was
+   removed 2026-08-03. Reactive compact (413 recovery) is a later path and is not gated by
+   the pre-stream `compactionResult` flag.
 
-Across iterations, content always grows (assistant response + tool results), so a
-`current <= floor` comparison would not fire there even with matched units. And kimi-code's
-guard is **within-turn only** — `resetForTurn()` nulls the field at every turn start — which
-is the same scope `!compactionResult` already covers here.
+Later iterations **usually** grow once an assistant turn + tool results land; snip /
+microcompact / collapse can shrink payload, so a floor-style `current <= last` guard is still
+the wrong first fix. kimi-code's guard is **within-turn only** — `resetForTurn()` nulls the
+field at every turn start — closer to “don’t compact twice after success in one turn” than
+to a cross-turn suppress.
 
 ### If the slowness is real, measure this first
 
-Read `tengu_auto_compact_succeeded.truePostCompactTokenCount` and
-`tengu_compact.willRetriggerNextTurn`. If `willRetriggerNextTurn` is frequently true, the
-post-compact floor genuinely sits above the threshold, and the fix is to **lower the floor**
-(post-compact attachment restore, `messagesToKeep` budget, preserved-user-message budget) —
-not to suppress the trigger. Suppression in that state would let context grow unchecked
-until the API rejects the request, converting a slow session into a broken one.
+Fields `truePostCompactTokenCount` and `willRetriggerNextTurn` are computed on
+`tengu_compact` / `tengu_auto_compact_succeeded`. **On this fork, 1P `tengu_*` export is
+hard-off** — do not assume BQ. Use local debug / optional Datadog if configured. If
+`willRetriggerNextTurn` is frequently true, the post-compact floor genuinely sits above the
+threshold, and the fix is to **lower the floor** (post-compact attachment restore,
+`messagesToKeep` budget, preserved-user-message budget) — not to suppress the trigger.
+Suppression in that state would let context grow unchecked until the API rejects the
+request, converting a slow session into a broken one. **No floor budget change without that
+measurement** (plan 5A).
 
 The threshold math, for reference: `getEffectiveContextWindowSize` = window −
 min(maxOutputTokens, 20 000); `getAutoCompactThreshold` = that − buffer, where the buffer is
 50 000 (≥800k window) / 30 000 (≥400k) / 13 000 otherwise. For a 200k window: 180 000
 effective, 167 000 trigger — **assuming no `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`**. That env var
-takes `min(floor(effective × pct/100), threshold)`, so it can only lower the trigger, and it
-does so silently. Check it before trusting any measured threshold (see §0).
+takes `min(floor(effective × pct/100), threshold)`, so it can only lower the trigger.
+When set, startup stderr and `/status` now name it (see `getAutocompactPctOverride`).
 
 ---
 

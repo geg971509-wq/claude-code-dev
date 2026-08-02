@@ -4,9 +4,8 @@
  * tokenCountWithEstimation anchors on the last usage-bearing assistant
  * message. A preserved assistant's usage describes the PRE-compact context
  * (≈ the over-threshold count that triggered compaction) — if it survived
- * into the post-compact chain, the same-turn predictive check and the next
- * turn's auto-compact check would both read the stale count and immediately
- * retrigger compaction.
+ * into the post-compact chain, the next turn's auto-compact check and the
+ * status bar would both read the stale count and immediately retrigger.
  */
 import { describe, expect, test } from 'bun:test'
 import { tokenCountWithEstimation } from '../../../utils/tokens'

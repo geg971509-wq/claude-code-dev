@@ -453,8 +453,8 @@ REPL 内 resume 比 CLI 启动路径多了“从当前 session 切换到另一�
 5. `microcompactMessages()`：time-based microcompact，再 cached microcompact。
 6. `contextCollapse.applyCollapsesIfNeeded()`：当前为 identity stub。
 7. `autoCompactIfNeeded()`：主动 compact，优先 session memory compact。
-8. predictive autocompact：API 前估算本 turn 增长，必要时提前 compact。
-9. API 真实超限后：context-collapse drain，再 reactive compact。
+8. API 真实超限后：context-collapse drain，再 reactive compact。
+   （旧 predictive autocompact 路径已删除：外层门比主阈值更松，失败时同 turn 二次 compact。）
 
 ## Compact 与投影
 
@@ -464,7 +464,6 @@ REPL 内 resume 比 CLI 启动路径多了“从当前 session 切换到另一�
 |---|---|---|---:|---:|---|
 | manual compact | `/compact` | compact summary API 或 session memory | 取决于路径 | 取决于 full/partial/SM | 显示失败或回退传统 compact。 |
 | auto compact | token 阈值 | 先 session memory，后 summary API | 取决于路径 | 取决于路径 | 连续失败 circuit breaker，默认 3 次后停止自动 compact。 |
-| predictive compact | API 前估算增长 | 同 auto compact | 取决于路径 | 取决于路径 | 失败则继续原请求或走后续错误恢复。 |
 | reactive compact | API 真实 413/media error 后 | `compactConversation()` | 是 | 当前 wrapper 取决于 compact 实现 | `hasAttemptedReactiveCompact` 防循环。 |
 | session memory compact | manual/auto 前置尝试 | session memory 文件 | 否 | 是 | 若 post-compact 仍超阈值，放弃并回退传统 compact。 |
 | microcompact | time/cached 小型压缩 | 局部清理或 API cache edit | 不一定 | 不适用 | 通常不改变 JSONL 主历史。 |
