@@ -1,2 +1,8 @@
 src/
 packages/
+
+# Internal agent/design docs — not part of the public documentation site.
+# AGENTS.md is a symlink to CLAUDE.md, so both names need excluding.
+/CLAUDE.md
+/AGENTS.md
+/.impeccable.md

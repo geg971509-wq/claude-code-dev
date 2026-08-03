@@ -10,7 +10,7 @@
       "**",
       "!!**/dist",
       "!!**/dist-stable",
-      "!!**/.claude/workflows",
+      "!!**/.claude/workflow-runs",
       "!!**/*.workflow.mjs"
     ]
   },

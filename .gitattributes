@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+*.node  binary
+*.png   binary
+*.svg   -diff
+
+bun.lock         linguist-generated -diff
+contributors.svg linguist-generated -diff

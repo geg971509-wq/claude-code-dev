@@ -5,46 +5,50 @@ coverage
 .env
 *.log
 .idea
-.vscode/*
-!.vscode/extensions.json
 *.suo
 *.lock
+!bun.lock
 src/utils/vendor/
 
-# AI tool runtime directories
+# Editor config — share launch/tasks/extensions, ignore per-user state
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# AI tool runtime directories. `.claude/` uses the glob form (not `.claude/`)
+# because a trailing-slash directory exclusion makes git refuse to descend,
+# which would render every `!` negation below dead.
+.claude/*
+!.claude/agents/
+.claude/agents/*
+!.claude/agents/hello-agent.md
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/interview/
+!.claude/skills/teach-me/
 .agents/
-.claude/
 .omx/
-.docs/task/
+.omc
+
 # Binary / screenshot files (root only)
 /*.png
 *.bmp
 
-# Internal system prompt documents
+# Internal system prompt documents (--dump-system-prompt output)
 Claude-Opus-*.txt
 Claude-Sonnet-*.txt
 Claude-Haiku-*.txt
 
-# Agent / tool state dirs
-.swarm/
-.agents/__pycache__/
-
 # Python bytecode
 __pycache__/
 *.pyc
-logs
 
-data
-.omc
-.codex/*
-!.codex/agents/
-!.codex/agents/**
-!.codex/skills/
-!.codex/skills/**
-.codex/skills/.system/**
-!.codex/prompts/
-!.codex/prompts/**
-teach-me
+# Local state / personal notes (root only — anchored so same-named source
+# directories anywhere in the tree stay visible)
+/logs/
+/data/
+/teach-me/
 credentials.json
 
 # Session-scoped progress / state files written by agents and skills
