@@ -211,7 +211,7 @@ export type GlobalConfig = {
   claudeAiMcpEverConnected?: string[]
   preferredNotifChannel: NotificationChannel
   /**
-   * @deprecated. Use the Notification hook instead (docs/hooks.md).
+   * @deprecated. Use the Notification hook instead.
    */
   customNotifyCommand?: string
   verbose: boolean

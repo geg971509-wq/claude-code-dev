@@ -23,7 +23,7 @@ import { logError } from './log.js'
 // Native NSPasteboard reader. GrowthBook gate tengu_collage_kaleidoscope is
 // a kill switch (default on). Falls through to osascript when off.
 // The gate string is inlined at each callsite INSIDE the feature() condition
-// — module-scope helpers are NOT tree-shaken (see docs/feature-gating.md).
+// — module-scope helpers are NOT tree-shaken (see CLAUDE.md § Feature Flag System).
 
 type SupportedPlatform = 'darwin' | 'linux' | 'win32'
 

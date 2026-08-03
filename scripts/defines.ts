@@ -95,11 +95,11 @@ export const DEFAULT_BUILD_FEATURES = [
   // SSH Remote
   'SSH_REMOTE', // SSH 远程连接，本地 REPL + 远端工具执行
   // Autofix PR
-  'AUTOFIX_PR', // /autofix-pr 命令（fork 引入；docs/jira/AUTOFIX-PR-001.md 承诺默认开启）
+  'AUTOFIX_PR', // /autofix-pr 命令（fork 引入，默认开启）
   // Persistent thread goal command — auto-continuation, JSONL persistence,
   // strict completion/blocked audit. See src/services/goal.
   'GOAL',
-  // Agent 能力增强（借鉴 kimi-code，见 docs/feature-plan-2026-07-30-agent-enhancements.md）
+  // Agent 能力增强（借鉴 kimi-code）
   'TOOL_LOOP_DETECTION', // 工具调用死循环分级干预
   'SUBAGENT_SUMMARY_GATE', // 子代理摘要质量门
   'COMPACT_PRESERVE_USER_MESSAGES', // compact 保留真实用户消息 HEAD+TAIL

@@ -700,8 +700,7 @@ export function buildSchemaNotSentHint(
     `\nImportant notes:\n` +
     `• Use camelCase parameter names (e.g., taskId), not snake_case (task_id)\n` +
     `• All task tools (TaskGet, TaskCreate, TaskUpdate, TaskList) need to be discovered first\n` +
-    `• You can discover them all at once: ${SEARCH_EXTRA_TOOLS_TOOL_NAME}("select:TaskGet,TaskCreate,TaskUpdate,TaskList")\n` +
-    `\nSee docs/openai-task-tools.md for detailed guide.`
+    `• You can discover them all at once: ${SEARCH_EXTRA_TOOLS_TOOL_NAME}("select:TaskGet,TaskCreate,TaskUpdate,TaskList")`
   )
 }
 

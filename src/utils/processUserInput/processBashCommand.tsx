@@ -30,7 +30,7 @@ export async function processBashCommand(
   messages: (UserMessage | AttachmentMessage | SystemMessage)[];
   shouldQuery: boolean;
 }> {
-  // Shell routing (docs/design/ps-shell-selection.md §5.2): consult
+  // Shell routing: consult
   // defaultShell, fall back to bash. isPowerShellToolEnabled() applies the
   // same platform + env-var gate as tools.ts so input-box routing matches
   // tool-list visibility. Computed up front so telemetry records the

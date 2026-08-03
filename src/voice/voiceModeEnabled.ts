@@ -14,7 +14,7 @@ import {
  * should be *visible* (e.g., command registration, config UI).
  */
 export function isVoiceGrowthBookEnabled(): boolean {
-  // Positive ternary pattern — see docs/feature-gating.md.
+  // Positive ternary pattern — see CLAUDE.md § Feature Flag System.
   // Negative pattern (if (!feature(...)) return) does not eliminate
   // inline string literals from external builds.
   return feature('VOICE_MODE')

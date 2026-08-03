@@ -1,8 +1,8 @@
 /**
  * Native Installer Implementation
  *
- * This module implements the file-based native installer system described in
- * docs/native-installer.md. It provides:
+ * This module implements the file-based native installer system.
+ * It provides:
  * - Directory structure management with symlinks
  * - Version installation and activation
  * - Multi-process safety with locking

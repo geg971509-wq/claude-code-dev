@@ -32,7 +32,7 @@ export function isBridgeEnabled(): boolean {
   if (feature('BRIDGE_MODE') && isSelfHostedBridge()) {
     return true
   }
-  // Positive ternary pattern — see docs/feature-gating.md.
+  // Positive ternary pattern — see CLAUDE.md § Feature Flag System.
   // Negative pattern (if (!feature(...)) return) does not eliminate
   // inline string literals from external builds.
   return feature('BRIDGE_MODE')
@@ -171,7 +171,7 @@ export function isCseShimEnabled(): boolean {
  * loaded yet, the default '0.0.0' means the check passes — a safe fallback.
  */
 export function checkBridgeMinVersion(): string | null {
-  // Positive pattern — see docs/feature-gating.md.
+  // Positive pattern — see CLAUDE.md § Feature Flag System.
   // Negative pattern (if (!feature(...)) return) does not eliminate
   // inline string literals from external builds.
   if (feature('BRIDGE_MODE')) {

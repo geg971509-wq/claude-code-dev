@@ -12,7 +12,6 @@
  * before it reaches the fork. Both new-fork (AgentTool.tsx) and
  * resumed-fork (resumeAgent.ts) paths must call this.
  *
- * See docs/jira/LOCAL-WIRING-DESIGN.md §4.5 / §5.5 for design rationale.
  */
 
 import { ALL_AGENT_DISALLOWED_TOOLS } from '../constants/tools.js'

@@ -72,8 +72,6 @@ bun run rcs
 bun run docs:dev
 ```
 
-详细的测试规范、覆盖状态和改进计划见 `docs/testing-spec.md`。
-
 ## Architecture
 
 ### Runtime & Build
@@ -126,7 +124,7 @@ bun run docs:dev
 
 - **`src/Tool.ts`** — Tool interface definition (`Tool` type) and utilities (`findToolByName`, `toolMatchesName`).
 - **`src/tools.ts`** — Tool registry. Assembles the tool list; tools are imported from `@claude-code-best/builtin-tools` package. Some tools are conditionally loaded via `feature()` flags or `process.env.USER_TYPE`.
-- **`src/constants/tools.ts`** — `CORE_TOOLS` 白名单常量（38 个核心工具名），用于 `isDeferredTool` 白名单制判定。
+- **`src/constants/tools.ts`** — `CORE_TOOLS` 白名单常量（29 个核心工具名），用于 `isDeferredTool` 白名单制判定。
 - **`packages/builtin-tools/src/tools/`** — 60 个工具目录（含 shared/testing 等工具目录），通过 `@claude-code-best/builtin-tools` 包导出。主要分类：
   - **文件操作**: FileEditTool, FileReadTool, FileWriteTool, GlobTool, GrepTool
   - **Shell/执行**: BashTool, PowerShellTool, REPLTool
@@ -134,7 +132,7 @@ bun run docs:dev
   - **规划**: EnterPlanModeTool, ExitPlanModeV2Tool, VerifyPlanExecutionTool
   - **Web/MCP**: WebFetchTool, WebSearchTool, MCPTool, McpAuthTool
   - **调度**: CronCreateTool, CronDeleteTool, CronListTool
-  - **工具发现**: SearchExtraToolsTool, ExecuteExtraTool, SyntheticOutput（CORE_TOOLS，用于延迟工具按需加载）
+  - **工具发现**: SearchExtraToolsTool, ExecuteExtraTool, SyntheticOutputTool（wire name 为 `StructuredOutput`）（CORE_TOOLS，用于延迟工具按需加载）
   - **其他**: LSPTool, ConfigTool, SkillTool, EnterWorktreeTool, ExitWorktreeTool 等
 - **`src/tools/shared/`** / **`packages/builtin-tools/src/tools/shared/`** — Tool 共享工具函数。
 - **`src/services/searchExtraTools/`** — TF-IDF 工具索引模块（`toolIndex.ts`），为延迟工具提供语义搜索能力。复用 `localSearch.ts` 的 TF-IDF 算法函数（`computeWeightedTf`、`computeIdf`、`cosineSimilarity` 已导出）。修改这些函数时需同步检查工具索引测试。`prefetch.ts` 的 `extractQueryFromMessages` 复用了 `skillSearch/prefetch.ts` 的同名导出函数，修改 skill prefetch 的该函数时需同步检查工具预取行为。工具预取使用独立的 `discoveredToolsThisSession` Set，与 skill prefetch 的去重集合互不影响。
@@ -453,6 +451,8 @@ bun run precheck
 - **Ink 框架在 `packages/@ant/ink/`** — 不是 `src/ink/`（该目录不存在）。Ink 相关的组件、hooks、keybindings 都在 packages 中。
 - **Provider 优先级** — `modelType` 参数 > 环境变量 > 默认 `firstParty`。新增 provider 需在 `src/utils/model/providers.ts` 注册。
 - **`query()` 不得抛出** — `src/query.ts` 的 `query()` 是 StreamFn 合约：所有失败**必须** yield 为 stream 事件，不能 throw。任何逃逸出该 generator 的异常会静默截断流，不产生错误消息。新增错误路径时必须 `yield` 而非 `throw`。
+- **文档保留标准** — 描述"当前是什么"的文档保留（架构说明、feature 文档、设计指南）；描述"过去做了什么"的文档删除（审计报告、带日期的修复计划、任务清单、调研记录、测试报告）。**规则是资产，过程是垃圾** —— 过程属于 git history，不属于工作区。判定标准不是"是否被链接"：`docs/features/ssh-remote.md` 无人链接但记录着活跃 feature flag，属于保留项；而互相引用成闭环的"审计 + 修复计划"两件套，链接再多也是过程。写完一轮的执行计划后，按同一标准删掉它自己。
+- **ignore 规则必须锚定** — 新增 ignore 规则时，只想匹配仓库根的目录必须写 `/name/` 而非裸 `name`。裸规则匹配任意深度，会静默吞掉未来的同名源码目录（如 `data` 吞掉 `tests/data/`、`logs` 吞掉 `src/utils/logs/`），且**不产生任何警告**。需要在被忽略目录内开洞时，必须用 glob 形式 `dir/*` 而非 `dir/` —— 带尾斜杠的目录排除会让 git 拒绝下降，里面所有 `!` 否定项全是死规则。改完用 `git ls-files -i -c --exclude-standard`（应为 0 行）验证没有 tracked-but-ignored 矛盾。
 
 ## Design Context
 

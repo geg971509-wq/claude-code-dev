@@ -2,7 +2,6 @@
  * promptEngineeringAudit.test.ts
  *
  * 验证 prompts.ts 中从 Opus 4.7 官方 prompt 借鉴的提示词工程改进。
- * 对应审计文档: docs/features/opus-4.7-prompt-engineering-audit.md
  *
  * 测试策略: 通过 getSystemPrompt() 生成完整 system prompt，
  * 然后检查关键段落是否存在。大部分被测函数是 module-private，

@@ -825,7 +825,6 @@ function processHookJSONOutput({
  * Shell resolution: hook.shell → 'bash'. PowerShell hooks spawn pwsh
  * with -NoProfile -NonInteractive -Command and skip bash-specific prep
  * (POSIX path conversion, .sh auto-prepend, CLAUDE_CODE_SHELL_PREFIX).
- * See docs/design/ps-shell-selection.md §5.1.
  */
 async function execCommandHook(
   hook: HookCommand & { type: 'command' },
@@ -862,7 +861,7 @@ async function execCommandHook(
   const isWindows = getPlatform() === 'windows'
 
   // --
-  // Per-hook shell selection (phase 1 of docs/design/ps-shell-selection.md).
+  // Per-hook shell selection (phase 1).
   // Resolution order: hook.shell → DEFAULT_HOOK_SHELL. The defaultShell
   // fallback (settings.defaultShell) is phase 2 — not wired yet.
   //
