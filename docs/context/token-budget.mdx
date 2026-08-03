@@ -153,10 +153,10 @@ autoCompactIfNeeded() / compactConversation()
 4. 压缩成功后重建上下文：
    - compactBoundaryMarker（记录压缩类型、前 token 数等）
    - 摘要消息（不可见的 user 消息）
-   - 最近 5 个文件的重新读取（POST_COMPACT_TOKEN_BUDGET = 50K）
+   - 最近 5 个文件的重新读取（每文件 ≤3K，POST_COMPACT_TOKEN_BUDGET = 16K）
    - plan 文件附件（如果有）
    - plan mode 指令（如果在计划模式中）
-   - 已调用的 skill 内容（每 skill ≤5K，总计 ≤25K）
+   - 已调用的 skill 内容（每 skill ≤5K，总计 ≤10K）
    - deferred tools / agent listing / MCP 指令的增量重新注入
    - SessionStart hooks 重新执行
    - PostCompact hooks 执行

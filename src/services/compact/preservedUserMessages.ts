@@ -20,7 +20,11 @@
  * and is intentionally not covered.
  */
 
-export const PRESERVED_USER_MESSAGE_MAX_TOKENS = 20_000
+// Measured distribution (n=147 non-zero preserved blocks): median 224 tok /
+// mean 2,120 / p90 5,446 / max 20,097. The 8k cap trims only the top ~5% of
+// sessions. Lowered from 20_000 (which was set without provenance and pinned
+// the max sample exactly at the limit).
+export const PRESERVED_USER_MESSAGE_MAX_TOKENS = 8_000
 export const PRESERVED_USER_MESSAGE_HEAD_TOKENS = 2_000
 
 // Character-level token heuristic (same shape as kimi's: ASCII ≈ 4 chars per

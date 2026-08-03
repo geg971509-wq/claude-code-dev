@@ -737,9 +737,12 @@ async function* queryLoop(
       }
 
       // Reset on every compact so turnCounter/turnId reflect the MOST RECENT
-      // compact. recompactionInfo (autoCompact.ts:190) already captured the
-      // old values for turnsSincePreviousCompact/previousCompactTurnId before
-      // the call, so this reset doesn't lose those.
+      // compact. recompactionInfo (built in autoCompactIfNeeded) already
+      // captured the old values for turnsSincePreviousCompact /
+      // previousCompactTurnId before the call, so this reset doesn't lose
+      // those. dropRegenerableAttachments depends on that ordering: it reads
+      // turnsSincePreviousCompact === 0 to mean "compacted again with no turn
+      // in between", which is only true if the capture precedes this reset.
       tracking = {
         compacted: true,
         turnId: deps.uuid(),

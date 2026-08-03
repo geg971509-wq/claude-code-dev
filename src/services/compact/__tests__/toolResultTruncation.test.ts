@@ -21,19 +21,67 @@ function textMsg(text: string): any {
   }
 }
 
-const LONG = 'x'.repeat(COMPACT_TOOL_RESULT_MAX_CHARS + 500)
+// Head and tail are distinguishable on purpose: a uniform 'x'.repeat() fixture
+// satisfies a head-only truncator and a head+tail one identically, so it cannot
+// witness the property this module exists for (keeping the END of tool output,
+// where exit codes and failing assertions live).
+const HEAD_MARKER = 'HEAD-START'
+const TAIL_MARKER = 'TAIL-END'
+const LONG = `${HEAD_MARKER}${'x'.repeat(
+  COMPACT_TOOL_RESULT_MAX_CHARS + 500 - HEAD_MARKER.length - TAIL_MARKER.length,
+)}${TAIL_MARKER}`
 
 describe('truncateToolResultsForCompaction', () => {
-  test('truncates string tool_result content over the limit', () => {
+  test('keeps both the head and the tail of over-limit string content', () => {
     const [out] = truncateToolResultsForCompaction([toolResultMsg(LONG)])
     const content = (out as any).message.content[0].content as string
-    expect(content.startsWith('x'.repeat(COMPACT_TOOL_RESULT_MAX_CHARS))).toBe(
-      true,
-    )
+    expect(content.startsWith(HEAD_MARKER)).toBe(true)
+    // The load-bearing half: head-only truncation drops this.
+    expect(content.endsWith(TAIL_MARKER)).toBe(true)
     expect(content).toContain(
       '[Tool output truncated for compaction: omitted 500 chars]',
     )
     expect(content.length).toBeLessThan(LONG.length)
+  })
+
+  test('splits the char budget evenly between head and tail', () => {
+    const [out] = truncateToolResultsForCompaction(
+      [toolResultMsg(`${'H'.repeat(150)}${'T'.repeat(150)}`)],
+      50,
+    )
+    const content = (out as any).message.content[0].content as string
+    // maxChars 50 → ceil(50/2)=25 head + 25 tail; the kept text is exactly the
+    // two ends, so this also pins that the middle is what gets dropped.
+    expect(content).toBe(
+      `${'H'.repeat(25)}\n[Tool output truncated for compaction: omitted 250 chars]\n${'T'.repeat(25)}`,
+    )
+  })
+
+  // The marker costs ~58 chars, so "truncating" a barely-over-limit string used
+  // to return MORE text than it was given (2,001 chars in → 2,057 out at the
+  // default limit). A function named truncate must never grow its input.
+  test('leaves text alone when the marker would cost more than it saves', () => {
+    for (const over of [1, 20, 57]) {
+      const text = 'z'.repeat(COMPACT_TOOL_RESULT_MAX_CHARS + over)
+      const msg = toolResultMsg(text)
+      const [out] = truncateToolResultsForCompaction([msg])
+      expect(out).toBe(msg)
+    }
+  })
+
+  test('never returns more chars than it received, at any limit', () => {
+    // Includes maxChars 0 and 1, where tailChars is 0 — a naive slice(-0)
+    // returns the WHOLE string, so the omission marker got prepended to
+    // untruncated text.
+    const text = 'ABCDEFGHIJ'.repeat(10)
+    for (const maxChars of [0, 1, 2, 3, 50, 99, 100, 101]) {
+      const [out] = truncateToolResultsForCompaction(
+        [toolResultMsg(text)],
+        maxChars,
+      )
+      const content = (out as any).message.content[0].content as string
+      expect(content.length).toBeLessThanOrEqual(text.length)
+    }
   })
 
   test('leaves short string content untouched (identity)', () => {
@@ -71,15 +119,5 @@ describe('truncateToolResultsForCompaction', () => {
     const [a, b] = truncateToolResultsForCompaction([assistant, plain])
     expect(a).toBe(assistant)
     expect(b).toBe(plain)
-  })
-
-  test('honors a custom maxChars', () => {
-    const [out] = truncateToolResultsForCompaction(
-      [toolResultMsg('a'.repeat(100))],
-      50,
-    )
-    const content = (out as any).message.content[0].content as string
-    expect(content).toContain('omitted 50 chars')
-    expect(content.startsWith('a'.repeat(50))).toBe(true)
   })
 })

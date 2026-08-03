@@ -12,8 +12,11 @@ export const COMPACT_TOOL_RESULT_MAX_CHARS = 2_000
  * is a pure win and also lowers the chance the compact request itself hits
  * prompt-too-long.
  *
- * Keeps the head and appends an omission marker (same shape as opencode's
- * compaction). Messages with nothing to truncate are returned as-is.
+ * Keeps head AND tail with an omission marker between them. The verdict of a
+ * tool run lives at the END of its output (test pass counts, exit codes, the
+ * failing assertion) while the head is command echo — head-only truncation
+ * threw away exactly the part the summarizer needs. Total budget unchanged.
+ * Messages with nothing to truncate are returned as-is.
  *
  * Lives in its own module (like grouping.ts) so tests don't have to import
  * the whole compact.ts dependency graph.
@@ -60,8 +63,26 @@ function truncateToolResultText(text: string, maxChars: number): string {
   if (text.length <= maxChars) {
     return text
   }
+  // At maxChars <= 1, the calculation below would produce tailChars=0 and
+  // slice(-0) returns the whole string — truncation inverts. Unreachable via
+  // the single caller (default 2000), but guard it anyway.
+  if (maxChars < 2) {
+    return text.slice(0, Math.max(0, maxChars))
+  }
+  const headChars = Math.ceil(maxChars / 2)
+  const tailChars = maxChars - headChars
   const omitted = text.length - maxChars
-  return `${text.slice(0, maxChars)}\n[Tool output truncated for compaction: omitted ${omitted} chars]`
+  const marker = `\n[Tool output truncated for compaction: omitted ${omitted} chars]\n`
+  // The marker costs ~58 chars, so replacing a smaller omission with it GROWS
+  // the payload — at the default maxChars that inflated every result in
+  // (2_000, 2_058]. A function named truncate must never return more than it
+  // was given, so give up when the marker would not pay for itself.
+  if (marker.length >= omitted) {
+    return text
+  }
+  // Explicit end index, not slice(-tailChars): the guard above prevents
+  // tailChars=0, but the explicit form documents the intent.
+  return `${text.slice(0, headChars)}${marker}${text.slice(text.length - tailChars)}`
 }
 
 function truncateToolResultContent(

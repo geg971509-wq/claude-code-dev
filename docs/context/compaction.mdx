@@ -151,19 +151,34 @@ const stripped2 = stripReinjectedAttachments(stripped) // 移除会被重新注�
 压缩后，系统会从摘要中**重新注入关键上下文**：
 
 ```typescript
-// compact.ts:126-134
-export const POST_COMPACT_TOKEN_BUDGET = 50_000          // 总预算
+// src/services/compact/compact.ts
 export const POST_COMPACT_MAX_FILES_TO_RESTORE = 5        // 最多恢复 5 个文件
-export const POST_COMPACT_MAX_TOKENS_PER_FILE = 5_000     // 每文件 5K token
+export const POST_COMPACT_TOKEN_BUDGET = 16_000           // 文件/附件预算
+export const POST_COMPACT_MAX_TOKENS_PER_FILE = 3_000     // 每文件 3K token
 export const POST_COMPACT_MAX_TOKENS_PER_SKILL = 5_000    // 每技能 5K token
-export const POST_COMPACT_SKILLS_TOKEN_BUDGET = 25_000    // 技能总预算 25K
+export const POST_COMPACT_SKILLS_TOKEN_BUDGET = 10_000    // 技能预算 10K
 ```
 
-这 50K token 的重新注入预算用于：
-1. 恢复最近读取的文件内容（最多 5 个文件，每个截断到 5K token）
-2. 恢复已激活的技能指令（每个技能截断到 5K token，总计 25K）
+**文件预算与技能预算是两个独立的累加器**，不是一个总预算的两个分项 —— 附件用满 16K 不会挤掉技能，反之亦然。重新注入的内容：
+
+1. 恢复最近读取的文件内容（最多 5 个文件，每个截断到 3K token，合计受 16K 约束）
+2. 恢复已激活的技能指令（每个截断到 5K token，合计受 10K 约束 —— 即约 2 个技能）
 3. 重新注入 CLAUDE.md 内容
 4. 恢复 MCP 工具发现结果
+
+`16_000 > 5 × 3_000` 是故意的：JSON 序列化约有 1.5% 开销，让总预算而非单文件上限成为约束项。
+
+**压力下降级**：`turnsSincePreviousCompact === 0` 时，可再生成的附件类型（`invoked_skills`、`file`、`compact_file_reference`）会被整体丢弃，不占用上述预算。理由是这些内容 agent 能自己重新取回（`SkillTool` 可重新调用、`Read` 可重新读取），而这个信号说明注入量本身就是触发压缩的原因之一 —— 再注入一次只会立刻再触发。
+
+那个 0 实际覆盖**三种**情形，三种都该丢：
+
+1. 上次压缩后零轮就再次触发（摘要本身没把占用压到阈值以下）。
+2. reactive 路径 —— 它无条件传 0，因为只在 API 已经以 `prompt_too_long` 或 media-size 打回请求后才运行。
+3. 一次**失败**的压缩之后的首次成功压缩：失败分支保留 `compacted: false`，而唯一的 `turnCounter++` 以它为门，计数器被钉在 0 直到压缩成功。
+
+真正的「会话内首次压缩」不在其中 —— 那时 tracking 未定义，取到 `?? -1`。这也是判据用计数器而非 `isRecompactionInChain` 的原因：后者一旦置真永不复位。
+
+所有压缩后预算的**总和**由 `buildPostCompactMessages.test.ts` 的 footprint ceiling 断言守住（当前上限 50K）。它是**常量的绊线，不是字节精确的界**：技能侧累加器只量 `skill.content` 裸文本，而请求里带的是整个 JSON 附件，实测封套多 3-4%，即满载 10K 技能预算时低估约 400 tokens。不要为这 400 去调高上限 —— 该断言要拦的是任何常量被放宽，而不是 0.8% 的封套误差。放宽任何单个常量都必须在那里重新论证，而不是把断言改成匹配新值。
 
 ## CompactBoundary：压缩的边界标记
 

@@ -99,6 +99,56 @@ describe('getCompactPrompt', () => {
   })
 })
 
+function occurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1
+}
+
+// Section 6 swaps between "list every user message" and "don't restate them,
+// they're appended verbatim". Both the instruction AND the <example> block
+// carry the section-6 heading, so they must swap together — an abridged
+// instruction shipped with the full example puts "do NOT restate them" and a
+// bulleted list of user messages in the same prompt.
+describe('getCompactPrompt section 6', () => {
+  const FULL_HEADING = 'All user messages'
+  const ABRIDGED_HEADING = 'User intent over time'
+
+  test('asks for the full list when nothing is preserved verbatim', () => {
+    for (const prompt of [
+      getCompactPrompt(),
+      getCompactPrompt(undefined, { userMessagesPreservedVerbatim: false }),
+    ]) {
+      expect(prompt).toContain('List ALL user messages that are not tool')
+      expect(prompt).not.toContain('do NOT restate them')
+      // Instruction + example.
+      expect(occurrences(prompt, FULL_HEADING)).toBe(2)
+      expect(occurrences(prompt, ABRIDGED_HEADING)).toBe(0)
+    }
+  })
+
+  test('suppresses the list when the messages are appended verbatim', () => {
+    const prompt = getCompactPrompt(undefined, {
+      userMessagesPreservedVerbatim: true,
+    })
+    expect(prompt).toContain('do NOT restate them')
+    expect(prompt).not.toContain('List ALL user messages that are not tool')
+    expect(occurrences(prompt, ABRIDGED_HEADING)).toBe(2)
+    // The example must not survive the swap: it is the contradiction.
+    expect(occurrences(prompt, FULL_HEADING)).toBe(0)
+  })
+
+  test('keeps the security carve-out in both variants', () => {
+    // Preservation silently drops any user message carrying a non-text block,
+    // so "don't touch auth.ts" attached to a screenshot only ever reaches the
+    // next turn through the summary. Neither variant may drop this.
+    expect(
+      getCompactPrompt(undefined, { userMessagesPreservedVerbatim: false }),
+    ).toContain('Preserve any security-relevant instructions or constraints')
+    expect(
+      getCompactPrompt(undefined, { userMessagesPreservedVerbatim: true }),
+    ).toContain('security-relevant instructions or constraints (operations')
+  })
+})
+
 describe('getCompactUserSummaryMessage', () => {
   test('announces preserved messages only when a tail is preserved', () => {
     const note = 'Recent messages are preserved verbatim.'

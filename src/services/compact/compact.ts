@@ -135,15 +135,88 @@ import {
 import { truncateToolResultsForCompaction } from './toolResultTruncation.js'
 
 export const POST_COMPACT_MAX_FILES_TO_RESTORE = 5
-export const POST_COMPACT_TOKEN_BUDGET = 50_000
-export const POST_COMPACT_MAX_TOKENS_PER_FILE = 5_000
+// Measured per-compact real saving: ~2.4k tok (median 11.4k → ~9k after
+// both caps). 16_000 > 5 × 3_000 = 15_000 intentionally — JSON serialization
+// adds ~1.5% overhead, so the total-budget must be the binding constraint.
+export const POST_COMPACT_TOKEN_BUDGET = 16_000
+export const POST_COMPACT_MAX_TOKENS_PER_FILE = 3_000
 // Skills can be large (verify=18.7KB, claude-api=20.1KB). Previously re-injected
 // unbounded on every compact → 5-10K tok/compact. Per-skill truncation beats
 // dropping — instructions at the top of a skill file are usually the critical
-// part. Budget sized to hold ~5 skills at the per-skill cap.
+// part. Budget sized to hold ~2 skills at the per-skill cap.
 export const POST_COMPACT_MAX_TOKENS_PER_SKILL = 5_000
-export const POST_COMPACT_SKILLS_TOKEN_BUDGET = 25_000
+export const POST_COMPACT_SKILLS_TOKEN_BUDGET = 10_000
 const MAX_COMPACT_STREAMING_RETRIES = 2
+
+/**
+ * Attachment types dropped when a compact fires again in the same turn that
+ * a previous compact finished — i.e. the summary alone did not get us under
+ * the threshold, so the optional payload is what has to go.
+ *
+ * Ordered by regenerability, most-regenerable first: the model still holds
+ * SkillTool and Read, so both of these it can fetch back on demand. Everything
+ * else in the attachment array changes behaviour rather than supplying content
+ * (plan, plan-mode instructions, deferred-tool schemas, agent listing, MCP
+ * instructions) and is never dropped. Neither is the verbatim tail — it is the
+ * only non-regenerable high-density payload post-compact, so it outranks all
+ * of this.
+ *
+ * Both tiers drop together: there is no measured threshold that would justify
+ * stopping after skills, and the signal itself (see below) already means the
+ * cheaper measures failed.
+ *
+ * `pdf_reference` is regenerable (Read can re-fetch) but omitted: while the PDF
+ * branch in generateFileAttachment runs regardless of mode, tryGetPDFReference
+ * itself is gated by `mode === 'at-mention'` and post-compact passes `'compact'`,
+ * so pdf_reference cannot appear here. If that gate is ever removed, add it.
+ *
+ * `already_read_file` is unreachable: buildPostCompactAttachments clears
+ * readFileState before restoring, so that branch's lookup always misses.
+ */
+const REGENERABLE_ATTACHMENT_TYPES = new Set([
+  'invoked_skills',
+  'file',
+  'compact_file_reference',
+])
+
+/**
+ * Drops the payload above when `turnsSincePreviousCompact === 0`.
+ *
+ * That zero carries three distinct situations, all of which want the drop:
+ *
+ * 1. A compact fired again with no turn in between — the summary alone did not
+ *    get us under the threshold.
+ * 2. The reactive path, which passes 0 unconditionally (reactiveCompact.ts).
+ *    Not a first-compact false positive: tryReactiveCompact only runs after the
+ *    API already rejected the request as oversized (query.ts guards it on
+ *    prompt_too_long or media-size).
+ * 3. The first *successful* compact after a failed attempt. The failure branch
+ *    in query.ts spreads the old tracking and leaves `compacted: false`, which
+ *    gates off the only `turnCounter++`; the counter is therefore pinned at a
+ *    defined 0 until a compact succeeds. A prior failed compact is itself
+ *    evidence of real pressure, so dropping is right here too.
+ *
+ * A genuine first-ever compact is NOT in that list: `tracking` is undefined, so
+ * the capture yields `?? -1`. That is the case this guard must not catch, and
+ * the reason it keys on the counter rather than `isRecompactionInChain` —
+ * `tracking.compacted` latches true forever, so it only means "not the first
+ * compact this session" and would keep dropping long after the pressure eased.
+ *
+ * Exported only so the three-meanings-of-zero contract above can be asserted
+ * directly; the call site cannot express it (an empty result and a filtered-out
+ * result look the same from outside buildPostCompactMessages).
+ */
+export function dropRegenerableAttachments(
+  attachments: AttachmentMessage[],
+  turnsSincePreviousCompact: number | undefined,
+): AttachmentMessage[] {
+  if (turnsSincePreviousCompact !== 0) {
+    return attachments
+  }
+  return attachments.filter(
+    message => !REGENERABLE_ATTACHMENT_TYPES.has(message.attachment.type),
+  )
+}
 
 /**
  * Strip image blocks from user messages before sending for compaction.
@@ -528,8 +601,24 @@ export async function compactConversation(
       true,
     )
 
+    // Built here, not at its append site further down, because the prompt has
+    // to know whether the verbatim block will actually be present. The feature
+    // flag being on is NOT the same thing: formatPreservedSection returns ''
+    // whenever the head has no text-only user messages (a user turn carrying
+    // an image is dropped whole by isRealUserMessage). Promising the summarizer
+    // "the originals are appended below" when they are not would drop the
+    // user's own words from the summary AND the verbatim section at once.
+    // Same single-source-of-truth rule as recentTailPreserved above.
+    let preservedUserSection = ''
+    if (feature('COMPACT_PRESERVE_USER_MESSAGES')) {
+      preservedUserSection = formatPreservedSection(
+        selectPreservedUserMessages(tailSelection.head),
+      )
+    }
+
     const compactPrompt = getCompactPrompt(customInstructions, {
       recentTailPreserved,
+      userMessagesPreservedVerbatim: preservedUserSection.length > 0,
     })
     const summaryRequest = createUserMessage({
       content: compactPrompt,
@@ -612,13 +701,17 @@ export async function compactConversation(
       throw new Error(summary)
     }
 
-    const { postCompactFileAttachments, hookMessages } =
+    const { postCompactFileAttachments: builtAttachments, hookMessages } =
       await buildPostCompactAttachments(
         context,
         messagesToKeep,
         [],
         'compact_full',
       )
+    const postCompactFileAttachments = dropRegenerableAttachments(
+      builtAttachments,
+      recompactionInfo?.turnsSincePreviousCompact,
+    )
 
     // Create the compact boundary marker and summary messages before the
     // event so we can compute the true resulting-context size.
@@ -644,16 +737,11 @@ export async function compactConversation(
       transcriptPath,
       recentTailPreserved,
     )
-    // Preserve real user messages (verbatim HEAD + TAIL) inside the summary
-    // message — see preservedUserMessages.ts. Appended BEFORE
-    // truePostCompactTokenCount below so the retrigger estimate covers it.
-    // Only the head is scanned: tail user messages are already preserved
-    // verbatim in messagesToKeep, so including them here would duplicate them.
-    if (feature('COMPACT_PRESERVE_USER_MESSAGES')) {
-      compactSummaryContent += formatPreservedSection(
-        selectPreservedUserMessages(tailSelection.head),
-      )
-    }
+    // Built above (before the prompt) so the summarizer is told the truth about
+    // whether these originals exist. Appended BEFORE truePostCompactTokenCount
+    // below so the retrigger estimate covers it. Only the head is scanned: tail
+    // user messages are already preserved verbatim in messagesToKeep.
+    compactSummaryContent += preservedUserSection
     const summaryMessages: UserMessage[] = [
       createUserMessage({
         content: compactSummaryContent,
