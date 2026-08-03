@@ -150,12 +150,19 @@ function tryCurlDownload(url, dest) {
 
 async function fetchRelease(url) {
   if (proxyEnvSet()) {
-    // Dynamic require so it works in node without bundling issues
-    const undici = require('undici')
-    return await undici.fetch(url, {
-      redirect: 'follow',
-      dispatcher: new undici.EnvHttpProxyAgent(),
-    })
+    // Dynamic require so it works in node without bundling issues.
+    // undici is a devDependency — npm-installed users don't have it, so fall
+    // through to global fetch (which ignores the proxy but usually still works).
+    let undici
+    try {
+      undici = require('undici')
+    } catch {}
+    if (undici) {
+      return await undici.fetch(url, {
+        redirect: 'follow',
+        dispatcher: new undici.EnvHttpProxyAgent(),
+      })
+    }
   }
   // Node 18+ has global fetch, Bun has it too
   return await fetch(url, { redirect: 'follow' })
