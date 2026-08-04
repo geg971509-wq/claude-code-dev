@@ -68,9 +68,11 @@ describe('preserveRecentBudget', () => {
     expect(preserveRecentBudget(1_000_000)).toBe(PRESERVE_RECENT_MAX_TOKENS)
   })
 
-  test('env override wins outright', () => {
+  test('env override can only lower, not raise', () => {
     process.env.CLAUDE_CODE_COMPACT_PRESERVE_RECENT_TOKENS = '12345'
-    expect(preserveRecentBudget(1_000_000)).toBe(12_345)
+    expect(preserveRecentBudget(1_000_000)).toBe(PRESERVE_RECENT_MAX_TOKENS)
+    process.env.CLAUDE_CODE_COMPACT_PRESERVE_RECENT_TOKENS = '1000'
+    expect(preserveRecentBudget(1_000_000)).toBe(1_000)
   })
 })
 

@@ -133,10 +133,13 @@ function attachmentMsg(type: string): any {
  * so it can only be caught by naming them again here.
  */
 describe('dropRegenerableAttachments', () => {
-  const REGENERABLE = ['invoked_skills', 'file', 'compact_file_reference']
+  const REGENERABLE = ['invoked_skills', 'file']
   // Behaviour-changing, not content-supplying: dropping these would change
   // what the agent can do, not just what it has to re-fetch.
+  // compact_file_reference is a pointer (~56 tok), not content — kept so the
+  // agent still has the filename under pressure.
   const KEPT = [
+    'compact_file_reference',
     'plan_file_reference',
     'plan_mode',
     'deferred_tools',

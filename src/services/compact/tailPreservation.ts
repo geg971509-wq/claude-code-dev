@@ -43,14 +43,17 @@ export function tailMaxRounds(): number {
 /**
  * Token budget for the verbatim tail: 25% of the effective context window,
  * clamped to [2k, 8k] (same shape as opencode's preserveRecentBudget).
- * CLAUDE_CODE_COMPACT_PRESERVE_RECENT_TOKENS overrides outright.
+ * CLAUDE_CODE_COMPACT_PRESERVE_RECENT_TOKENS can only lower the budget, never
+ * raise it past PRESERVE_RECENT_MAX_TOKENS — same shape as
+ * CLAUDE_AUTOCOMPACT_PCT_OVERRIDE. Raising would bypass the post-compact
+ * footprint ceiling assertion that meters this constant.
  */
 export function preserveRecentBudget(effectiveWindowTokens: number): number {
   const override = process.env.CLAUDE_CODE_COMPACT_PRESERVE_RECENT_TOKENS
   if (override !== undefined) {
     const parsed = parseInt(override, 10)
     if (!Number.isNaN(parsed) && parsed > 0) {
-      return parsed
+      return Math.min(parsed, PRESERVE_RECENT_MAX_TOKENS)
     }
   }
   return Math.min(

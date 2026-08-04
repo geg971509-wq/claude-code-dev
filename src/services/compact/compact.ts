@@ -176,7 +176,10 @@ const MAX_COMPACT_STREAMING_RETRIES = 2
 const REGENERABLE_ATTACHMENT_TYPES = new Set([
   'invoked_skills',
   'file',
-  'compact_file_reference',
+  // compact_file_reference is a ~56-token pointer (not content). Dropping it
+  // saves ~1.8% of a full file attachment but removes the filename the agent
+  // needs to re-Read — the opposite of "regenerable". Keep it under pressure.
+  // pdf_reference / already_read_file remain excluded per the comment above.
 ])
 
 /**
@@ -1891,6 +1894,12 @@ function truncateToTokens(content: string, maxTokens: number): string {
     return content
   }
   const charBudget = maxTokens * 4 - SKILL_TRUNCATION_MARKER.length
+  // maxTokens ≲ 25 makes charBudget ≤ 0 (marker ≈ 100 chars) → slice(0, neg)
+  // reads from the end and inverts truncation. Unreachable at the sole call
+  // site (POST_COMPACT_MAX_TOKENS_PER_SKILL = 5000); guard anyway.
+  if (charBudget <= 0) {
+    return SKILL_TRUNCATION_MARKER
+  }
   return content.slice(0, charBudget) + SKILL_TRUNCATION_MARKER
 }
 

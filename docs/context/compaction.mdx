@@ -168,7 +168,7 @@ export const POST_COMPACT_SKILLS_TOKEN_BUDGET = 10_000    // 技能预算 10K
 
 `16_000 > 5 × 3_000` 是故意的：JSON 序列化约有 1.5% 开销，让总预算而非单文件上限成为约束项。
 
-**压力下降级**：`turnsSincePreviousCompact === 0` 时，可再生成的附件类型（`invoked_skills`、`file`、`compact_file_reference`）会被整体丢弃，不占用上述预算。理由是这些内容 agent 能自己重新取回（`SkillTool` 可重新调用、`Read` 可重新读取），而这个信号说明注入量本身就是触发压缩的原因之一 —— 再注入一次只会立刻再触发。
+**压力下降级**：`turnsSincePreviousCompact === 0` 时，可再生成的附件类型（`invoked_skills`、`file`）会被整体丢弃，不占用上述预算。理由是这些内容 agent 能自己重新取回（`SkillTool` 可重新调用、`Read` 可重新读取），而这个信号说明注入量本身就是触发压缩的原因之一 —— 再注入一次只会立刻再触发。`compact_file_reference` **不**在丢弃集里：它是约 56 token 的指针（非内容），丢掉只省 ~1.8% 却拿走重新 Read 所需的文件名。
 
 那个 0 实际覆盖**三种**情形，三种都该丢：
 
@@ -179,6 +179,13 @@ export const POST_COMPACT_SKILLS_TOKEN_BUDGET = 10_000    // 技能预算 10K
 真正的「会话内首次压缩」不在其中 —— 那时 tracking 未定义，取到 `?? -1`。这也是判据用计数器而非 `isRecompactionInChain` 的原因：后者一旦置真永不复位。
 
 所有压缩后预算的**总和**由 `buildPostCompactMessages.test.ts` 的 footprint ceiling 断言守住（当前上限 50K）。它是**常量的绊线，不是字节精确的界**：技能侧累加器只量 `skill.content` 裸文本，而请求里带的是整个 JSON 附件，实测封套多 3-4%，即满载 10K 技能预算时低估约 400 tokens。不要为这 400 去调高上限 —— 该断言要拦的是任何常量被放宽，而不是 0.8% 的封套误差。放宽任何单个常量都必须在那里重新论证，而不是把断言改成匹配新值。
+
+**测试/调试旋钮**（与 `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` 同形——只能压低，不能放大）：
+
+- `CLAUDE_CODE_COMPACT_PRESERVE_RECENT_TOKENS`：覆盖 tail 的 token 预算，**夹到 ≤ 8K**（`PRESERVE_RECENT_MAX_TOKENS`）。设更大的值无效，否则会绕过上方 footprint ceiling。
+- `CLAUDE_CODE_COMPACT_TAIL_ROUNDS`：覆盖保留的 API 轮数（`0` = 关 tail）。轮数受 token 预算二次约束，无独立上限。
+
+**Summarizer 输入截断**：`truncateToolResultsForCompaction`（头+尾）**仅**在 streaming fallback 路径调用。默认 fork 路径（`tengu_compact_cache_prefix`，默认 true）为与主线程 prompt cache 字节一致**故意不截**——在 fork 上截断会把 cache_read 变成全量 cache_creation。
 
 ## CompactBoundary：压缩的边界标记
 
