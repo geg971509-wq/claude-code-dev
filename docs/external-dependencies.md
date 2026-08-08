@@ -11,12 +11,12 @@
 | 3 | Google Vertex AI | `{region}-aiplatform.googleapis.com` | HTTPS | 需 `CLAUDE_CODE_USE_VERTEX=1` |
 | 4 | Azure Foundry | `{resource}.services.ai.azure.com` | HTTPS | 需 `CLAUDE_CODE_USE_FOUNDRY=1` |
 | 5 | OAuth (Anthropic) | `platform.claude.com`, `claude.com`, `claude.ai` | HTTPS | 用户登录时 |
-| 6 | GrowthBook | `api.anthropic.com` (remoteEval) | HTTPS | 默认启用 |
+| 6 | GrowthBook | `api.anthropic.com` (remoteEval) | HTTPS | 硬关远端（本地 `LOCAL_GATE_DEFAULTS`；`CLAUDE_GB_ADAPTER_*` 可开适配器） |
 | 7 | Sentry | 可配置 (`SENTRY_DSN`) | HTTPS | 需设环境变量 |
 | 8 | Datadog | 可配置 (`DATADOG_LOGS_ENDPOINT`) | HTTPS | 需设环境变量 |
-| 9 | OpenTelemetry Collector | 可配置 (`OTEL_EXPORTER_OTLP_ENDPOINT`) | gRPC/HTTP | 需设环境变量 |
-| 10 | 1P Event Logging | `api.anthropic.com/api/event_logging/batch` | HTTPS | 默认启用 |
-| 11 | BigQuery Metrics | `api.anthropic.com/api/claude_code/metrics` | HTTPS | 默认启用 |
+| 9 | OpenTelemetry Collector | 可配置 (`OTEL_EXPORTER_OTLP_ENDPOINT`) | gRPC/HTTP | 需 `CLAUDE_CODE_ENABLE_TELEMETRY=1` |
+| 10 | 1P Event Logging | `api.anthropic.com/api/event_logging/batch` | HTTPS | 硬关（`is1PEventLoggingEnabled()` 恒 false） |
+| 11 | BigQuery Metrics | `api.anthropic.com/api/claude_code/metrics` | HTTPS | 硬关（`isBigQueryMetricsEnabled()` 恒 false） |
 | 12 | MCP Proxy | `mcp-proxy.anthropic.com` | HTTPS+WS | 使用 MCP 工具时 |
 | 13 | MCP Registry | `api.anthropic.com/mcp-registry` | HTTPS | 查询 MCP 服务器时 |
 | 14 | Web Search Pages | `www.bing.com`, `search.brave.com` | HTTPS | WebSearch 工具，可通过 `WEB_SEARCH_ADAPTER=bing|brave` 切换 |
@@ -76,6 +76,7 @@ OAuth 2.0 + PKCE 授权码流程。
 
 - **端点**: `https://api.anthropic.com/` (remoteEval 模式) 或 `CLAUDE_GB_ADAPTER_URL`
 - **SDK Keys**: `sdk-zAZezfDKGoZuXXKe` (外部), `sdk-xRVcrliHIlrg4og4` (ant prod), `sdk-yZQvlplybuXjYh6L` (ant dev)
+- **本 fork**: `isGrowthBookEnabled()` 恒 false，不发起 remoteEval；gates 走 `LOCAL_GATE_DEFAULTS`。仅设 `CLAUDE_GB_ADAPTER_URL` + `CLAUDE_GB_ADAPTER_KEY` 时启用适配器。
 - **文件**: `src/services/analytics/growthbook.ts`, `src/constants/keys.ts`
 
 ### 7. Sentry (错误追踪)
@@ -99,11 +100,13 @@ OAuth 2.0 + PKCE 授权码流程。
 
 - **端点**: `https://api.anthropic.com/api/event_logging/batch`
 - **协议**: 批量导出 (10s 间隔, 每批 200 事件)
+- **本 fork**: `is1PEventLoggingEnabled()` 恒 false，从不发送 batch、不写 `~/.claude/telemetry/`。
 - **文件**: `src/services/analytics/firstPartyEventLoggingExporter.ts`
 
 ### 11. BigQuery Metrics
 
 - **端点**: `https://api.anthropic.com/api/claude_code/metrics`
+- **本 fork**: `isBigQueryMetricsEnabled()` 恒 false，不挂 BQ reader；与客户 OTEL（`CLAUDE_CODE_ENABLE_TELEMETRY`）解耦。
 - **文件**: `src/utils/telemetry/bigqueryExporter.ts`
 
 ### 12. MCP Proxy

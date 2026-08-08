@@ -283,7 +283,7 @@ Feature flags control which functionality is enabled at runtime. 代码中统一
 | OpenAI/Gemini/Grok 兼容层 | Restored |
 | Remote Control Server | Restored — 自托管 RCS + Web UI |
 | `packages/shell/`, `packages/swarm/`, `packages/mcp-server/`, `packages/cc-knowledge/` | Removed — 功能合并或废弃 |
-| Analytics / GrowthBook / Sentry | Disabled — 1P analytics（tengu_*）硬关闭：`is1PEventLoggingEnabled()` 恒 false，从不发送 `api/event_logging/batch`、不写 `~/.claude/telemetry/`；GrowthBook 远端拉取禁用，`isGrowthBookEnabled()` 恒 false，feature gates 走 `LOCAL_GATE_DEFAULTS` 本地解析（`CLAUDE_CODE_DISABLE_LOCAL_GATES=1` 可绕过）；Sentry 无 DSN 时为 inert |
+| Analytics / GrowthBook / Sentry / BigQuery | Disabled — 1P analytics（tengu_*）硬关闭：`is1PEventLoggingEnabled()` 恒 false，从不发送 `api/event_logging/batch`、不写 `~/.claude/telemetry/`；GrowthBook 远端拉取禁用，`isGrowthBookEnabled()` 恒 false，feature gates 走 `LOCAL_GATE_DEFAULTS` 本地解析（`CLAUDE_CODE_DISABLE_LOCAL_GATES=1` 可绕过）；BigQuery metrics：`isBigQueryMetricsEnabled()` 恒 false（不 POST `/api/claude_code/metrics`，与客户 OTEL 解耦）；Sentry 无 DSN 时为 inert |
 | Magic Docs / LSP Server | Restored — Magic Docs 自动更新 + LSP 服务器管理器 |
 | Plugins / Marketplace | Restored — 插件安装/卸载/启用/禁用 + Marketplace 浏览 |
 | MCP OAuth | Simplified |

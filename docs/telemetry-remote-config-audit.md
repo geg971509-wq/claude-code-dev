@@ -17,7 +17,8 @@
 **文件**: `src/services/analytics/firstPartyEventLogger.ts` + `firstPartyEventLoggingExporter.ts`
 
 - **端点**: `https://api.anthropic.com/api/event_logging/batch`（staging 可切换）
-- **行为**: 使用 OpenTelemetry SDK 的 `BatchLogRecordProcessor`，批量导出到 Anthropic 自有的 BQ 管道
+- **本 fork 硬关**: `is1PEventLoggingEnabled()` 恒 false — 不初始化 pipeline、不 POST batch、不写 `~/.claude/telemetry/`
+- **行为（上游逻辑，本 fork 默认不触发）**: 使用 OpenTelemetry SDK 的 `BatchLogRecordProcessor`，批量导出到 Anthropic 自有的 BQ 管道
 - **数据**: 完整事件 metadata（session、model、env context、用户数据、subscription type 等）
 - **弹性**: 本地磁盘持久化失败事件（JSONL），二次退避重试，最多 8 次尝试
 - **Proto schema**: 事件序列化为 `ClaudeCodeInternalEvent` / `GrowthbookExperimentEvent` protobuf 格式
@@ -28,7 +29,8 @@
 **文件**: `src/services/analytics/growthbook.ts`
 
 - **服务端**: `https://api.anthropic.com/`（remote eval 模式）
-- **行为**: 启动时拉取全量 feature flags，每 6h（外部用户）/ 20min（ant）定时刷新
+- **本 fork 硬关**: `isGrowthBookEnabled()` 恒 false（除非 `CLAUDE_GB_ADAPTER_URL` + `CLAUDE_GB_ADAPTER_KEY`）；gates 走 `LOCAL_GATE_DEFAULTS`
+- **行为（上游逻辑，本 fork 默认不触发 remoteEval）**: 启动时拉取全量 feature flags，每 6h（外部用户）/ 20min（ant）定时刷新
 - **磁盘缓存**: feature values 写入 `~/.claude.json` 的 `cachedGrowthBookFeatures`
 - **用途**:
   - 控制 Datadog 开关（`tengu_log_datadog_events`）
@@ -74,8 +76,9 @@
 **文件**: `src/utils/telemetry/bigqueryExporter.ts`
 
 - **端点**: `https://api.anthropic.com/api/claude_code/metrics`
-- **行为**: 定期（5min 间隔）导出 OTel metrics 到内部 BQ
-- **适用**: API 客户、C4E/Team 订阅者
+- **本 fork 硬关**: `isBigQueryMetricsEnabled()` 恒 false — 不挂 reader、不构造 exporter；与客户 OTEL（`CLAUDE_CODE_ENABLE_TELEMETRY`）解耦
+- **行为（上游逻辑，本 fork 默认不触发）**: 定期（5min 间隔）导出 OTel metrics 到内部 BQ
+- **适用**: API 客户、C4E/Team 订阅者（上游）
 - **组织级 opt-out**: 通过 `checkMetricsEnabled()` API 查询（见下方第 8 项）
 
 ## 8. 组织级 Metrics Opt-out 查询
@@ -83,7 +86,8 @@
 **文件**: `src/services/api/metricsOptOut.ts`
 
 - **端点**: `https://api.anthropic.com/api/claude_code/organizations/metrics_enabled`
-- **行为**: 查询组织是否启用了 metrics，二级缓存（内存 1h + 磁盘 24h）
+- **本 fork**: BQ reader 不挂载时默认不调用；唯一调用方是 exporter
+- **行为（上游逻辑）**: 查询组织是否启用了 metrics，二级缓存（内存 1h + 磁盘 24h）
 - **作用**: 控制 BigQuery metrics exporter 是否导出
 
 ## 9. Startup Profiling
