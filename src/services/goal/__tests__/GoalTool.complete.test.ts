@@ -5,6 +5,13 @@ mock.module('src/utils/log.ts', logMock)
 mock.module('src/utils/debug.ts', () => ({
   logForDebugging: () => {},
 }))
+// GoalTool complete path calls persistGoalClear → sessionStorage; keep this
+// unit test off the filesystem (and off process-global fs mocks from other files).
+mock.module('src/services/goal/goalStorage.js', () => ({
+  persistGoalState: () => {},
+  persistGoalClear: () => {},
+  restoreGoalFromSession: () => null,
+}))
 
 import { GoalTool } from '@claude-code-best/builtin-tools/tools/GoalTool/GoalTool.js'
 import {
