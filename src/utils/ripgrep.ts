@@ -28,12 +28,34 @@ type RipgrepConfig = {
   note?: string
 }
 
+function vendoredRgBinaryPath(rgRoot: string): string {
+  return process.platform === 'win32'
+    ? path.resolve(rgRoot, `${process.arch}-win32`, 'rg.exe')
+    : path.resolve(rgRoot, `${process.arch}-${process.platform}`, 'rg')
+}
+
+/**
+ * Candidate vendor roots for the bundled rg binary.
+ * Standalone `dist/ccb` resolves next to the executable (build.sh places it there).
+ * JS/dev layouts still use distRoot/vendor (or project vendor via distRoot).
+ */
+function vendoredRgRoots(): string[] {
+  const roots: string[] = []
+  // Bun-compiled standalone: sidecar next to the binary (ootb; no brew/system rg).
+  if (isInBundledMode() || path.basename(process.execPath).startsWith('ccb')) {
+    roots.push(path.join(path.dirname(process.execPath), 'vendor', 'ripgrep'))
+  }
+  roots.push(path.resolve(__dirname, 'vendor', 'ripgrep'))
+  return roots
+}
+
 export const getRipgrepConfig = memoize((): RipgrepConfig => {
   const userWantsSystemRipgrep = isEnvDefinedFalsy(
     process.env.USE_BUILTIN_RIPGREP,
   )
 
-  // Try system ripgrep if user wants it
+  // Optional override only: prefer system rg when explicitly requested AND found.
+  // Missing system rg must not break Grep — fall through to vendored binary.
   if (userWantsSystemRipgrep) {
     const { cmd: systemPath } = findExecutable('rg', [])
     if (systemPath !== 'rg') {
@@ -44,24 +66,17 @@ export const getRipgrepConfig = memoize((): RipgrepConfig => {
     }
   }
 
-  // In bundled (native) mode, ripgrep is statically compiled into bun-internal
-  // and dispatches based on argv[0]. We spawn ourselves with argv0='rg'.
-  if (isInBundledMode()) {
-    return {
-      mode: 'embedded',
-      command: process.execPath,
-      args: ['--no-config'],
-      argv0: 'rg',
+  // Prefer first existing vendored binary (sidecar for compile, then distRoot).
+  // Bun compile does NOT multi-call as rg via argv0 — that path was a dead end.
+  for (const rgRoot of vendoredRgRoots()) {
+    const command = vendoredRgBinaryPath(rgRoot)
+    if (existsSync(command)) {
+      return { mode: 'builtin', command, args: [] }
     }
   }
 
-  const rgRoot = path.resolve(__dirname, 'vendor', 'ripgrep')
-  const command =
-    process.platform === 'win32'
-      ? path.resolve(rgRoot, `${process.arch}-win32`, 'rg.exe')
-      : path.resolve(rgRoot, `${process.arch}-${process.platform}`, 'rg')
-
-  return resolveBuiltinWithFallback(command)
+  const fallback = vendoredRgBinaryPath(vendoredRgRoots()[0]!)
+  return resolveBuiltinWithFallback(fallback)
 })
 
 /**
