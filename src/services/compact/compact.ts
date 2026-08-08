@@ -388,6 +388,20 @@ export const ERROR_MESSAGE_PROMPT_TOO_LONG =
 export const ERROR_MESSAGE_USER_ABORT = 'API Error: Request was aborted.'
 export const ERROR_MESSAGE_INCOMPLETE_RESPONSE =
   'Compaction interrupted · This may be due to network issues — please try again.'
+/** Official amr prefix — autoCompact maps this to kind hook_blocked (not failed). */
+export const COMPACT_BLOCKED_BY_HOOK_PREFIX =
+  'Compaction blocked by PreCompact hook'
+
+export function assertPreCompactNotBlocked(hookResult: {
+  blockedBy?: string
+}): void {
+  if (!hookResult.blockedBy) return
+  logForDebugging(
+    `${COMPACT_BLOCKED_BY_HOOK_PREFIX}: ${hookResult.blockedBy}`,
+    { level: 'warn' },
+  )
+  throw new Error(`${COMPACT_BLOCKED_BY_HOOK_PREFIX}: ${hookResult.blockedBy}`)
+}
 
 export interface CompactionResult {
   boundaryMarker: SystemMessage
@@ -514,10 +528,17 @@ export async function compactConversation(
   customInstructions?: string,
   isAutoCompact: boolean = false,
   recompactionInfo?: RecompactionInfo,
+  options?: { stripNonEssential?: boolean },
 ): Promise<CompactionResult> {
   try {
     if (messages.length === 0) {
       throw new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
+    }
+
+    // Cold compact: reuse existing media strip only (no second strip pipeline).
+    if (options?.stripNonEssential) {
+      messages = stripImagesFromMessages(messages)
+      logForDebugging('compact: stripNonEssential applied (cold compact)')
     }
 
     const preCompactTokenCount = tokenCountWithEstimation(messages)
@@ -584,6 +605,7 @@ export async function compactConversation(
       },
       context.abortController.signal,
     )
+    assertPreCompactNotBlocked(hookResult)
     customInstructions = mergeHookInstructions(
       customInstructions,
       hookResult.newCustomInstructions,
@@ -968,6 +990,7 @@ export async function partialCompactConversation(
       },
       context.abortController.signal,
     )
+    assertPreCompactNotBlocked(hookResult)
 
     // Merge hook instructions with user feedback
     let customInstructions: string | undefined

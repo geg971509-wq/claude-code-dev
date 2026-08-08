@@ -5,6 +5,10 @@ import {
 } from '../api/errors.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { type CompactionResult, compactConversation } from './compact.js'
+import {
+  isColdCompactEnabled,
+  isCompactBlockedByHookError,
+} from './autoCompact.js'
 import { logError } from '../../utils/log.js'
 import { logForDebugging } from '../../utils/debug.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
@@ -40,6 +44,7 @@ export const tryReactiveCompact: (params: {
 }) => {
   if (hasAttempted || aborted) return null
   const params = cacheSafeParams as unknown as CacheSafeParams
+  const cold = isColdCompactEnabled()
   try {
     const result = await compactConversation(
       messages,
@@ -53,9 +58,18 @@ export const tryReactiveCompact: (params: {
         turnsSincePreviousCompact: 0,
         autoCompactThreshold: 0,
       },
+      cold ? { stripNonEssential: true } : undefined,
     )
     return result
   } catch (error) {
+    // PreCompact decision=block is not a compact failure — same as autoCompact.
+    if (isCompactBlockedByHookError(error)) {
+      logForDebugging(
+        `reactiveCompact: blocked by PreCompact hook — ${error instanceof Error ? error.message : String(error)}`,
+        { level: 'warn' },
+      )
+      return null
+    }
     logForDebugging(
       `reactiveCompact: emergency compaction failed — ${String(error)}`,
       { level: 'warn' },

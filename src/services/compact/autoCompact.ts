@@ -9,13 +9,19 @@ import { isEnvTruthy } from '../../utils/envUtils.js'
 import { hasExactErrorMessage } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { logError } from '../../utils/log.js'
-import { tokenCountWithEstimation } from '../../utils/tokens.js'
+import {
+  getCurrentUsage,
+  tokenCountWithEstimation,
+} from '../../utils/tokens.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
+import { logEvent } from '../analytics/index.js'
+import { roughTokenCountEstimationForMessages } from '../tokenEstimation.js'
 import { notifyCompaction } from '../api/promptCacheBreakDetection.js'
 import { setLastSummarizedMessageId } from '../SessionMemory/sessionMemoryUtils.js'
 import {
   type CompactionResult,
   compactConversation,
+  COMPACT_BLOCKED_BY_HOOK_PREFIX,
   ERROR_MESSAGE_USER_ABORT,
   type RecompactionInfo,
 } from './compact.js'
@@ -32,6 +38,45 @@ export type AutoCompactTrackingState = {
   // Used as a circuit breaker to stop retrying when the context is
   // irrecoverably over the limit (e.g., prompt_too_long).
   consecutiveFailures?: number
+  // Consecutive post-compact refills that re-hit the autocompact threshold
+  // within RAPID_REFILL_TURN_THRESHOLD turns. Reset when a compact holds.
+  consecutiveRapidRefills?: number
+}
+
+/** Official-aligned autocompact outcome (kind discriminant). */
+export type AutoCompactResult =
+  | { kind: 'not_needed' }
+  | { kind: 'failure_breaker_open' }
+  | { kind: 'rapid_refill_breaker_tripped' }
+  | {
+      kind: 'compacted'
+      result: CompactionResult
+      consecutiveRapidRefills: number
+      routedThroughReactive: boolean
+    }
+  | { kind: 'failed'; consecutiveFailures: number }
+  | { kind: 'hook_blocked' }
+
+export function isColdCompactEnabled(): boolean {
+  return isEnvTruthy(process.env.CLAUDE_CODE_COLD_COMPACT)
+}
+
+export function isCompactBlockedByHookError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error)
+  return msg.startsWith(COMPACT_BLOCKED_BY_HOOK_PREFIX)
+}
+
+export function createPostAutoCompactTracking(
+  turnId: string,
+  consecutiveRapidRefills: number,
+): AutoCompactTrackingState {
+  return {
+    compacted: true,
+    turnId,
+    turnCounter: 0,
+    consecutiveFailures: 0,
+    consecutiveRapidRefills,
+  }
 }
 
 export const AUTOCOMPACT_BUFFER_TOKENS = 13_000
@@ -55,6 +100,105 @@ export function getAutocompactBufferTokens(model: string): number {
 // BQ 2026-03-10: 1,279 sessions had 50+ consecutive failures (up to 3,272)
 // in a single session, wasting ~250K API calls/day globally.
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3
+
+// Rapid-refill breaker: if context re-hits the autocompact threshold within
+// this many turns of a successful compact, count it as a rapid refill.
+// Trip after MAX_CONSECUTIVE_RAPID_REFILLS in a row (official port).
+const RAPID_REFILL_TURN_THRESHOLD = 3
+const MAX_CONSECUTIVE_RAPID_REFILLS = 3
+
+export const RAPID_REFILL_BREAKER_MESSAGE =
+  'Autocompact is thrashing: the context refilled to the limit within 3 turns of the previous compact, 3 times in a row. A file being read or a tool output is likely too large for the context window. Try reading in smaller chunks, or use /clear to start fresh.'
+
+export function countConsecutiveRapidRefills(
+  tracking?: AutoCompactTrackingState,
+): number {
+  if (
+    tracking?.compacted === true &&
+    tracking.turnCounter < RAPID_REFILL_TURN_THRESHOLD
+  ) {
+    return (tracking.consecutiveRapidRefills ?? 0) + 1
+  }
+  return 0
+}
+
+export function evaluateRapidRefillBreaker(
+  tracking?: AutoCompactTrackingState,
+): { action: 'trip' | 'proceed'; consecutiveRapidRefills: number } {
+  const consecutiveRapidRefills = countConsecutiveRapidRefills(tracking)
+  return {
+    action:
+      consecutiveRapidRefills >= MAX_CONSECUTIVE_RAPID_REFILLS
+        ? 'trip'
+        : 'proceed',
+    consecutiveRapidRefills,
+  }
+}
+
+/**
+ * Detect when the fixed (non-compactable) prefix alone already exceeds the
+ * autocompact threshold. Compaction only rewrites messages; system/tools/
+ * media still sit in the window. Diagnostic only — does not block compact.
+ */
+export function detectFixedPrefixOverflow(
+  messages: Message[],
+  model: string,
+  snipTokensFreed = 0,
+): {
+  prefixTokens: number
+  thresholdTokens: number
+  totalInputTokens: number
+  messagesEstimate: number
+  snipTokensFreed: number
+  documentBlockCount: number
+  imageBlockCount: number
+} | null {
+  const usage = getCurrentUsage(messages)
+  if (!usage) return null
+
+  const totalInputTokens =
+    usage.input_tokens +
+    usage.cache_read_input_tokens +
+    usage.cache_creation_input_tokens
+  const messagesEstimate = roughTokenCountEstimationForMessages(
+    messages as Parameters<typeof roughTokenCountEstimationForMessages>[0],
+  )
+  const prefixTokens = Math.max(
+    0,
+    totalInputTokens - snipTokensFreed - messagesEstimate,
+  )
+  const thresholdTokens = getAutoCompactThreshold(model)
+  if (prefixTokens <= thresholdTokens) return null
+
+  let documentBlockCount = 0
+  let imageBlockCount = 0
+  const countBlocks = (blocks: unknown[]): void => {
+    for (const block of blocks) {
+      if (!block || typeof block !== 'object') continue
+      const b = block as { type?: string; content?: unknown }
+      if (b.type === 'document') documentBlockCount++
+      else if (b.type === 'image') imageBlockCount++
+      else if (b.type === 'tool_result' && Array.isArray(b.content)) {
+        countBlocks(b.content)
+      }
+    }
+  }
+  for (const message of messages) {
+    const content = (message as { message?: { content?: unknown } }).message
+      ?.content
+    if (Array.isArray(content)) countBlocks(content)
+  }
+
+  return {
+    prefixTokens,
+    thresholdTokens,
+    totalInputTokens,
+    messagesEstimate,
+    snipTokensFreed,
+    documentBlockCount,
+    imageBlockCount,
+  }
+}
 
 /**
  * Test knob: CLAUDE_AUTOCOMPACT_PCT_OVERRIDE.
@@ -239,13 +383,9 @@ export async function autoCompactIfNeeded(
   querySource?: QuerySource,
   tracking?: AutoCompactTrackingState,
   snipTokensFreed?: number,
-): Promise<{
-  wasCompacted: boolean
-  compactionResult?: CompactionResult
-  consecutiveFailures?: number
-}> {
+): Promise<AutoCompactResult> {
   if (isEnvTruthy(process.env.DISABLE_COMPACT)) {
-    return { wasCompacted: false }
+    return { kind: 'not_needed' }
   }
 
   // Circuit breaker: stop retrying after N consecutive failures.
@@ -255,7 +395,7 @@ export async function autoCompactIfNeeded(
     tracking?.consecutiveFailures !== undefined &&
     tracking.consecutiveFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES
   ) {
-    return { wasCompacted: false }
+    return { kind: 'failure_breaker_open' }
   }
 
   const model = toolUseContext.options.mainLoopModel
@@ -267,7 +407,39 @@ export async function autoCompactIfNeeded(
   )
 
   if (!shouldCompact) {
-    return { wasCompacted: false }
+    return { kind: 'not_needed' }
+  }
+
+  // Fixed-prefix overflow: system/tools/media already exceed the threshold.
+  // Compact rewrites messages only, so it cannot free this headroom. Log and
+  // continue — still attempt compact in case messages share blame.
+  const prefixOverflow = detectFixedPrefixOverflow(
+    messages,
+    model,
+    snipTokensFreed ?? 0,
+  )
+  if (prefixOverflow) {
+    logForDebugging(
+      `autocompact: fixed prefix ~${prefixOverflow.prefixTokens} > threshold ${prefixOverflow.thresholdTokens} — compaction cannot help`,
+      { level: 'warn' },
+    )
+    logEvent('tengu_auto_compact_prefix_overflow', {
+      ...prefixOverflow,
+      wouldHaveBlocked: true,
+    })
+  }
+
+  // Rapid-refill breaker: context keeps refilling to the limit within a few
+  // turns of each compact. Further compact attempts thrash without helping.
+  const rapidRefill = evaluateRapidRefillBreaker(tracking)
+  const { consecutiveRapidRefills } = rapidRefill
+  if (rapidRefill.action === 'trip') {
+    logForDebugging(
+      `autocompact: rapid-refill breaker tripped — ${consecutiveRapidRefills} consecutive refills within <${RAPID_REFILL_TURN_THRESHOLD} turns each (last was ${tracking?.turnCounter} turns)`,
+      { level: 'warn' },
+    )
+    // Official returns only {kind}; query logs using pre-trip tracking.
+    return { kind: 'rapid_refill_breaker_tripped' }
   }
 
   const recompactionInfo: RecompactionInfo = {
@@ -298,12 +470,19 @@ export async function autoCompactIfNeeded(
     }
     markPostCompaction()
     return {
-      wasCompacted: true,
-      compactionResult: sessionMemoryResult,
+      kind: 'compacted',
+      result: sessionMemoryResult,
+      consecutiveRapidRefills,
+      routedThroughReactive: false,
     }
   }
 
   try {
+    const cold = isColdCompactEnabled()
+    if (cold) {
+      logForDebugging('autocompact: cold compact enabled (stripNonEssential)')
+      logEvent('tengu_cold_compact', {})
+    }
     const compactionResult = await compactConversation(
       messages,
       toolUseContext,
@@ -312,6 +491,7 @@ export async function autoCompactIfNeeded(
       undefined, // No custom instructions for autocompact
       true, // isAutoCompact
       recompactionInfo,
+      cold ? { stripNonEssential: true } : undefined,
     )
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages
@@ -320,12 +500,20 @@ export async function autoCompactIfNeeded(
     runPostCompactCleanup(querySource)
 
     return {
-      wasCompacted: true,
-      compactionResult,
-      // Reset failure count on success
-      consecutiveFailures: 0,
+      kind: 'compacted',
+      result: compactionResult,
+      consecutiveRapidRefills,
+      routedThroughReactive: false,
     }
   } catch (error) {
+    // PreCompact decision=block — not a compact failure; do not trip breaker.
+    if (isCompactBlockedByHookError(error)) {
+      logForDebugging(
+        `autocompact: blocked by PreCompact hook — ${error instanceof Error ? error.message : String(error)}`,
+        { level: 'warn' },
+      )
+      return { kind: 'hook_blocked' }
+    }
     if (!hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)) {
       logError(error)
     }
@@ -340,6 +528,6 @@ export async function autoCompactIfNeeded(
         { level: 'warn' },
       )
     }
-    return { wasCompacted: false, consecutiveFailures: nextFailures }
+    return { kind: 'failed', consecutiveFailures: nextFailures }
   }
 }

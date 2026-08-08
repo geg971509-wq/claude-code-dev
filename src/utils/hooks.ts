@@ -4126,6 +4126,8 @@ export async function executePreCompactHooks(
 ): Promise<{
   newCustomInstructions?: string
   userDisplayMessage?: string
+  /** Official-aligned: set when any PreCompact hook returned decision=block. */
+  blockedBy?: string
 }> {
   const hookInput: PreCompactHookInput = {
     ...createBaseHookInput(undefined),
@@ -4145,15 +4147,18 @@ export async function executePreCompactHooks(
     return {}
   }
 
-  // Extract custom instructions from successful hooks with non-empty output
+  // Extract custom instructions from successful non-blocking hooks with output
   const successfulOutputs = results
-    .filter(result => result.succeeded && result.output.trim().length > 0)
+    .filter(
+      result =>
+        result.succeeded && !result.blocked && result.output.trim().length > 0,
+    )
     .map(result => result.output.trim())
 
   // Build user display messages with command info
   const displayMessages: string[] = []
   for (const result of results) {
-    if (result.succeeded) {
+    if (result.succeeded && !result.blocked) {
       if (result.output.trim()) {
         displayMessages.push(
           `PreCompact [${result.command}] completed successfully: ${result.output.trim()}`,
@@ -4174,11 +4179,23 @@ export async function executePreCompactHooks(
     }
   }
 
+  const blocked = results.filter(result => result.blocked)
+  const blockedBy =
+    blocked.length > 0
+      ? blocked
+          .map(result => {
+            const out = result.output.trim()
+            return `[${result.command}]${out ? `: ${out}` : ''}`
+          })
+          .join('\n')
+      : undefined
+
   return {
     newCustomInstructions:
       successfulOutputs.length > 0 ? successfulOutputs.join('\n\n') : undefined,
     userDisplayMessage:
       displayMessages.length > 0 ? displayMessages.join('\n') : undefined,
+    ...(blockedBy !== undefined && { blockedBy }),
   }
 }
 

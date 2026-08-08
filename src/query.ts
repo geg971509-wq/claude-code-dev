@@ -7,7 +7,9 @@ import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { FallbackTriggeredError } from './services/api/withRetry.js'
 import {
   calculateTokenWarningState,
+  createPostAutoCompactTracking,
   isAutoCompactEnabled,
+  RAPID_REFILL_BREAKER_MESSAGE,
   type AutoCompactTrackingState,
 } from './services/compact/autoCompact.js'
 import { buildPostCompactMessages } from './services/compact/compact.js'
@@ -672,7 +674,7 @@ async function* queryLoop(
     )
 
     queryCheckpoint('query_autocompact_start')
-    const { compactionResult, consecutiveFailures } = await deps.autocompact(
+    const autoCompactResult = await deps.autocompact(
       messagesForQuery,
       toolUseContext,
       {
@@ -688,7 +690,32 @@ async function* queryLoop(
     )
     queryCheckpoint('query_autocompact_end')
 
-    if (compactionResult) {
+    // Official consumer matrix: only trip / compacted / failed mutate control
+    // flow or tracking. not_needed | failure_breaker_open | hook_blocked fall through.
+    if (autoCompactResult.kind === 'hook_blocked') {
+      logEvent('tengu_auto_compact_hook_blocked', {
+        queryChainId: queryChainIdForAnalytics,
+        queryDepth: queryTracking.depth,
+      })
+      // Do not write consecutiveFailures — PreCompact block is not a compact failure.
+    } else if (autoCompactResult.kind === 'rapid_refill_breaker_tripped') {
+      logEvent('tengu_auto_compact_rapid_refill_breaker', {
+        consecutiveRapidRefills: tracking?.consecutiveRapidRefills ?? 0,
+        turnsSincePreviousCompact: tracking?.turnCounter ?? -1,
+        queryChainId: queryChainIdForAnalytics,
+        queryDepth: queryTracking.depth,
+      })
+      // parity gap vs official r$e(markApiFailure): code-dev has no API failure
+      // ledger for this path — keep user-visible stop only.
+      yield createAssistantAPIErrorMessage({
+        content: RAPID_REFILL_BREAKER_MESSAGE,
+        error: 'invalid_request',
+      })
+      return { reason: 'rapid_refill_breaker' }
+    }
+
+    if (autoCompactResult.kind === 'compacted') {
+      const compactionResult = autoCompactResult.result
       const {
         preCompactTokenCount,
         postCompactTokenCount,
@@ -718,6 +745,7 @@ async function* queryLoop(
             (compactionUsage.cache_read_input_tokens ?? 0) +
             compactionUsage.output_tokens
           : 0,
+        routedThroughReactive: autoCompactResult.routedThroughReactive,
 
         queryChainId: queryChainIdForAnalytics,
         queryDepth: queryTracking.depth,
@@ -743,12 +771,10 @@ async function* queryLoop(
       // those. dropRegenerableAttachments depends on that ordering: it reads
       // turnsSincePreviousCompact === 0 to mean "compacted again with no turn
       // in between", which is only true if the capture precedes this reset.
-      tracking = {
-        compacted: true,
-        turnId: deps.uuid(),
-        turnCounter: 0,
-        consecutiveFailures: 0,
-      }
+      tracking = createPostAutoCompactTracking(
+        deps.uuid(),
+        autoCompactResult.consecutiveRapidRefills,
+      )
 
       const postCompactMessages = buildPostCompactMessages(compactionResult)
 
@@ -758,12 +784,12 @@ async function* queryLoop(
 
       // Continue on with the current query call using the post compact messages
       messagesForQuery = postCompactMessages
-    } else if (consecutiveFailures !== undefined) {
+    } else if (autoCompactResult.kind === 'failed') {
       // Autocompact failed — propagate failure count so the circuit breaker
       // can stop retrying on the next iteration.
       tracking = {
         ...(tracking ?? { compacted: false, turnId: '', turnCounter: 0 }),
-        consecutiveFailures,
+        consecutiveFailures: autoCompactResult.consecutiveFailures,
       }
     }
 
@@ -848,7 +874,7 @@ async function* queryLoop(
     const mediaRecoveryEnabled =
       reactiveCompact?.isReactiveCompactEnabled() ?? false
     if (
-      !compactionResult &&
+      autoCompactResult.kind !== 'compacted' &&
       querySource !== 'compact' &&
       querySource !== 'session_memory' &&
       !(

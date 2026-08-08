@@ -72,6 +72,7 @@ import {
 import { resolveAppliedEffort } from '../../utils/effort.js'
 import { isEnvTruthy, isFauxProviderEnabled } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
+import { classifyStreamSuspendFromError } from './streamSuspend.js'
 import { captureAPIRequest, logError } from '../../utils/log.js'
 import {
   createAssistantAPIErrorMessage,
@@ -2027,12 +2028,14 @@ async function* queryModel(
      */
     function logStreamIdleDiagnostics(phase: string, err: unknown): void {
       const now = Date.now()
+      const suspendKind = classifyStreamSuspendFromError(err, streamIdleAborted)
       const ctx = {
         phase,
         // Watchdog config
         timeout_ms: STREAM_IDLE_TIMEOUT_MS,
         watchdog_enabled: streamWatchdogEnabled,
         watchdog_fired: streamIdleAborted,
+        suspend_kind: suspendKind,
         // Where the stream got to
         chunks_received: chunksReceived,
         last_chunk_type: lastChunkType,
