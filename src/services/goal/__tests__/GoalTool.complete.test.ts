@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 
-import { logMock } from '../../../../../../tests/mocks/log.js'
+import { logMock } from '../../../../tests/mocks/log.js'
 mock.module('src/utils/log.ts', logMock)
 mock.module('src/utils/debug.ts', () => ({
   logForDebugging: () => {},
 }))
 
-import { GoalTool } from '../GoalTool.js'
+import { GoalTool } from '@claude-code-best/builtin-tools/tools/GoalTool/GoalTool.js'
 import {
   _clearAllGoalsForTesting,
   setGoal,
