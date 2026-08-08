@@ -1304,6 +1304,9 @@ export function useTypeahead({
           onInputChange,
           setCursorOffset,
           onSubmit,
+          // Preserve text after cursor (e.g. command prepended to existing prompt)
+          input,
+          cursorOffset,
         );
         debouncedFetchFileSuggestions.cancel();
         clearSuggestions();

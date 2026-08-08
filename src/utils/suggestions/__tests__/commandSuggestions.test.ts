@@ -246,6 +246,65 @@ describe('applyCommandSuggestion', () => {
 
     expect(submitted).toBe('/commit ')
   })
+
+  // Regression: prepending a slash command to an existing prompt then accepting
+  // via Enter must keep the original prompt (as command args / trailing text).
+  test('preserves text after cursor when completing command prepended to prompt', () => {
+    let newInput = ''
+    let newCursor = -1
+    const suggestion: SuggestionItem = {
+      id: 'commit:local',
+      displayText: '/commit',
+      description: 'commit command',
+      metadata: commands[0],
+    }
+    // User had "existing prompt", typed "/com" at the start → "/comexisting prompt"
+    const input = '/comexisting prompt'
+    const cursorOffset = 4
+
+    applyCommandSuggestion(
+      suggestion,
+      false,
+      commands,
+      v => {
+        newInput = v
+      },
+      c => {
+        newCursor = c
+      },
+      () => {},
+      input,
+      cursorOffset,
+    )
+
+    expect(newInput).toBe('/commit existing prompt')
+    expect(newCursor).toBe('/commit '.length)
+  })
+
+  test('submits preserved trailing text when shouldExecute is true', () => {
+    let submitted = ''
+    const suggestion: SuggestionItem = {
+      id: 'commit:local',
+      displayText: '/commit',
+      description: 'commit command',
+      metadata: commands[0],
+    }
+
+    applyCommandSuggestion(
+      suggestion,
+      true,
+      commands,
+      () => {},
+      () => {},
+      v => {
+        submitted = v
+      },
+      '/comexisting prompt',
+      4,
+    )
+
+    expect(submitted).toBe('/commit existing prompt')
+  })
 })
 
 // ─── Tab completion splice behavior ───────────────────────────────────

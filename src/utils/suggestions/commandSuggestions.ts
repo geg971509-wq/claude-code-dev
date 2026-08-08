@@ -507,7 +507,9 @@ export function generateCommandSuggestions(
 }
 
 /**
- * Apply selected command to input
+ * Apply selected command to input.
+ * When currentInput + cursorOffset are provided, text after the cursor is
+ * preserved (e.g. user typed "/cmd" at the start of an existing prompt).
  */
 export function applyCommandSuggestion(
   suggestion: string | SuggestionItem,
@@ -516,6 +518,8 @@ export function applyCommandSuggestion(
   onInputChange: (value: string) => void,
   setCursorOffset: (offset: number) => void,
   onSubmit: (value: string, isSubmittingSlashCommand?: boolean) => void,
+  currentInput?: string,
+  cursorOffset?: number,
 ): void {
   // Extract command name and object from string or SuggestionItem metadata
   let commandName: string
@@ -531,10 +535,16 @@ export function applyCommandSuggestion(
     commandObj = suggestion.metadata
   }
 
-  // Format the command input with trailing space
-  const newInput = formatCommand(commandName)
+  // Format the command with trailing space; keep anything after the cursor
+  // so prepending a slash command to an existing prompt does not wipe it.
+  const replacement = formatCommand(commandName)
+  const suffix =
+    currentInput !== undefined && cursorOffset !== undefined
+      ? currentInput.slice(cursorOffset)
+      : ''
+  const newInput = replacement + suffix
   onInputChange(newInput)
-  setCursorOffset(newInput.length)
+  setCursorOffset(replacement.length)
 
   // Execute command if requested and it takes no arguments
   if (shouldExecute && commandObj) {
