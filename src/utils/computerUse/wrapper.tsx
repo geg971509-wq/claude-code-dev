@@ -306,7 +306,7 @@ export function getComputerUseMCPToolOverrides(toolName: string): ComputerUseMCP
                 type: 'image' as const,
                 source: {
                   type: 'base64' as const,
-                  media_type: item.mimeType ?? detectImageFormatFromBase64(item.data),
+                  media_type: item.mimeType ?? detectImageFormatFromBase64(item.data) ?? 'image/png',
                   data: item.data,
                 },
               }

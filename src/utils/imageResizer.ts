@@ -203,16 +203,25 @@ export async function maybeResizeAndDownsampleImageBuffer(
     // Normalize "jpg" to "jpeg" for media type compatibility
     const normalizedMediaType = mediaType === 'jpg' ? 'jpeg' : mediaType
 
-    // If dimensions aren't available from metadata
+    // If dimensions aren't available from metadata, parse magic headers
+    // (official APt path). Refuse when we cannot verify dims ≤ API cap.
     if (!metadata.width || !metadata.height) {
+      const headerDims = readImageDimensionsFromHeader(imageBuffer)
+      if (
+        headerDims === undefined ||
+        headerDims.width > maxWidth ||
+        headerDims.height > maxHeight
+      ) {
+        throw new ImageResizeError(
+          `Unable to resize image — could not verify image dimensions are within the ${maxWidth}x${maxHeight}px API limit.`,
+        )
+      }
       if (originalSize > targetRawSize) {
-        // Create fresh sharp instance for compression
         const compressedBuffer = await sharp(imageBuffer)
           .jpeg({ quality: 80 })
           .toBuffer()
         return { buffer: compressedBuffer, mediaType: 'jpeg' }
       }
-      // Return without dimensions if we can't determine them
       return { buffer: imageBuffer, mediaType: normalizedMediaType }
     }
 
@@ -407,7 +416,7 @@ export async function maybeResizeAndDownsampleImageBuffer(
     })
 
     // Detect actual format from magic bytes instead of trusting extension
-    const detected = detectImageFormatFromBuffer(imageBuffer)
+    const detected = detectImageFormatFromBuffer(imageBuffer) ?? 'image/png'
     const normalizedExt = detected.slice(6) // Remove 'image/' prefix
 
     // Calculate the base64 size (API limit is on base64-encoded length)
@@ -575,7 +584,7 @@ export async function compressImageBuffer(
     // If original image is within the requested limit, allow it through
     if (imageBuffer.length <= maxBytes) {
       // Detect actual format from magic bytes instead of trusting the provided media type
-      const detected = detectImageFormatFromBuffer(imageBuffer)
+      const detected = detectImageFormatFromBuffer(imageBuffer) ?? 'image/png'
       return {
         base64: imageBuffer.toString('base64'),
         mediaType: detected,
@@ -777,14 +786,129 @@ async function createUltraCompressedJPEG(
 }
 
 /**
- * Detect image format from a buffer using magic bytes
- * @param buffer Buffer containing image data
- * @returns Media type string (e.g., 'image/png', 'image/jpeg') or 'image/png' as default
+ * Read width/height from image magic headers (PNG/GIF/JPEG/WebP).
+ * Aligns with official APt — no decoder, header-only.
  */
-export function detectImageFormatFromBuffer(buffer: Buffer): ImageMediaType {
-  if (buffer.length < 4) return 'image/png' // default
+export function readImageDimensionsFromHeader(
+  buffer: Buffer,
+): { width: number; height: number } | undefined {
+  if (buffer.length < 10) {
+    return undefined
+  }
 
-  // Check PNG signature
+  // PNG: sig + IHDR at offset 16/20
+  if (
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer.length >= 24
+  ) {
+    return {
+      width: buffer.readUInt32BE(16),
+      height: buffer.readUInt32BE(20),
+    }
+  }
+
+  // GIF: width/height little-endian at 6/8
+  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) {
+    return {
+      width: buffer.readUInt16LE(6),
+      height: buffer.readUInt16LE(8),
+    }
+  }
+
+  // JPEG: scan SOF markers
+  if (buffer[0] === 0xff && buffer[1] === 0xd8) {
+    let offset = 2
+    while (offset + 9 < buffer.length) {
+      if (buffer[offset] !== 0xff) {
+        offset++
+        continue
+      }
+      const marker = buffer[offset + 1]
+      if (marker === 0xff) {
+        offset++
+        continue
+      }
+      // SOF0–SOF15 except DHT(0xC4), JPG(0xC8), DAC(0xCC)
+      if (
+        marker !== undefined &&
+        marker >= 0xc0 &&
+        marker <= 0xcf &&
+        marker !== 0xc4 &&
+        marker !== 0xc8 &&
+        marker !== 0xcc
+      ) {
+        return {
+          height: buffer.readUInt16BE(offset + 5),
+          width: buffer.readUInt16BE(offset + 7),
+        }
+      }
+      if (
+        marker === undefined ||
+        (marker >= 0xd0 && marker <= 0xd9) ||
+        marker === 0x01
+      ) {
+        offset += 2
+        continue
+      }
+      const segmentLength = buffer.readUInt16BE(offset + 2)
+      if (segmentLength < 2) {
+        return undefined
+      }
+      offset += 2 + segmentLength
+    }
+    return undefined
+  }
+
+  // WebP: RIFF....WEBP + VP8 / VP8L / VP8X
+  if (
+    buffer[0] === 0x52 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x46 &&
+    buffer.length >= 30 &&
+    buffer[8] === 0x57 &&
+    buffer[9] === 0x45 &&
+    buffer[10] === 0x42 &&
+    buffer[11] === 0x50
+  ) {
+    const fourcc = buffer.toString('ascii', 12, 16)
+    if (fourcc === 'VP8 ') {
+      return {
+        width: buffer.readUInt16LE(26) & 0x3fff,
+        height: buffer.readUInt16LE(28) & 0x3fff,
+      }
+    }
+    if (fourcc === 'VP8L') {
+      const bits = buffer.readUInt32LE(21)
+      return {
+        width: (bits & 0x3fff) + 1,
+        height: ((bits >> 14) & 0x3fff) + 1,
+      }
+    }
+    if (fourcc === 'VP8X') {
+      return {
+        width: buffer.readUIntLE(24, 3) + 1,
+        height: buffer.readUIntLE(27, 3) + 1,
+      }
+    }
+  }
+
+  return undefined
+}
+
+/**
+ * Detect image format from a buffer using magic bytes.
+ * Unknown / too-short → null (official uSe; no silent image/png default).
+ */
+export function detectImageFormatFromBuffer(
+  buffer: Buffer,
+): ImageMediaType | null {
+  if (buffer.length < 4) return null
+
+  // PNG
   if (
     buffer[0] === 0x89 &&
     buffer[1] === 0x50 &&
@@ -794,52 +918,54 @@ export function detectImageFormatFromBuffer(buffer: Buffer): ImageMediaType {
     return 'image/png'
   }
 
-  // Check JPEG signature (FFD8FF)
+  // JPEG FFD8FF
   if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
     return 'image/jpeg'
   }
 
-  // Check GIF signature (GIF87a or GIF89a)
-  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) {
+  // GIF87a / GIF89a (official requires full 6-byte signature)
+  if (
+    buffer.length >= 6 &&
+    buffer[0] === 0x47 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x38 &&
+    (buffer[4] === 0x37 || buffer[4] === 0x39) &&
+    buffer[5] === 0x61
+  ) {
     return 'image/gif'
   }
 
-  // Check WebP signature (RIFF....WEBP)
+  // WebP RIFF....WEBP
   if (
     buffer[0] === 0x52 &&
     buffer[1] === 0x49 &&
     buffer[2] === 0x46 &&
-    buffer[3] === 0x46
+    buffer[3] === 0x46 &&
+    buffer.length >= 12 &&
+    buffer[8] === 0x57 &&
+    buffer[9] === 0x45 &&
+    buffer[10] === 0x42 &&
+    buffer[11] === 0x50
   ) {
-    if (
-      buffer.length >= 12 &&
-      buffer[8] === 0x57 &&
-      buffer[9] === 0x45 &&
-      buffer[10] === 0x42 &&
-      buffer[11] === 0x50
-    ) {
-      return 'image/webp'
-    }
+    return 'image/webp'
   }
 
-  // Default to PNG if unknown
-  return 'image/png'
+  return null
 }
 
 /**
- * Detect image format from base64 data using magic bytes
- * @param base64Data Base64 encoded image data
- * @returns Media type string (e.g., 'image/png', 'image/jpeg') or 'image/png' as default
+ * Detect image format from base64 data using magic bytes.
+ * Invalid base64 / unknown → null.
  */
 export function detectImageFormatFromBase64(
   base64Data: string,
-): ImageMediaType {
+): ImageMediaType | null {
   try {
     const buffer = Buffer.from(base64Data, 'base64')
     return detectImageFormatFromBuffer(buffer)
   } catch {
-    // Default to PNG on any error
-    return 'image/png'
+    return null
   }
 }
 

@@ -62,7 +62,7 @@ export function normalizeImageBlocks(
     const mediaType =
       typeof src.mediaType === 'string' && src.mediaType
         ? src.mediaType
-        : detectImageFormatFromBase64(block.source.data)
+        : (detectImageFormatFromBase64(block.source.data) ?? 'image/png')
     return {
       ...block,
       source: {

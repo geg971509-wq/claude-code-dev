@@ -234,8 +234,8 @@ export async function getImageFromClipboard(): Promise<ImageWithDimensions | nul
     )
     const base64Image = resized.buffer.toString('base64')
 
-    // Detect format from magic bytes
-    const mediaType = detectImageFormatFromBase64(base64Image)
+    // Detect format from magic bytes (already resized image buffer)
+    const mediaType = detectImageFormatFromBase64(base64Image) ?? 'image/png'
 
     // Cleanup (fire-and-forget, don't await)
     void execa(commands.deleteFile, { shell: true, reject: false })
@@ -394,32 +394,39 @@ export async function tryReadImageFromPath(
     return null
   }
 
-  // BMP is not supported by the API — convert to PNG via Sharp.
-  if (
-    imageBuffer.length >= 2 &&
-    imageBuffer[0] === 0x42 &&
-    imageBuffer[1] === 0x4d
-  ) {
-    const sharp = await getImageProcessor()
-    imageBuffer = await sharp(imageBuffer).png().toBuffer()
-  }
+  try {
+    // BMP is not supported by the API — convert to PNG via Sharp.
+    if (
+      imageBuffer.length >= 2 &&
+      imageBuffer[0] === 0x42 &&
+      imageBuffer[1] === 0x4d
+    ) {
+      const sharp = await getImageProcessor()
+      imageBuffer = await sharp(imageBuffer).png().toBuffer()
+    }
 
-  // Resize if needed to stay under 5MB API limit
-  // Extract extension from path for format hint
-  const ext = extname(imagePath).slice(1).toLowerCase() || 'png'
-  const resized = await maybeResizeAndDownsampleImageBuffer(
-    imageBuffer,
-    imageBuffer.length,
-    ext,
-  )
-  const base64Image = resized.buffer.toString('base64')
+    // Resize if needed to stay under 5MB API limit
+    // Extract extension from path for format hint
+    const ext = extname(imagePath).slice(1).toLowerCase() || 'png'
+    const resized = await maybeResizeAndDownsampleImageBuffer(
+      imageBuffer,
+      imageBuffer.length,
+      ext,
+    )
+    const base64Image = resized.buffer.toString('base64')
 
-  // Detect format from the actual file contents using magic bytes
-  const mediaType = detectImageFormatFromBase64(base64Image)
-  return {
-    path: imagePath,
-    base64: base64Image,
-    mediaType,
-    dimensions: resized.dimensions,
+    // Detect format from the actual file contents using magic bytes
+    const mediaType = detectImageFormatFromBase64(base64Image) ?? 'image/png'
+    return {
+      path: imagePath,
+      base64: base64Image,
+      mediaType,
+      dimensions: resized.dimensions,
+    }
+  } catch (e) {
+    // Never throw — callers fire-and-forget this; an ImageResizeError here
+    // used to become unhandledRejection → process exit on drag-and-drop.
+    logError(e as Error)
+    return null
   }
 }

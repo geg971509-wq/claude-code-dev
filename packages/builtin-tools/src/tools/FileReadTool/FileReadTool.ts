@@ -1119,7 +1119,8 @@ export async function readImageWithTokenBudget(
     throw new Error(`Image file is empty: ${filePath}`)
   }
 
-  const detectedMediaType = detectImageFormatFromBuffer(imageBuffer)
+  const detectedMediaType =
+    detectImageFormatFromBuffer(imageBuffer) ?? 'image/png'
   const detectedFormat = detectedMediaType.split('/')[1] || 'png'
 
   // Try standard resize

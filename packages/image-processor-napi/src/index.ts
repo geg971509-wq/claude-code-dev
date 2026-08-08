@@ -1,127 +1,243 @@
-import { readFileSync, unlinkSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import sharpModule from 'sharp'
 
-export const sharp = sharpModule
+// createRequire works in both Bun and Node.js ESM contexts.
+// Needed for loading native .node addons under "type": "module".
+const nodeRequire = createRequire(import.meta.url)
 
-interface NativeModule {
+type ImageProcessorHandle = {
+  metadata():
+    | Promise<{ width?: number; height?: number; format?: string }>
+    | {
+        width?: number
+        height?: number
+        format?: string
+      }
+  resize(
+    width: number,
+    height: number,
+    options?: { fit?: string; withoutEnlargement?: boolean },
+  ): unknown
+  jpeg(qualityOrOptions?: number | { quality?: number }): unknown
+  png(options?: {
+    compressionLevel?: number
+    palette?: boolean
+    colors?: number
+  }): unknown
+  webp(qualityOrOptions?: number | { quality?: number }): unknown
+  toBuffer(): Promise<Buffer> | Buffer
+  dispose?: () => void
+}
+
+type ClipboardImage = {
+  png: Buffer
+  width: number
+  height: number
+  originalWidth: number
+  originalHeight: number
+}
+
+/** True native module only — never an osascript polyfill. */
+export type NativeModule = {
+  processImage(
+    buf: Buffer,
+  ): Promise<ImageProcessorHandle> | ImageProcessorHandle
   hasClipboardImage(): boolean
   readClipboardImage(
     maxWidth?: number,
     maxHeight?: number,
-  ): {
-    png: Buffer
-    width: number
-    height: number
-    originalWidth: number
-    originalHeight: number
-  } | null
+  ): ClipboardImage | null
 }
 
-function createDarwinNativeModule(): NativeModule {
-  return {
-    hasClipboardImage(): boolean {
-      try {
-        const result = Bun.spawnSync({
-          cmd: [
-            'osascript',
-            '-e',
-            'try\nthe clipboard as «class PNGf»\nreturn "yes"\non error\nreturn "no"\nend try',
-          ],
-          stdout: 'pipe',
-          stderr: 'pipe',
-        })
-        const output = result.stdout.toString().trim()
-        return output === 'yes'
-      } catch {
-        return false
+type SharpLike = {
+  metadata(): Promise<{ width?: number; height?: number; format?: string }>
+  resize(
+    width: number,
+    height: number,
+    options?: { fit?: string; withoutEnlargement?: boolean },
+  ): SharpLike
+  jpeg(options?: { quality?: number }): SharpLike
+  png(options?: {
+    compressionLevel?: number
+    palette?: boolean
+    colors?: number
+  }): SharpLike
+  webp(options?: { quality?: number }): SharpLike
+  toBuffer(): Promise<Buffer>
+}
+
+type SharpFunction = (input: Buffer) => SharpLike
+
+function getVendorRoot(): string {
+  const filePath = fileURLToPath(import.meta.url)
+  const dir = dirname(filePath)
+  const parts = dir.split(sep)
+  const distIdx = parts.lastIndexOf('dist')
+  if (distIdx !== -1) {
+    return parts.slice(0, distIdx + 1).join(sep) + sep + 'vendor'
+  }
+  // Dev: packages/image-processor-napi/src → project root vendor/
+  return resolve(dir, '..', '..', '..', 'vendor')
+}
+
+let loadAttempted = false
+let cachedTrueNative: NativeModule | null = null
+
+function loadTrueNative(): NativeModule | null {
+  if (loadAttempted) {
+    return cachedTrueNative
+  }
+  loadAttempted = true
+
+  const candidates: string[] = []
+  if (process.env.IMAGE_PROCESSOR_NODE_PATH) {
+    candidates.push(process.env.IMAGE_PROCESSOR_NODE_PATH)
+  }
+  const platformDir = `${process.arch}-${process.platform}`
+  const binaryRel = `image-processor/${platformDir}/image-processor.node`
+  const vendorRoot = getVendorRoot()
+  candidates.push(
+    resolve(vendorRoot, binaryRel),
+    resolve(process.cwd(), 'vendor', binaryRel),
+    resolve(process.cwd(), binaryRel),
+  )
+
+  for (const p of candidates) {
+    try {
+      const mod = nodeRequire(p) as Record<string, unknown>
+      if (typeof mod.processImage !== 'function') {
+        continue
       }
-    },
+      if (
+        typeof mod.hasClipboardImage !== 'function' ||
+        typeof mod.readClipboardImage !== 'function'
+      ) {
+        continue
+      }
+      const processImage = mod.processImage as NativeModule['processImage']
+      const hasClipboardImage =
+        mod.hasClipboardImage as NativeModule['hasClipboardImage']
+      const readClipboardImage =
+        mod.readClipboardImage as NativeModule['readClipboardImage']
 
-    readClipboardImage(maxWidth?: number, maxHeight?: number) {
-      try {
-        // Use osascript to read clipboard image as PNG data and write to a temp file,
-        // then read the temp file back
-        const tmpPath = `/tmp/claude_clipboard_native_${Date.now()}.png`
-        const script = `
-set png_data to (the clipboard as «class PNGf»)
-set fp to open for access POSIX file "${tmpPath}" with write permission
-write png_data to fp
-close access fp
-return "${tmpPath}"
-`
-        const result = Bun.spawnSync({
-          cmd: ['osascript', '-e', script],
-          stdout: 'pipe',
-          stderr: 'pipe',
-        })
-
-        if (result.exitCode !== 0) {
-          return null
-        }
-
-        const file = Bun.file(tmpPath)
-        const buffer: Buffer = readFileSync(tmpPath)
-
-        // Clean up temp file
-        try {
-          unlinkSync(tmpPath)
-        } catch {
-          // ignore cleanup errors
-        }
-
-        if (buffer.length === 0) {
-          return null
-        }
-
-        // Read PNG dimensions from IHDR chunk
-        // PNG header: 8 bytes signature, then IHDR chunk
-        // IHDR starts at offset 8 (4 bytes length) + 4 bytes "IHDR" + 4 bytes width + 4 bytes height
-        let width = 0
-        let height = 0
-        if (
-          buffer.length > 24 &&
-          buffer[12] === 0x49 &&
-          buffer[13] === 0x48 &&
-          buffer[14] === 0x44 &&
-          buffer[15] === 0x52
-        ) {
-          width = buffer.readUInt32BE(16)
-          height = buffer.readUInt32BE(20)
-        }
-
-        const originalWidth = width
-        const originalHeight = height
-
-        // If maxWidth/maxHeight are specified and the image exceeds them,
-        // we still return the full PNG - the caller handles resizing via sharp
-        // But we report the capped dimensions
-        if (maxWidth && maxHeight) {
-          if (width > maxWidth || height > maxHeight) {
-            const scale = Math.min(maxWidth / width, maxHeight / height)
-            width = Math.round(width * scale)
-            height = Math.round(height * scale)
+      // Single path: method-level catch → false/null, never osascript.
+      cachedTrueNative = {
+        processImage: (buf: Buffer) => processImage(buf),
+        hasClipboardImage(): boolean {
+          try {
+            return hasClipboardImage()
+          } catch {
+            return false
           }
-        }
-
-        return {
-          png: buffer,
-          width,
-          height,
-          originalWidth,
-          originalHeight,
-        }
-      } catch {
-        return null
+        },
+        readClipboardImage(maxWidth?, maxHeight?) {
+          try {
+            return readClipboardImage(maxWidth, maxHeight)
+          } catch {
+            return null
+          }
+        },
       }
-    },
+      return cachedTrueNative
+    } catch {
+      // try next
+    }
   }
-}
 
-export function getNativeModule(): NativeModule | null {
-  if (process.platform === 'darwin') {
-    return createDarwinNativeModule()
-  }
+  cachedTrueNative = null
   return null
 }
 
-export default sharp
+/**
+ * Official-shaped sharp compat shell (tku):
+ * queue resize/jpeg/png/webp ops, apply once on toBuffer after processImage.
+ * Each metadata/toBuffer creates a fresh handle and disposes it.
+ */
+function createSharpCompat(native: NativeModule): SharpFunction {
+  return (input: Buffer): SharpLike => {
+    const ops: Array<(h: ImageProcessorHandle) => void> = []
+
+    async function materialize(
+      applyOps: boolean,
+    ): Promise<ImageProcessorHandle> {
+      const handle = await native.processImage(input)
+      if (applyOps) {
+        for (const op of ops) {
+          op(handle)
+        }
+      }
+      return handle
+    }
+
+    const chain: SharpLike = {
+      async metadata() {
+        const handle = await materialize(false)
+        try {
+          return await handle.metadata()
+        } finally {
+          handle.dispose?.()
+        }
+      },
+      resize(width, height, options) {
+        ops.push(h => {
+          h.resize(width, height, options)
+        })
+        return chain
+      },
+      jpeg(options) {
+        ops.push(h => {
+          // Official native jpeg() takes quality number; sharp takes options object.
+          h.jpeg(options?.quality)
+        })
+        return chain
+      },
+      png(options) {
+        ops.push(h => {
+          h.png(options)
+        })
+        return chain
+      },
+      webp(options) {
+        ops.push(h => {
+          h.webp(options?.quality)
+        })
+        return chain
+      },
+      async toBuffer() {
+        const handle = await materialize(true)
+        try {
+          return await handle.toBuffer()
+        } finally {
+          handle.dispose?.()
+        }
+      },
+    }
+    return chain
+  }
+}
+
+/**
+ * True native only. null when .node missing — callers (imagePaste) fall back
+ * to their own osascript path. Never return a polyfill as NativeModule.
+ */
+export function getNativeModule(): NativeModule | null {
+  return loadTrueNative()
+}
+
+function resolveRealSharp(): SharpFunction {
+  const mod = sharpModule as unknown as
+    | SharpFunction
+    | { default: SharpFunction }
+  return typeof mod === 'function' ? mod : mod.default
+}
+
+// Resolve once: native queue shell if .node loads, else real sharp.
+const trueNative = loadTrueNative()
+const sharpCompat: SharpFunction = trueNative
+  ? createSharpCompat(trueNative)
+  : resolveRealSharp()
+
+export const sharp = sharpCompat
+export default sharpCompat
