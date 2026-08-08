@@ -1,6 +1,7 @@
 export type Terminal =
   | { reason: 'completed' }
   | { reason: 'blocking_limit' }
+  | { reason: 'rapid_refill_breaker' }
   | { reason: 'image_error' }
   | { reason: 'model_error'; error?: unknown }
   | { reason: 'aborted_streaming' }

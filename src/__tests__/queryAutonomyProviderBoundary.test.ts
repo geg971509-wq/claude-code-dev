@@ -172,10 +172,7 @@ describe('query autonomy/provider boundary', () => {
       const deps = {
         uuid: () => 'query-chain-id',
         microcompact: async (messages: unknown[]) => ({ messages }),
-        autocompact: async () => ({
-          compactionResult: undefined,
-          consecutiveFailures: 0,
-        }),
+        autocompact: async () => ({ kind: 'not_needed' as const }),
         callModel: async function* () {
           callCount += 1
           if (callCount === 1) {
@@ -271,10 +268,7 @@ describe('query autonomy/provider boundary', () => {
       const deps = {
         uuid: () => 'query-chain-id',
         microcompact: async (messages: unknown[]) => ({ messages }),
-        autocompact: async () => ({
-          compactionResult: undefined,
-          consecutiveFailures: 0,
-        }),
+        autocompact: async () => ({ kind: 'not_needed' as const }),
         callModel: async function* () {
           yield createToolUseAssistantMessage()
         },
