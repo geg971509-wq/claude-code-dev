@@ -67,6 +67,7 @@ const outputSchema = lazySchema(() =>
       .object({
         objective: z.string(),
         status: z.string(),
+        completionCriterion: z.string().nullable().optional(),
         tokensUsed: z.number(),
         tokenBudget: z.number().nullable(),
         elapsed: z.string(),
@@ -92,6 +93,7 @@ function buildGoalSnapshot() {
   return {
     objective: goal.objective,
     status: formatGoalStatusLabel(goal.status),
+    completionCriterion: goal.completionCriterion,
     tokensUsed: goal.tokensUsed,
     tokenBudget: goal.tokenBudget,
     elapsed: formatGoalElapsed(goal),
@@ -203,6 +205,18 @@ export const GoalTool = buildTool({
     }
 
     if (input.status === 'complete') {
+      if (
+        goal.completionCriterion &&
+        !(input.reason && input.reason.trim().length > 0)
+      ) {
+        return {
+          data: {
+            success: false,
+            error:
+              'This goal has a completionCriterion; pass a non-empty reason explaining how it was met.',
+          },
+        }
+      }
       const completed = completeGoal(undefined, input.reason)
       if (!completed) {
         return {

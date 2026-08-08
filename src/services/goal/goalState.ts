@@ -19,6 +19,8 @@ export const BLOCKED_CONSECUTIVE_THRESHOLD = 3
 /** Hard safety cap when no explicit turnBudget is set. */
 export const MAX_GOAL_TURNS = 150
 export const MAX_GOAL_OBJECTIVE_LENGTH = 4000
+/** Completion criterion is truncated (not rejected) when over this length. */
+export const MAX_GOAL_COMPLETION_CRITERION_LENGTH = MAX_GOAL_OBJECTIVE_LENGTH
 /** Wall-clock budgets must be within [1 min, 24 h]. */
 export const MIN_WALL_CLOCK_BUDGET_MS = 60_000
 export const MAX_WALL_CLOCK_BUDGET_MS = 24 * 60 * 60 * 1000
@@ -59,6 +61,19 @@ function wallClockBudgetOrNull(
   return n
 }
 
+/** Trim + cap criterion; empty → null. Over-long is truncated (kimi parity). */
+export function normalizeCompletionCriterion(
+  value: string | null | undefined,
+): string | null {
+  if (value === undefined || value === null) return null
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return null
+  if (trimmed.length > MAX_GOAL_COMPLETION_CRITERION_LENGTH) {
+    return trimmed.slice(0, MAX_GOAL_COMPLETION_CRITERION_LENGTH)
+  }
+  return trimmed
+}
+
 /** Normalize legacy transcript statuses into the closed-loop set. */
 export function normalizeGoalState(raw: GoalState): GoalState {
   // Status may be a legacy string from older transcripts.
@@ -94,6 +109,9 @@ export function normalizeGoalState(raw: GoalState): GoalState {
   return {
     objective: raw.objective,
     status,
+    completionCriterion: normalizeCompletionCriterion(
+      raw.completionCriterion ?? null,
+    ),
     tokenBudget: positiveIntOrNull(raw.tokenBudget),
     turnBudget: positiveIntOrNull(raw.turnBudget),
     wallClockBudgetMs: wallClockBudgetOrNull(raw.wallClockBudgetMs),
@@ -122,6 +140,7 @@ export type SetGoalOptions = {
   tokenBudget?: number
   turnBudget?: number
   wallClockBudgetMs?: number
+  completionCriterion?: string | null
   sessionId?: string
   /** Required when a non-complete goal already exists. */
   replace?: boolean
@@ -166,6 +185,9 @@ export function setGoal(
   const state: GoalState = {
     objective: trimmed,
     status: 'active',
+    completionCriterion: normalizeCompletionCriterion(
+      options?.completionCriterion,
+    ),
     tokenBudget: positiveIntOrNull(options?.tokenBudget),
     turnBudget: positiveIntOrNull(options?.turnBudget),
     wallClockBudgetMs: wallClockBudgetOrNull(options?.wallClockBudgetMs),

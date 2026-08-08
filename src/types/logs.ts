@@ -166,6 +166,11 @@ export type GoalStatus = 'active' | 'paused' | 'blocked' | 'complete'
 export type GoalState = {
   objective: string
   status: GoalStatus
+  /**
+   * Optional structured completion standard (user/runtime data).
+   * When set, GoalTool complete requires a non-empty reason.
+   */
+  completionCriterion: string | null
   tokenBudget: number | null
   /** Optional hard turn budget (null = only MAX_GOAL_TURNS safety cap). */
   turnBudget: number | null

@@ -3247,38 +3247,20 @@ export function REPL({
           ) {
             const assistantText =
               getContentText((newMessage.message?.content ?? '') as string | ContentBlockParam[]) ?? '';
-            const lowerText = assistantText.toLowerCase();
-            const isConnectivityFailure =
-              lowerText.includes('connection error') ||
-              lowerText.includes('fetch failed') ||
-              lowerText.includes('network error') ||
-              lowerText.includes('enotfound') ||
-              lowerText.includes('econnreset') ||
-              lowerText.includes('etimedout');
-            const isRateLimitFailure =
-              newMessage.error === 'rate_limit' ||
-              lowerText.includes('rate limit') ||
-              lowerText.includes('usage limit') ||
-              lowerText.includes('overloaded');
-
-            if (isConnectivityFailure || isRateLimitFailure) {
-              const { getGoal, pauseGoal, markUsageLimited } =
-                require('../services/goal/goalState.js') as typeof import('../services/goal/goalState.js');
-              const { persistCurrentGoal } =
-                require('../services/goal/goalStorage.js') as typeof import('../services/goal/goalStorage.js');
-              const currentGoal = getGoal();
-              if (currentGoal?.status === 'active') {
-                if (isRateLimitFailure && !isConnectivityFailure) {
-                  markUsageLimited();
-                } else {
-                  pauseGoal(undefined, 'Paused after connection error');
-                }
-                persistCurrentGoal();
+            const { parkGoalOnTransportError } =
+              require('../services/goal/goalRuntime.js') as typeof import('../services/goal/goalRuntime.js');
+            const { persistCurrentGoal } =
+              require('../services/goal/goalStorage.js') as typeof import('../services/goal/goalStorage.js');
+            const parked = parkGoalOnTransportError({
+              errorCode: typeof newMessage.error === 'string' ? newMessage.error : null,
+              messageText: assistantText,
+            });
+            if (parked.parked) {
+              persistCurrentGoal();
+              if (parked.notification) {
                 addNotification({
-                  key: isRateLimitFailure ? 'goal-auto-paused-usage-limit' : 'goal-auto-paused-connectivity-error',
-                  text: isRateLimitFailure
-                    ? 'Rate/usage limit hit. Active goal was auto-paused. Run /goal resume when limits reset.'
-                    : 'Detected connection error. Active goal was auto-paused. Run /goal resume after network recovers.',
+                  key: parked.notification.key,
+                  text: parked.notification.text,
                   priority: 'immediate',
                 });
               }

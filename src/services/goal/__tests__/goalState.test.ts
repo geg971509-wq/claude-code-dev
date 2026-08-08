@@ -409,3 +409,40 @@ describe('formatGoalElapsed', () => {
     expect(formatGoalElapsed(g)).toBe('0s')
   })
 })
+
+describe('completionCriterion', () => {
+  test('setGoal stores trimmed criterion; empty becomes null', () => {
+    const g = mustSet('x', { completionCriterion: '  all tests pass  ' })
+    expect(g.completionCriterion).toBe('all tests pass')
+    const g2 = mustSet('y', { replace: true, completionCriterion: '   ' })
+    expect(g2.completionCriterion).toBeNull()
+  })
+
+  test('over-long criterion is truncated, not rejected', () => {
+    const long = 'c'.repeat(5000)
+    const g = mustSet('x', { completionCriterion: long })
+    expect(g.completionCriterion?.length).toBe(4000)
+  })
+
+  test('normalize fills null for legacy objects missing field', () => {
+    const legacy = {
+      objective: 'old',
+      status: 'active',
+      tokenBudget: null,
+      turnBudget: null,
+      wallClockBudgetMs: null,
+      tokensUsed: 0,
+      startTime: 1,
+      pausedAt: null,
+      accumulatedActiveMs: 0,
+      blockedAttempts: 0,
+      lastBlockReason: null,
+      terminalReason: null,
+      createdAt: 1,
+      updatedAt: 1,
+      turnsExecuted: 0,
+    } as unknown as GoalState
+    const n = normalizeGoalState(legacy)
+    expect(n.completionCriterion).toBeNull()
+  })
+})
