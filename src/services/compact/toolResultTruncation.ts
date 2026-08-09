@@ -2,6 +2,33 @@ import type { Message } from '../../types/message.js'
 
 export const COMPACT_TOOL_RESULT_MAX_CHARS = 2_000
 
+// Local twins of toolResultStorage path helpers — keep this module free of the
+// storage → sessionStorage import graph (same pattern as microCompact).
+// Byte-identical to storage builders; lockstep covered by readback tests.
+const PERSISTED_OUTPUT_TAG_LOCAL = '<persisted-output>'
+const PERSISTED_OUTPUT_CLOSING_TAG_LOCAL = '</persisted-output>'
+
+function extractPersistedOutputPathLocal(content: string): string | null {
+  if (!content.startsWith(PERSISTED_OUTPUT_TAG_LOCAL)) return null
+  const m =
+    content.match(/Full output saved to: (.+)$/m) ??
+    content.match(/Full output is still on disk: (.+)$/m)
+  const p = m?.[1]
+    ?.trim()
+    .replace(/\r$/, '')
+    .replace(/^"(.*)"$/, '$1')
+  return p || null
+}
+
+function buildClearedButRetrievableMessageLocal(filepath: string): string {
+  return (
+    `${PERSISTED_OUTPUT_TAG_LOCAL}\n` +
+    `Old tool result content cleared from context. Full output is still on disk: ${filepath}\n` +
+    `Re-read with the Read tool (file_path="${filepath}"; use offset/limit for large files).\n` +
+    PERSISTED_OUTPUT_CLOSING_TAG_LOCAL
+  )
+}
+
 /**
  * Truncate long tool_result text before sending it to the summarizer.
  * Applied ONLY on the streaming fallback path — the forked cache-sharing
@@ -17,6 +44,11 @@ export const COMPACT_TOOL_RESULT_MAX_CHARS = 2_000
  * failing assertion) while the head is command echo — head-only truncation
  * threw away exactly the part the summarizer needs. Total budget unchanged.
  * Messages with nothing to truncate are returned as-is.
+ *
+ * Already-persisted `<persisted-output>` blobs are never mid-sliced (that
+ * destroys the Read path contract). They collapse to a short path-bearing
+ * stub instead. Untagged oversize still uses head+tail (async re-persist
+ * deferred — harness residual 6A v1).
  *
  * Lives in its own module (like grouping.ts) so tests don't have to import
  * the whole compact.ts dependency graph.
@@ -59,7 +91,25 @@ export function truncateToolResultsForCompaction(
   })
 }
 
+/**
+ * If content is a persisted-output (or cleared-retrievable) stub with a path,
+ * return a short path-bearing stub instead of head+tail slicing the tag.
+ * Untagged content → null (caller uses normal truncation).
+ */
+export function preferPersistedPathStub(content: string): string | null {
+  const path = extractPersistedOutputPathLocal(content)
+  if (!path) {
+    return null
+  }
+  return buildClearedButRetrievableMessageLocal(path)
+}
+
 function truncateToolResultText(text: string, maxChars: number): string {
+  // Never mid-slice a persisted-output blob — keep Read path contract.
+  const pathStub = preferPersistedPathStub(text)
+  if (pathStub !== null) {
+    return pathStub.length < text.length ? pathStub : text
+  }
   if (text.length <= maxChars) {
     return text
   }
@@ -97,13 +147,12 @@ function truncateToolResultContent(
   }
   let changed = false
   const next = content.map(item => {
-    if (
-      item?.type === 'text' &&
-      typeof item.text === 'string' &&
-      item.text.length > maxChars
-    ) {
-      changed = true
-      return { ...item, text: truncateToolResultText(item.text, maxChars) }
+    if (item?.type === 'text' && typeof item.text === 'string') {
+      const truncated = truncateToolResultText(item.text, maxChars)
+      if (truncated !== item.text) {
+        changed = true
+        return { ...item, text: truncated }
+      }
     }
     return item
   })

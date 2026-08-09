@@ -1535,10 +1535,22 @@ async function* queryLoop(
           // Detach in-flight streaming tools before abandoning this
           // iteration — see the escalate path above.
           streamingToolExecutor?.discard()
+          // Pair orphan tool_use blocks (discard does not write tool_results).
+          // Collect once so stream consumers and next.messages see the same closures.
+          const missingToolResults = [
+            ...yieldMissingToolResultBlocks(
+              assistantMessages,
+              'Tool use interrupted by max_output_tokens recovery',
+            ),
+          ]
+          for (const msg of missingToolResults) {
+            yield msg
+          }
           const next: State = {
             messages: [
               ...messagesForQuery,
               ...assistantMessages,
+              ...missingToolResults,
               recoveryMessage,
             ],
             toolUseContext,
@@ -1561,6 +1573,12 @@ async function* queryLoop(
         // Recovery exhausted — surface the withheld error now. Detach
         // in-flight streaming tools first (same rationale as above).
         streamingToolExecutor?.discard()
+        // Close any unpaired tool_use still on assistantMessages before the
+        // error leaves the generator (mirrors recovery pairing above).
+        yield* yieldMissingToolResultBlocks(
+          assistantMessages,
+          'Tool use interrupted by max_output_tokens recovery',
+        )
         yield lastMessage
       }
 

@@ -21,6 +21,13 @@ export const REPEAT_REMINDER_2_START = 5
 export const REPEAT_REMINDER_3_START = 8
 export const REPEAT_FORCE_STOP_STREAK = 12
 
+// Period-2 (A→B→A→B) thresholds — deliberately more lenient than identical-key
+// so legitimate Read↔Grep alternation is not force-stopped early.
+export const P2_REMINDER_1_START = 6
+export const P2_REMINDER_2_START = 10
+export const P2_REMINDER_3_START = 14
+export const P2_FORCE_STOP_STREAK = 20
+
 // Cap the canonical-args portion of the key: FileWrite/Read inputs can be
 // several KB to MB, and recursively serializing them on every tool call is
 // hot-path cost for no discriminative gain beyond the first few KB.
@@ -68,6 +75,20 @@ export function levelForStreak(streak: number): ToolLoopLevel {
   if (streak >= REPEAT_REMINDER_2_START) return 'r2'
   if (streak >= REPEAT_REMINDER_1_START) return 'r1'
   return 'none'
+}
+
+/** Lenient ladder for period-2 alternation streaks. */
+export function levelForPeriod2Streak(streak: number): ToolLoopLevel {
+  if (streak >= P2_FORCE_STOP_STREAK) return 'stop'
+  if (streak >= P2_REMINDER_3_START) return 'r3'
+  if (streak >= P2_REMINDER_2_START) return 'r2'
+  if (streak >= P2_REMINDER_1_START) return 'r1'
+  return 'none'
+}
+
+function higherLevel(a: ToolLoopLevel, b: ToolLoopLevel): ToolLoopLevel {
+  const rank: ToolLoopLevel[] = ['none', 'r1', 'r2', 'r3', 'stop']
+  return rank.indexOf(a) >= rank.indexOf(b) ? a : b
 }
 
 // Reminder texts are static (no interpolated streak counts) so that a
@@ -123,10 +144,24 @@ export function createToolLoopTracker(): ToolLoopTracker {
   let currentKey: string | null = null
   let streak = 0
   let countedKeyThisBatch: string | null = null
+  // First non-error key seen this batch (frozen for period-2).
+  let batchKey: string | null = null
+  // Ring of completed batch keys (oldest → newest among last two).
+  let prevBatchKey: string | null = null
+  let prevPrevBatchKey: string | null = null
+  // Counts completed period-2 steps: each time batchKey === prevPrevBatchKey
+  // and batchKey !== prevBatchKey (…X,Y,X). Lenient ladder uses p2Streak.
+  let p2Streak = 0
+  // Level from the most recent endBatch p2 update (record() must surface it
+  // on the next batch's calls after the pattern has already advanced).
+  let p2Level: ToolLoopLevel = 'none'
 
   return {
     record(toolName: string, input: unknown): ToolLoopRecord {
       const key = toolCallKey(toolName, input)
+      if (batchKey === null) {
+        batchKey = key
+      }
       if (key !== countedKeyThisBatch) {
         countedKeyThisBatch = key
         if (key === currentKey) {
@@ -136,9 +171,37 @@ export function createToolLoopTracker(): ToolLoopTracker {
           streak = 1
         }
       }
-      return { streak, level: levelForStreak(streak) }
+      const identicalLevel = levelForStreak(streak)
+      return {
+        streak: Math.max(streak, p2Streak),
+        level: higherLevel(identicalLevel, p2Level),
+      }
     },
     endBatch(): void {
+      if (batchKey !== null) {
+        if (
+          prevPrevBatchKey !== null &&
+          prevBatchKey !== null &&
+          batchKey === prevPrevBatchKey &&
+          batchKey !== prevBatchKey
+        ) {
+          p2Streak += 1
+        } else if (prevBatchKey !== null && batchKey === prevBatchKey) {
+          // Consecutive identical batch keys → not period-2.
+          p2Streak = 0
+        } else if (
+          prevPrevBatchKey !== null &&
+          batchKey !== prevPrevBatchKey &&
+          batchKey !== prevBatchKey
+        ) {
+          // Third distinct key breaks A-B-A.
+          p2Streak = 0
+        }
+        p2Level = levelForPeriod2Streak(p2Streak)
+        prevPrevBatchKey = prevBatchKey
+        prevBatchKey = batchKey
+      }
+      batchKey = null
       countedKeyThisBatch = null
     },
   }

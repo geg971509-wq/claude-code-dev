@@ -48,6 +48,10 @@ import type { AttributionState } from './utils/commitAttribution.js'
 import { getGlobalConfig } from './utils/config.js'
 import { getCwd } from './utils/cwd.js'
 import { isBareMode, isEnvTruthy } from './utils/envUtils.js'
+import {
+  type ContentReplacementState,
+  provisionContentReplacementState,
+} from './utils/toolResultStorage.js'
 import { getFastModeState } from './utils/fastMode.js'
 import {
   type FileHistoryState,
@@ -198,6 +202,9 @@ export class QueryEngine {
   // many turns in SDK mode.
   private discoveredSkillNames = new Set<string>()
   private loadedNestedMemoryPaths = new Set<string>()
+  // Gate-aware budget state (undefined when tengu_hawthorn_steeple off).
+  // Provision once per engine lifetime — same seam as REPL contentReplacementStateRef.
+  private contentReplacementState: ContentReplacementState | undefined
 
   constructor(config: QueryEngineConfig) {
     this.config = config
@@ -206,6 +213,9 @@ export class QueryEngine {
     this.permissionDenials = []
     this.readFileState = config.readFileCache
     this.totalUsage = EMPTY_USAGE
+    this.contentReplacementState = provisionContentReplacementState(
+      this.mutableMessages,
+    )
   }
 
   async *submitMessage(
@@ -396,6 +406,7 @@ export class QueryEngine {
         })
       },
       setSDKStatus,
+      contentReplacementState: this.contentReplacementState,
     }
 
     // Handle orphaned permission (only once per engine lifetime)
@@ -529,6 +540,7 @@ export class QueryEngine {
       updateFileHistoryState: processUserInputContext.updateFileHistoryState,
       updateAttributionState: processUserInputContext.updateAttributionState,
       setSDKStatus,
+      contentReplacementState: this.contentReplacementState,
     }
 
     headlessProfilerCheckpoint('before_skills_plugins')

@@ -184,18 +184,52 @@ export async function persistToolResult(
 }
 
 /**
- * Build a message for large tool results with preview
+ * Build a message for large tool results with preview + Read/offset/limit contract.
  */
 export function buildLargeToolResultMessage(
   result: PersistedToolResult,
 ): string {
   let message = `${PERSISTED_OUTPUT_TAG}\n`
   message += `Output too large (${formatFileSize(result.originalSize)}). Full output saved to: ${result.filepath}\n\n`
+  message += `To read the full output, use the Read tool with file_path="${result.filepath}".\n`
+  message += `For large files, pass offset and limit (line-based; e.g. offset=1, limit=100) and page through.\n\n`
   message += `Preview (first ${formatFileSize(PREVIEW_SIZE_BYTES)}):\n`
   message += result.preview
   message += result.hasMore ? '\n...\n' : '\n'
   message += PERSISTED_OUTPUT_CLOSING_TAG
   return message
+}
+
+/**
+ * Short path-bearing stub after microcompact clears a previously persisted
+ * tool result from the model context. No preview — keep token cost low.
+ * Must stay byte-identical to microCompact's local builder (tested).
+ */
+export function buildClearedButRetrievableMessage(filepath: string): string {
+  return (
+    `${PERSISTED_OUTPUT_TAG}\n` +
+    `Old tool result content cleared from context. Full output is still on disk: ${filepath}\n` +
+    `Re-read with the Read tool (file_path="${filepath}"; use offset/limit for large files).\n` +
+    PERSISTED_OUTPUT_CLOSING_TAG
+  )
+}
+
+/**
+ * Extract filepath from a persisted-output or cleared-but-retrievable stub.
+ * Only trusts content that starts with PERSISTED_OUTPUT_TAG (never scans free-form
+ * tool output / preview bodies for lookalike lines).
+ */
+export function extractPersistedOutputPath(content: string): string | null {
+  if (!content.startsWith(PERSISTED_OUTPUT_TAG)) return null
+  // "Full output saved to:" may sit mid-line after size text — do not anchor with ^.
+  const m =
+    content.match(/Full output saved to: (.+)$/m) ??
+    content.match(/Full output is still on disk: (.+)$/m)
+  const p = m?.[1]
+    ?.trim()
+    .replace(/\r$/, '')
+    .replace(/^"(.*)"$/, '$1')
+  return p || null
 }
 
 /**

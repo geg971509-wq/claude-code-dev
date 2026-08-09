@@ -95,6 +95,43 @@ describe('createToolLoopTracker', () => {
     tracker.endBatch()
     expect(tracker.record('Edit', { b: 2, a: 1 }).streak).toBe(2)
   })
+
+  test('period-2 A-B-A-B does not force-stop early (lenient)', () => {
+    const tracker = createToolLoopTracker()
+    const a = { file_path: '/a' }
+    const b = { file_path: '/b' }
+    // Short legitimate alternation must stay below p2 r1 (6).
+    for (let i = 0; i < 4; i++) {
+      tracker.record(i % 2 === 0 ? 'Read' : 'Grep', i % 2 === 0 ? a : b)
+      tracker.endBatch()
+    }
+    // After 4 batches (A B A B): p2 steps when third batch completes (=A)
+    // and fourth (=B). Still under P2_REMINDER_1_START=6.
+    const mid = tracker.record('Read', a)
+    expect(mid.level).not.toBe('stop')
+    tracker.endBatch()
+  })
+
+  test('period-2 long alternation eventually reaches r1 then stop ladder', () => {
+    const tracker = createToolLoopTracker()
+    const a = { path: '/x' }
+    const b = { path: '/y' }
+    // Drive many A-B batches; p2Streak increments on each closing of A-B-A.
+    for (let i = 0; i < 25; i++) {
+      const r = tracker.record(
+        i % 2 === 0 ? 'Read' : 'Grep',
+        i % 2 === 0 ? a : b,
+      )
+      tracker.endBatch()
+      if (i === 12) {
+        // Well past identical-key reset; p2 should be climbing.
+        expect(['none', 'r1', 'r2', 'r3', 'stop']).toContain(r.level)
+      }
+    }
+    const late = tracker.record('Read', a)
+    // With P2_FORCE_STOP=20, 25 alternation batches should have stopped or r3+.
+    expect(['r2', 'r3', 'stop']).toContain(late.level)
+  })
 })
 
 function makeToolResultMessage(

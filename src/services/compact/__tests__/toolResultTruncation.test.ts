@@ -120,4 +120,26 @@ describe('truncateToolResultsForCompaction', () => {
     expect(a).toBe(assistant)
     expect(b).toBe(plain)
   })
+
+  test('persisted-output blobs become path stubs instead of mid-tag slice', () => {
+    const filepath = '/tmp/sess/tool-results/abc.txt'
+    const persisted =
+      `<persisted-output>\n` +
+      `Output too large (50000). Full output saved to: ${filepath}\n\n` +
+      `To read the full output, use the Read tool with file_path="${filepath}".\n` +
+      `For large files, pass offset and limit (line-based; e.g. offset=1, limit=100) and page through.\n\n` +
+      `Preview (first 2KB):\n` +
+      `${'x'.repeat(COMPACT_TOOL_RESULT_MAX_CHARS + 500)}\n` +
+      `</persisted-output>`
+    const [out] = truncateToolResultsForCompaction([toolResultMsg(persisted)])
+    const content = (out as any).message.content[0].content as string
+    expect(content).toContain(filepath)
+    expect(content).toMatch(/Read/i)
+    expect(content).toContain('<persisted-output>')
+    expect(content).not.toContain('omitted')
+    expect(content.length).toBeLessThan(persisted.length)
+    // Must not destroy the tag by head+tail slicing through the middle.
+    expect(content.startsWith('<persisted-output>')).toBe(true)
+    expect(content.includes('</persisted-output>')).toBe(true)
+  })
 })

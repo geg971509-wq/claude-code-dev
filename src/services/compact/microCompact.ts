@@ -32,8 +32,62 @@ import {
 // Inline from utils/toolResultStorage.ts — importing that file pulls in
 // sessionStorage → utils/messages → services/api/errors, completing a
 // circular-deps loop back through this file via promptCacheBreakDetection.
-// Drift is caught by a test asserting equality with the source-of-truth.
+// Drift is caught by a test asserting equality with the source-of-truth
+// (TOOL_RESULT_CLEARED_MESSAGE / buildClearedButRetrievableMessage / extract).
 export const TIME_BASED_MC_CLEARED_MESSAGE = '[Old tool result content cleared]'
+
+// Keep in lockstep with toolResultStorage.PERSISTED_OUTPUT_* (tests enforce).
+const PERSISTED_OUTPUT_TAG_LOCAL = '<persisted-output>'
+const PERSISTED_OUTPUT_CLOSING_TAG_LOCAL = '</persisted-output>'
+
+/** Local twin of toolResultStorage.extractPersistedOutputPath — no import (cycle). */
+function extractPersistedOutputPathLocal(content: string): string | null {
+  if (!content.startsWith(PERSISTED_OUTPUT_TAG_LOCAL)) return null
+  // "Full output saved to:" may sit mid-line after size text — do not anchor with ^.
+  const m =
+    content.match(/Full output saved to: (.+)$/m) ??
+    content.match(/Full output is still on disk: (.+)$/m)
+  const p = m?.[1]
+    ?.trim()
+    .replace(/\r$/, '')
+    .replace(/^"(.*)"$/, '$1')
+  return p || null
+}
+
+/** Local twin of toolResultStorage.buildClearedButRetrievableMessage — byte-identical. */
+function buildClearedButRetrievableMessageLocal(filepath: string): string {
+  return (
+    `${PERSISTED_OUTPUT_TAG_LOCAL}\n` +
+    `Old tool result content cleared from context. Full output is still on disk: ${filepath}\n` +
+    `Re-read with the Read tool (file_path="${filepath}"; use offset/limit for large files).\n` +
+    PERSISTED_OUTPUT_CLOSING_TAG_LOCAL
+  )
+}
+
+/**
+ * Pure: choose model-visible content when time-based MC clears a tool_result.
+ * - Already bare cleared / same path-stub → return as-is (idempotent).
+ * - Starts with <persisted-output> and has a parseable path → short path stub.
+ * - Else → bare cleared (not retrievable).
+ * Exported for unit tests only; must not import toolResultStorage.
+ */
+export function chooseMicrocompactClearContent(
+  content: ToolResultBlockParam['content'],
+): string {
+  if (typeof content !== 'string') {
+    return TIME_BASED_MC_CLEARED_MESSAGE
+  }
+  if (content === TIME_BASED_MC_CLEARED_MESSAGE) {
+    return content
+  }
+  const path = extractPersistedOutputPathLocal(content)
+  if (path) {
+    const stub = buildClearedButRetrievableMessageLocal(path)
+    if (content === stub) return content
+    return stub
+  }
+  return TIME_BASED_MC_CLEARED_MESSAGE
+}
 
 const IMAGE_MAX_TOKEN_SIZE = 2000
 
@@ -479,14 +533,13 @@ function maybeTimeBasedMicrocompact(
     }
     let touched = false
     const newContent = message.message!.content.map(block => {
-      if (
-        block.type === 'tool_result' &&
-        clearSet.has(block.tool_use_id) &&
-        block.content !== TIME_BASED_MC_CLEARED_MESSAGE
-      ) {
+      if (block.type === 'tool_result' && clearSet.has(block.tool_use_id)) {
+        const next = chooseMicrocompactClearContent(block.content)
+        // Idempotent: bare cleared or same path-stub → skip (no double tokensSaved).
+        if (next === block.content) return block
         tokensSaved += calculateToolResultTokens(block)
         touched = true
-        return { ...block, content: TIME_BASED_MC_CLEARED_MESSAGE }
+        return { ...block, content: next }
       }
       return block
     })
