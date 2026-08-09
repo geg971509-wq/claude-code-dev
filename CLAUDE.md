@@ -228,7 +228,7 @@ Feature flags control which functionality is enabled at runtime. 代码中统一
 - 多 worker: `COORDINATOR_MODE`, `BG_SESSIONS`, `TEMPLATES`
 - 连接器: `CONNECTOR_TEXT`, `COMMIT_ATTRIBUTION`, `DIRECT_CONNECT`
 - 实验性: `EXPERIMENTAL_SKILL_SEARCH`, `EXPERIMENTAL_SEARCH_EXTRA_TOOLS`
-- Agent 增强: `TOOL_LOOP_DETECTION`（工具死循环分级干预）, `SUBAGENT_SUMMARY_GATE`（子代理摘要质量门）, `COMPACT_PRESERVE_USER_MESSAGES`（compact 保留真实用户消息 HEAD+TAIL）, `COMPACT_TAIL_PRESERVATION`（compact 后逐字保留最近 N 个 API round，预算为上下文 25% 夹取 2k-8k，借鉴 opencode）, `FILE_MUTATION_QUEUE`（同文件 mutation 串行化）, `AGENT_LAUNCH_THROTTLE`（子代理启动限速）
+- Agent 增强: `TOOL_LOOP_DETECTION`（工具死循环分级干预）, `SUBAGENT_SUMMARY_GATE`（子代理摘要质量门）, `COMPACT_PRESERVE_USER_MESSAGES`（compact 保留真实用户消息 HEAD+TAIL）, `COMPACT_TAIL_PRESERVATION`（compact 后逐字保留最近 N 个 API round，预算为上下文 25% 夹取 2k-8k，借鉴 opencode）, `REACTIVE_COMPACT`（413/media-size 应急压缩；本地单次 compactConversation，非官方全阶梯、非 reactive-only）, `FILE_MUTATION_QUEUE`（同文件 mutation 串行化）, `AGENT_LAUNCH_THROTTLE`（子代理启动限速）
 - 模式: `POOR`, `SSH_REMOTE`
 - 已禁用: `CONTEXT_COLLAPSE`, `FORK_SUBAGENT`, `UDS_INBOX`, `LAN_PIPES`, `REVIEW_ARTIFACT`, `TEAMMEM`, `SKILL_LEARNING`
 

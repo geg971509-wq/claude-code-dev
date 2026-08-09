@@ -104,6 +104,7 @@ export const DEFAULT_BUILD_FEATURES = [
   'SUBAGENT_SUMMARY_GATE', // 子代理摘要质量门
   'COMPACT_PRESERVE_USER_MESSAGES', // compact 保留真实用户消息 HEAD+TAIL
   'COMPACT_TAIL_PRESERVATION', // compact 后逐字保留最近 N 个 API round（预算 = 上下文 25%，2k-8k）
+  'REACTIVE_COMPACT', // 413/media-size 应急压缩（query withhold + tryReactiveCompact；非 reactive-only）
   'FILE_MUTATION_QUEUE', // 同文件 mutation 串行化
   'AGENT_LAUNCH_THROTTLE', // 子代理启动限速
 ] as const satisfies readonly FeatureFlagName[]
