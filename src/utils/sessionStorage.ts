@@ -618,12 +618,17 @@ class Project {
         queue = []
         this.writeQueues.set(filePath, queue)
       }
-      // Drop oldest entries when queue exceeds limit to prevent unbounded memory growth
+      // Drop newest (refuse to enqueue) rather than oldest. The transcript is
+      // an append-only parentUuid chain: dropping the oldest orphans everything
+      // still queued. Truncation is recoverable; a broken chain is not.
       if (queue.length >= 1000) {
-        const dropped = queue.splice(0, queue.length - 999)
-        for (const d of dropped) {
-          d.resolve()
-        }
+        logError(
+          new Error(
+            `session write queue overflow for ${filePath}: dropping newest entry`,
+          ),
+        )
+        resolve()
+        return
       }
       queue.push({ entry, resolve })
       this.scheduleDrain()
