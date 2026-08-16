@@ -3,7 +3,10 @@ import { serve } from '@hono/node-server'
 import { ProcessManager } from './manager.js'
 import { createApp } from './routes.js'
 
-export async function startManager(port: number): Promise<void> {
+export async function startManager(
+  port: number,
+  hostname = '127.0.0.1',
+): Promise<void> {
   const manager = new ProcessManager()
   const app = createApp(manager)
 
@@ -21,7 +24,8 @@ export async function startManager(port: number): Promise<void> {
   process.on('SIGTERM', shutdown)
   process.on('SIGINT', shutdown)
 
-  const server = serve({ fetch: app.fetch, port })
+  const bindHost = hostname === 'localhost' ? '127.0.0.1' : hostname
+  const server = serve({ fetch: app.fetch, port, hostname: bindHost })
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
       console.error(
@@ -36,7 +40,7 @@ export async function startManager(port: number): Promise<void> {
   console.log()
   console.log(`  🖥️  ACP Manager`)
   console.log()
-  console.log(`    URL:   http://localhost:${port}`)
+  console.log(`    URL:   http://${bindHost}:${port}`)
   console.log()
   console.log(`  Press Ctrl+C to stop`)
   console.log()

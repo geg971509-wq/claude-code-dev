@@ -95,7 +95,7 @@ export const command = buildCommand({
     // Manager mode: start web UI only, no proxy
     if (manager) {
       const { startManager } = await import('../manager/index.js')
-      await startManager(port)
+      await startManager(port, host)
       return
     }
 
