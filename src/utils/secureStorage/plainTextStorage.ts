@@ -57,7 +57,9 @@ export const plainTextStorage = {
       writeFileSync_DEPRECATED(storagePath, jsonStringify(data), {
         encoding: 'utf8',
         flush: false,
+        mode: 0o600,
       })
+      // mode is ignored on rewrite of an existing file; keep chmod for that case
       chmodSync(storagePath, 0o600)
       return {
         success: true,
