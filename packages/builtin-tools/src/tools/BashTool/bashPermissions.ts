@@ -1139,7 +1139,11 @@ export const bashToolCheckPermission = (
   }
 
   // 5b. Check sed constraints (blocks dangerous sed operations before mode auto-allow)
-  const sedConstraintResult = checkSedConstraints(input, toolPermissionContext)
+  const sedConstraintResult = checkSedConstraints(
+    input,
+    toolPermissionContext,
+    cmd => stripSafeWrappers(stripAllLeadingEnvVars(cmd)),
+  )
   if (sedConstraintResult.behavior !== 'passthrough') {
     return sedConstraintResult
   }

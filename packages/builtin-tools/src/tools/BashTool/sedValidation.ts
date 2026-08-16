@@ -639,6 +639,8 @@ function containsDangerousOperations(expression: string): boolean {
  *
  * @param input - Object containing the command string
  * @param toolPermissionContext - Context containing mode and permissions
+ * @param stripWrappers - optional per-segment stripper (wrappers + env). Passed
+ *   in to avoid a sedValidation ↔ bashPermissions import cycle.
  * @returns
  * - 'ask' if any sed command contains dangerous operations
  * - 'passthrough' if no sed commands or all are safe
@@ -646,21 +648,28 @@ function containsDangerousOperations(expression: string): boolean {
 export function checkSedConstraints(
   input: { command: string },
   toolPermissionContext: ToolPermissionContext,
+  stripWrappers?: (command: string) => string,
 ): PermissionResult {
   const commands = splitCommand_DEPRECATED(input.command)
 
   for (const cmd of commands) {
-    // Skip non-sed commands
-    const trimmed = cmd.trim()
-    const baseCmd = trimmed.split(/\s+/)[0]
+    // Skip non-sed commands. Strip wrappers/env first so `timeout 5 sed …`
+    // and `FOO=1 sed …` are still checked; basename so `/usr/bin/sed` is too.
+    const trimmed = (stripWrappers ? stripWrappers(cmd) : cmd).trim()
+    const firstToken = trimmed.split(/\s+/)[0] ?? ''
+    const slash = firstToken.lastIndexOf('/')
+    const baseCmd = slash === -1 ? firstToken : firstToken.slice(slash + 1)
     if (baseCmd !== 'sed') {
       continue
     }
+    // extractSedExpressions / hasFileArgs require a leading `sed ` token
+    const sedCommand =
+      firstToken === 'sed' ? trimmed : trimmed.replace(firstToken, 'sed')
 
     // In acceptEdits mode, allow file writes (-i flag) but still block dangerous operations
     const allowFileWrites = toolPermissionContext.mode === 'acceptEdits'
 
-    const isAllowed = sedCommandIsAllowedByAllowlist(trimmed, {
+    const isAllowed = sedCommandIsAllowedByAllowlist(sedCommand, {
       allowFileWrites,
     })
 
