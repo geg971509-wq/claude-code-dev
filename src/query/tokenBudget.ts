@@ -2,6 +2,7 @@ import { getBudgetContinuationMessage } from '../utils/tokenBudget.js'
 
 const COMPLETION_THRESHOLD = 0.9
 const DIMINISHING_THRESHOLD = 500
+const MAX_CONTINUATIONS = 50
 
 export type BudgetTracker = {
   continuationCount: number
@@ -61,7 +62,11 @@ export function checkTokenBudget(
     deltaSinceLastCheck < DIMINISHING_THRESHOLD &&
     tracker.lastDeltaTokens < DIMINISHING_THRESHOLD
 
-  if (!isDiminishing && turnTokens < budget * COMPLETION_THRESHOLD) {
+  if (
+    !isDiminishing &&
+    turnTokens < budget * COMPLETION_THRESHOLD &&
+    tracker.continuationCount < MAX_CONTINUATIONS
+  ) {
     tracker.continuationCount++
     tracker.lastDeltaTokens = deltaSinceLastCheck
     tracker.lastGlobalTurnTokens = globalTurnTokens
