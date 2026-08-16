@@ -15,6 +15,7 @@ type AttemptPlan = {
   streamError?: unknown
   requestId?: string
   hang?: boolean
+  hangAfterEvents?: boolean
 }
 
 let attemptPlans: AttemptPlan[] = []
@@ -39,6 +40,9 @@ function eventStream(
   return {
     async *[Symbol.asyncIterator]() {
       for (const event of plan.events ?? []) yield event
+      if (plan.hangAfterEvents) {
+        await new Promise<void>(() => {})
+      }
       if (plan.streamError !== undefined) throw plan.streamError
     },
   }
@@ -102,6 +106,19 @@ mock.module('src/utils/messages.ts', () => ({
       content: [{ type: 'text', text: content }],
     },
     uuid: 'error-message',
+  }),
+  createSystemAPIErrorMessage: (
+    error: Error,
+    retryInMs: number,
+    retryAttempt: number,
+    maxRetries: number,
+  ) => ({
+    type: 'system',
+    subtype: 'api_error',
+    error,
+    retryInMs,
+    retryAttempt,
+    maxRetries,
   }),
 }))
 
@@ -278,10 +295,12 @@ function errorMessages(messages: AssistantMessage[]): AssistantMessage[] {
 beforeEach(() => {
   process.env.CLAUDE_CODE_MAX_RETRIES = '2'
   delete process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS
+  delete process.env.OPENAI_STREAM_MAX_RETRIES
 })
 
 afterEach(() => {
   delete process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS
+  delete process.env.OPENAI_STREAM_MAX_RETRIES
 })
 
 describe('queryModelGrok terminal assembly', () => {
@@ -333,12 +352,68 @@ describe('queryModelGrok terminal assembly', () => {
 
   test('aborts and reports a stream that stays idle', async () => {
     process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS = '5'
+    process.env.OPENAI_STREAM_MAX_RETRIES = '0'
     const result = await runQuery([{ hang: true, requestId: 'req_idle' }])
 
+    expect(createCalls).toBe(1)
     expect(normalMessages(result.assistantMessages)).toHaveLength(0)
     expect(errorMessages(result.assistantMessages)).toHaveLength(1)
     expect(lastController?.signal.aborted).toBe(true)
     expect(bodyCancelCalls).toBe(1)
+  })
+
+  test('retries an idle stream and commits the recovered attempt', async () => {
+    process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS = '5'
+    process.env.OPENAI_STREAM_MAX_RETRIES = '1'
+    const result = await runQuery([
+      { hang: true, requestId: 'req_idle' },
+      { events: completedEvents(), requestId: 'req_idle_recovered' },
+    ])
+
+    expect(createCalls).toBe(2)
+    expect(normalMessages(result.assistantMessages)).toHaveLength(1)
+    expect(errorMessages(result.assistantMessages)).toHaveLength(0)
+    expect(normalMessages(result.assistantMessages)[0]!.requestId).toBe(
+      'req_idle_recovered',
+    )
+  })
+
+  test('retries a stream that opens and then goes idle', async () => {
+    process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS = '5'
+    process.env.OPENAI_STREAM_MAX_RETRIES = '1'
+    const result = await runQuery([
+      {
+        events: [messageStart(), blockStart(0, { type: 'text', text: '' })],
+        hangAfterEvents: true,
+        requestId: 'req_opened_then_idle',
+      },
+      { events: completedEvents(), requestId: 'req_idle_recovered' },
+    ])
+
+    expect(createCalls).toBe(2)
+    expect(normalMessages(result.assistantMessages)).toHaveLength(1)
+    expect(errorMessages(result.assistantMessages)).toHaveLength(0)
+    expect(normalMessages(result.assistantMessages)[0]!.requestId).toBe(
+      'req_idle_recovered',
+    )
+    expect(result.streamEvents).toHaveLength(completedEvents().length)
+  })
+
+  test('does not retry once semantic content has been yielded', async () => {
+    process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS = '5'
+    process.env.OPENAI_STREAM_MAX_RETRIES = '3'
+    const result = await runQuery([
+      {
+        events: completedEvents().slice(0, 7),
+        hangAfterEvents: true,
+        requestId: 'req_committed',
+      },
+      { events: completedEvents(), requestId: 'req_never_used' },
+    ])
+
+    expect(createCalls).toBe(1)
+    expect(normalMessages(result.assistantMessages)).toHaveLength(0)
+    expect(errorMessages(result.assistantMessages)).toHaveLength(1)
   })
 
   test('retries request establishment and uses the successful request ID', async () => {

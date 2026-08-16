@@ -12,7 +12,8 @@ describe('queryModelGrok', () => {
       if (
         key.startsWith('GROK_') ||
         key === 'CLAUDE_CODE_MAX_RETRIES' ||
-        key === 'OPENAI_STREAM_IDLE_TIMEOUT_MS'
+        key === 'OPENAI_STREAM_IDLE_TIMEOUT_MS' ||
+        key === 'OPENAI_STREAM_MAX_RETRIES'
       ) {
         delete env[key]
       }

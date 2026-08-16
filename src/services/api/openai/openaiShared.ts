@@ -70,8 +70,38 @@ import {
   type ProviderAPIError,
 } from '@ant/model-provider'
 import { APIConnectionError as OpenAIAPIConnectionError } from 'openai'
+import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { shortErrorStack } from '../../../utils/errors.js'
 import { sleep } from '../../../utils/sleep.js'
+
+/**
+ * Whether an event carries content the user would actually see. Providers open
+ * a stream with role-only/empty scaffolding events; treating those as output
+ * would strand the stream-retry loop, since a stream that goes idle after
+ * `message_start` is exactly the case retrying exists for.
+ */
+export function isSemanticOpenAIEvent(
+  event: BetaRawMessageStreamEvent,
+): boolean {
+  if (event.type === 'content_block_delta') {
+    const delta = event.delta
+    if (delta.type === 'text_delta') return delta.text.length > 0
+    if (delta.type === 'thinking_delta') return delta.thinking.length > 0
+    if (delta.type === 'signature_delta') return delta.signature.length > 0
+    if (delta.type === 'input_json_delta') return delta.partial_json.length > 0
+    return true
+  }
+  if (event.type !== 'content_block_start') return false
+  const block = event.content_block
+  if (block.type === 'tool_use') {
+    return block.id.length > 0 || block.name.length > 0
+  }
+  if (block.type === 'text') return block.text.length > 0
+  if (block.type === 'thinking') {
+    return block.thinking.length > 0 || block.signature.length > 0
+  }
+  return true
+}
 
 export type OpenAIUsageCounters = {
   input_tokens: number
