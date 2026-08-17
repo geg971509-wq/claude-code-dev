@@ -19,12 +19,16 @@ export type ModelCatalogEntry = {
   displayName?: string
   /** 官方 `knowledge_cutoff`，写进 system prompt 的环境段。 */
   knowledgeCutoff?: string
-  /** 官方 `provider_ids`。openai/gemini/grok 是 dev 自有映射，等同 firstParty。 */
+  /**
+   * 官方 `provider_ids`。openai/gemini/grok 是 dev 自有映射，等同 firstParty。
+   * 除 firstParty 外都可缺省：官方对 mythos-5 就把其余各家记为 null（仅一方
+   * 直连）。只有四家齐全的条目才配 `key`、才会进 ALL_MODEL_CONFIGS。
+   */
   providerIds?: {
     firstParty: string
-    bedrock: string
-    vertex: string
-    foundry: string
+    bedrock?: string
+    vertex?: string
+    foundry?: string
   }
   /** 官方 `context`。window 是不带任何 beta 时的基础窗口。 */
   context: {
@@ -422,6 +426,56 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     pricing: 'haiku_35',
     capabilities: [],
   },
+  {
+    key: 'fable5',
+    canonical: 'claude-fable-5',
+    displayName: 'Fable 5',
+    knowledgeCutoff: 'January 2026',
+    providerIds: {
+      firstParty: 'claude-fable-5',
+      bedrock: 'us.anthropic.claude-fable-5',
+      vertex: 'claude-fable-5',
+      foundry: 'claude-fable-5',
+    },
+    context: {
+      window: 1_000_000,
+      native1m: true,
+      supports1mBeta: true,
+      supports1mSuffix: false,
+    },
+    maxOutputTokens: { default: 64_000, upper: 128_000 },
+    pricing: 'tier_10_50',
+    capabilities: [
+      'effort',
+      'max_effort',
+      'xhigh_effort',
+      'adaptive_thinking',
+      'rejects_disabled_thinking',
+      'mid_conv_system',
+      'context_management',
+      'lean_prompt',
+      'fable_5_mitigations',
+      'refusal_fallback',
+    ],
+    defaultEffort: 'high',
+  },
+  // mythos-5：官方 provider_ids 里除 first_party 外全是 null（仅一方直连），
+  // 因此不进 ALL_MODEL_CONFIGS —— 那张表要求七家 provider ID 齐全。
+  {
+    canonical: 'claude-mythos-5',
+    displayName: 'Mythos 5',
+    knowledgeCutoff: 'January 2026',
+    providerIds: { firstParty: 'claude-mythos-5' },
+    context: {
+      window: 1_000_000,
+      native1m: true,
+      supports1mBeta: true,
+      supports1mSuffix: false,
+    },
+    maxOutputTokens: { default: 64_000, upper: 128_000 },
+    pricing: 'tier_10_50',
+    capabilities: [],
+  },
   // 3.0 机型：官方表已不再收录，只用于 canonical 归一，UI 从不呈现。
   {
     canonical: 'claude-3-opus',
@@ -468,11 +522,12 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
  */
 function toModelConfig(entry: ModelCatalogEntry): ModelConfig {
   const ids = entry.providerIds!
+  // 带 key 的条目一定四家齐全（见 providerIds 的类型注释）。
   return {
     firstParty: ids.firstParty,
-    bedrock: ids.bedrock,
-    vertex: ids.vertex,
-    foundry: ids.foundry,
+    bedrock: ids.bedrock!,
+    vertex: ids.vertex!,
+    foundry: ids.foundry!,
     openai: ids.firstParty,
     gemini: ids.firstParty,
     grok: ids.firstParty,

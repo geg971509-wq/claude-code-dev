@@ -47,6 +47,16 @@ export const COST_TIER_5_25 = {
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
+// 官方 pricing tier "tier_10_50"（fable-5 / mythos-5）：$10 输入 / $50 输出。
+// 缓存倍率沿用本文件所有档位一致的关系：write = input × 1.25、read = input × 0.1。
+export const COST_TIER_10_50 = {
+  inputTokens: 10,
+  outputTokens: 50,
+  promptCacheWriteTokens: 12.5,
+  promptCacheReadTokens: 1,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
 // Fast mode pricing for Opus 4.6: $30 input / $150 output per Mtok
 export const COST_TIER_30_150 = {
   inputTokens: 30,
@@ -95,6 +105,7 @@ const COSTS_BY_PRICING_TIER: Record<string, ModelCosts> = {
   tier_3_15: COST_TIER_3_15,
   tier_5_25: COST_TIER_5_25,
   tier_15_75: COST_TIER_15_75,
+  tier_10_50: COST_TIER_10_50,
   haiku_35: COST_HAIKU_35,
   haiku_45: COST_HAIKU_45,
 }

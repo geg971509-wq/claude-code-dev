@@ -137,6 +137,29 @@ const OFFICIAL_ID_TO_CANONICAL: Record<string, string> = {
   'claude-sonnet-4-0': 'claude-sonnet-4',
 }
 
+/**
+ * 只在 `provider_ids: { ... }` 这一段内取值，且把 `null` 当作缺省。
+ *
+ * 早先是直接在整段 3000 字符窗口里 `/bedrock: "([^"]+)"/` —— 一旦某个机型的
+ * provider 是 null（mythos-5 除 first_party 外全 null），正则会跳过它、抓到
+ * **相邻机型**的值，于是对账器报出根本不存在的"官方值"。工具编造事实比没有
+ * 工具更坏，所以这里按块解析。
+ */
+function parseProviderIds(seg: string): {
+  firstParty: string | undefined
+  bedrock: string | undefined
+  vertex: string | undefined
+} {
+  const block = /provider_ids: \{([^}]*)\}/.exec(seg)?.[1] ?? ''
+  const pick = (field: string): string | undefined =>
+    new RegExp(`\\b${field}: "([^"]+)"`).exec(block)?.[1]
+  return {
+    firstParty: pick('first_party'),
+    bedrock: pick('bedrock'),
+    vertex: pick('vertex'),
+  }
+}
+
 export function parseOfficialModelTable(bundle: string): OfficialModel[] {
   const out: OfficialModel[] = []
   for (const m of bundle.matchAll(
@@ -158,9 +181,7 @@ export function parseOfficialModelTable(bundle: string): OfficialModel[] {
       pricing: /pricing: "([^"]+)"/.exec(seg)?.[1],
       knowledgeCutoff: /knowledge_cutoff: "([^"]+)"/.exec(seg)?.[1],
       defaultEffort: /default_effort: "([a-z]+)"/.exec(seg)?.[1],
-      firstParty: /first_party: "([^"]+)"/.exec(seg)?.[1],
-      bedrock: /bedrock: "([^"]+)"/.exec(seg)?.[1],
-      vertex: /vertex: "([^"]+)"/.exec(seg)?.[1],
+      ...parseProviderIds(seg),
       capabilities: caps
         .split(',')
         .map(c => c.trim().replace(/^"|"$/g, ''))
