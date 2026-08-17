@@ -1,5 +1,8 @@
 import type { Message } from '../../types/message.js'
-import { groupMessagesByApiRound } from './grouping.js'
+import {
+  adjustIndexToPreserveAPIInvariants,
+  groupMessagesByApiRound,
+} from './grouping.js'
 
 /**
  * Tail preservation for full compaction (borrowed from opencode's
@@ -113,8 +116,14 @@ export function selectPreservedTail(
     // The whole conversation fits in the tail — nothing to summarize.
     return { head: messages, tail: [] }
   }
+  const startIndex = messages.length - keptMessageCount
+  const adjusted = adjustIndexToPreserveAPIInvariants(messages, startIndex)
+  // Whole conversation must stay verbatim — same as the "everything fits" path.
+  if (adjusted <= 0) {
+    return { head: messages, tail: [] }
+  }
   return {
-    head: messages.slice(0, messages.length - keptMessageCount),
-    tail: messages.slice(messages.length - keptMessageCount),
+    head: messages.slice(0, adjusted),
+    tail: messages.slice(adjusted),
   }
 }

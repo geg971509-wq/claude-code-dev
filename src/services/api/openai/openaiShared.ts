@@ -86,8 +86,12 @@ export function isSemanticOpenAIEvent(
   if (event.type === 'content_block_delta') {
     const delta = event.delta
     if (delta.type === 'text_delta') return delta.text.length > 0
-    if (delta.type === 'thinking_delta') return delta.thinking.length > 0
-    if (delta.type === 'signature_delta') return delta.signature.length > 0
+    // Thinking-only is not user-visible output. Grok can emit thinking then
+    // sit silent past the 300s idle watchdog; treating that as committed made
+    // the timeout fatal. Official Codex retries the whole sampling request on
+    // Timeout regardless of reasoning tokens already received.
+    if (delta.type === 'thinking_delta') return false
+    if (delta.type === 'signature_delta') return false
     if (delta.type === 'input_json_delta') return delta.partial_json.length > 0
     return true
   }
@@ -97,10 +101,70 @@ export function isSemanticOpenAIEvent(
     return block.id.length > 0 || block.name.length > 0
   }
   if (block.type === 'text') return block.text.length > 0
-  if (block.type === 'thinking') {
-    return block.thinking.length > 0 || block.signature.length > 0
-  }
+  if (block.type === 'thinking') return false
   return true
+}
+
+export const THINKING_LOOP_MIN_CHARS = 20
+export const THINKING_LOOP_REPEAT = 6
+
+/**
+ * Detect a thinking channel stuck restating the same sentence. Tokens are
+ * still arriving, so the idle watchdog never fires. Official Codex has no
+ * equivalent; we cut the stream instead of waiting for the user to abort.
+ */
+export function createThinkingLoopDetector(options?: {
+  minChars?: number
+  repeat?: number
+}): { push: (chunk: string) => boolean } {
+  const minChars = options?.minChars ?? THINKING_LOOP_MIN_CHARS
+  const repeat = options?.repeat ?? THINKING_LOOP_REPEAT
+  let leftover = ''
+  let lastChunk = ''
+  let chunkStreak = 0
+  const counts = new Map<string, number>()
+
+  function note(sentence: string): boolean {
+    const norm = sentence.replace(/\s+/g, ' ').trim().toLowerCase()
+    if (norm.length < minChars) return false
+    const next = (counts.get(norm) ?? 0) + 1
+    counts.set(norm, next)
+    return next >= repeat
+  }
+
+  return {
+    push(chunk: string): boolean {
+      if (!chunk) return false
+
+      const chunkNorm = chunk.replace(/\s+/g, ' ').trim().toLowerCase()
+      if (chunkNorm.length >= minChars) {
+        if (chunkNorm === lastChunk) {
+          chunkStreak += 1
+          if (chunkStreak >= repeat) return true
+        } else {
+          lastChunk = chunkNorm
+          chunkStreak = 1
+        }
+      }
+
+      leftover += chunk
+      const boundary = /[.!?](?:\s+|\n+|$)/g
+      let lastIndex = 0
+      let match = boundary.exec(leftover)
+      while (match) {
+        const end = match.index + match[0].length
+        const sentence = leftover.slice(lastIndex, end)
+        lastIndex = end
+        if (note(sentence)) {
+          leftover = leftover.slice(lastIndex)
+          return true
+        }
+        match = boundary.exec(leftover)
+      }
+      leftover = leftover.slice(lastIndex)
+      return false
+    },
+  }
 }
 
 export type OpenAIUsageCounters = {

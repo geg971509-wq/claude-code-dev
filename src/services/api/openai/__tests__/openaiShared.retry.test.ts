@@ -10,11 +10,13 @@ import { ProviderAPIError, ProviderStreamError } from '@ant/model-provider'
 import { APIConnectionError } from 'openai'
 import {
   asOpenAIRetryError,
+  createThinkingLoopDetector,
   getOpenAIRequestMaxRetries,
   getOpenAIRetryDelayMs,
   getOpenAIStreamIdleTimeoutMs,
   getOpenAIStreamMaxRetries,
   getTransientOpenAIMaxRetries,
+  isSemanticOpenAIEvent,
   isTransientOpenAIError,
   withOpenAIStreamIdleTimeout,
   withTransientOpenAIRetry,
@@ -93,6 +95,75 @@ describe('isTransientOpenAIError', () => {
     expect(isTransientOpenAIError(null)).toBe(false)
     expect(isTransientOpenAIError('503')).toBe(false)
     expect(isTransientOpenAIError(new Error('boom'))).toBe(false)
+  })
+})
+
+describe('isSemanticOpenAIEvent', () => {
+  test('treats thinking-only as non-semantic so idle stays retryable', () => {
+    expect(
+      isSemanticOpenAIEvent({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'thinking', thinking: 'plan', signature: '' },
+      } as never),
+    ).toBe(false)
+    expect(
+      isSemanticOpenAIEvent({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: 'plan' },
+      } as never),
+    ).toBe(false)
+    expect(
+      isSemanticOpenAIEvent({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'signature_delta', signature: 'sig' },
+      } as never),
+    ).toBe(false)
+    expect(
+      isSemanticOpenAIEvent({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'hi' },
+      } as never),
+    ).toBe(true)
+  })
+})
+
+describe('createThinkingLoopDetector', () => {
+  const sentence =
+    'The leftover test is still not written. I need to write it now. '
+
+  test('trips after the same sentence repeats past the threshold', () => {
+    const detector = createThinkingLoopDetector({ minChars: 20, repeat: 6 })
+    const hits = Array.from({ length: 8 }, () => detector.push(sentence))
+    expect(hits.slice(0, 5).every(hit => hit === false)).toBe(true)
+    expect(hits[5]).toBe(true)
+  })
+
+  test('does not trip on distinct planning sentences', () => {
+    const detector = createThinkingLoopDetector({ minChars: 20, repeat: 6 })
+    expect(
+      detector.push('First I will inspect the leftover token path. '),
+    ).toBe(false)
+    expect(
+      detector.push('Then I will compare official Codex idle handling. '),
+    ).toBe(false)
+    expect(
+      detector.push(
+        'Finally I will implement the thinking-not-committed fix. ',
+      ),
+    ).toBe(false)
+  })
+
+  test('also trips when one chunk is the whole repeated sentence', () => {
+    const detector = createThinkingLoopDetector({ minChars: 20, repeat: 3 })
+    const chunk =
+      'The leftover test is still not written. I need to write it now. Also I need to look at the idle timeout more carefully.'
+    expect(detector.push(chunk)).toBe(false)
+    expect(detector.push(chunk)).toBe(false)
+    expect(detector.push(chunk)).toBe(true)
   })
 })
 

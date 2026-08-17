@@ -23,6 +23,7 @@ import {
   getOpenAIRetryDelayMs,
   getOpenAIStreamMaxRetries,
   isOpenAIUserAbortError,
+  createThinkingLoopDetector,
   isSemanticOpenAIEvent,
   isTransientOpenAIError,
   toProviderHttpError,
@@ -107,7 +108,7 @@ import {
   formatDeferredToolLine,
   isDeferredTool,
   SEARCH_EXTRA_TOOLS_TOOL_NAME,
-} from '@claude-code-best/builtin-tools/tools/SearchExtraToolsTool/prompt.js'
+} from 'src/tools/SearchExtraToolsTool/prompt.js'
 
 function convertToResponsesReasoningEffort(
   effortValue: unknown,
@@ -495,6 +496,7 @@ export async function* queryModelOpenAI(
       let eventCount = 0
       let streamError: unknown
       const prelude: StreamEvent[] = []
+      const thinkingLoop = createThinkingLoopDetector()
 
       try {
         const timedStream = withOpenAIStreamIdleTimeout(attempt.stream, {
@@ -568,6 +570,18 @@ export async function* queryModelOpenAI(
                 block.thinking =
                   ((block.thinking as string | undefined) || '') +
                   delta.thinking
+                if (thinkingLoop.push(delta.thinking)) {
+                  throw new ProviderStreamError(
+                    'Thinking loop detected: the same planning sentence repeated until the stream was cut.',
+                    {
+                      kind: 'protocol',
+                      retryable: false,
+                      terminal: true,
+                      completionState: 'open',
+                      requestId: attempt.requestId,
+                    },
+                  )
+                }
               } else if (delta.type === 'signature_delta') {
                 block.signature = delta.signature
               }

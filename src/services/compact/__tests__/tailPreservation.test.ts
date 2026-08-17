@@ -159,6 +159,47 @@ describe('selectPreservedTail', () => {
     expect(head).toHaveLength(3)
   })
 
+  test('pulls a matching tool_use into the tail when it starts on an orphan tool_result', () => {
+    const messages: any[] = [
+      {
+        type: 'assistant',
+        message: { id: 'a0', role: 'assistant', content: 'keep-in-head' },
+      },
+      {
+        type: 'assistant',
+        message: {
+          id: 'a1',
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: {} }],
+        },
+      },
+      {
+        type: 'assistant',
+        message: { id: 'a2', role: 'assistant', content: 'later-round' },
+      },
+      {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'tu_1', content: 'ok' },
+          ],
+        },
+      },
+    ]
+    // maxRounds=1 keeps only the last API round ([a2, orphan result]).
+    // adjustIndex must walk back to a1 so the pair is not split.
+    const { head, tail } = selectPreservedTail(
+      messages,
+      100_000,
+      1,
+      estimateRound,
+    )
+    expect(head).toEqual(messages.slice(0, 1))
+    expect(tail).toEqual(messages.slice(1))
+    expect((tail[0] as any).message.id).toBe('a1')
+  })
+
   test('keeps same-id streaming chunks together as one round', () => {
     const chunk = (id: string, chars: number) => ({
       type: 'assistant',

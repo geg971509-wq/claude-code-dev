@@ -18,6 +18,11 @@ import type { Message } from '../../types/message.js'
  * Extracted to its own file to break the compact.ts ↔ compactMessages.ts
  * cycle (CC-1180) — the cycle shifted module-init order enough to surface
  * a latent ws CJS/ESM resolution race in CI shard-2.
+ *
+ * Round boundaries still look only at assistant-id. adjustIndexToPreserveAPIInvariants
+ * is a keep-index / tail-cut helper for SM and selectPreservedTail — this file
+ * hosts it as a leaf so tailPreservation does not import sessionMemoryCompact.
+ * groupMessagesByApiRound must not call it.
  */
 export function groupMessagesByApiRound(messages: Message[]): Message[][] {
   const groups: Message[][] = []
@@ -60,4 +65,112 @@ export function groupMessagesByApiRound(messages: Message[]): Message[][] {
     groups.push(current)
   }
   return groups
+}
+
+function getToolResultIds(message: Message): string[] {
+  if (message.type !== 'user') {
+    return []
+  }
+  const content = message.message!.content
+  if (!Array.isArray(content)) {
+    return []
+  }
+  const ids: string[] = []
+  for (const block of content) {
+    if (block.type === 'tool_result') {
+      ids.push(block.tool_use_id)
+    }
+  }
+  return ids
+}
+
+function hasToolUseWithIds(message: Message, toolUseIds: Set<string>): boolean {
+  if (message.type !== 'assistant') {
+    return false
+  }
+  const content = message.message!.content
+  if (!Array.isArray(content)) {
+    return false
+  }
+  return content.some(
+    block => block.type === 'tool_use' && toolUseIds.has(block.id),
+  )
+}
+
+/**
+ * Walk a keep-index backward so a slice does not split tool_use/tool_result
+ * pairs or thinking blocks that share message.id with a kept assistant.
+ * Used by session-memory keep-index and selectPreservedTail — not by
+ * groupMessagesByApiRound.
+ */
+export function adjustIndexToPreserveAPIInvariants(
+  messages: Message[],
+  startIndex: number,
+): number {
+  if (startIndex <= 0 || startIndex >= messages.length) {
+    return startIndex
+  }
+
+  let adjustedIndex = startIndex
+
+  const allToolResultIds: string[] = []
+  for (let i = startIndex; i < messages.length; i++) {
+    allToolResultIds.push(...getToolResultIds(messages[i]!))
+  }
+
+  if (allToolResultIds.length > 0) {
+    const toolUseIdsInKeptRange = new Set<string>()
+    for (let i = adjustedIndex; i < messages.length; i++) {
+      const msg = messages[i]!
+      if (msg.type === 'assistant' && Array.isArray(msg.message!.content)) {
+        for (const block of msg.message!.content) {
+          if (block.type === 'tool_use') {
+            toolUseIdsInKeptRange.add(block.id)
+          }
+        }
+      }
+    }
+
+    const neededToolUseIds = new Set(
+      allToolResultIds.filter(id => !toolUseIdsInKeptRange.has(id)),
+    )
+
+    for (let i = adjustedIndex - 1; i >= 0 && neededToolUseIds.size > 0; i--) {
+      const message = messages[i]!
+      if (hasToolUseWithIds(message, neededToolUseIds)) {
+        adjustedIndex = i
+        if (
+          message.type === 'assistant' &&
+          Array.isArray(message.message!.content)
+        ) {
+          for (const block of message.message!.content) {
+            if (block.type === 'tool_use' && neededToolUseIds.has(block.id)) {
+              neededToolUseIds.delete(block.id)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const messageIdsInKeptRange = new Set<string>()
+  for (let i = adjustedIndex; i < messages.length; i++) {
+    const msg = messages[i]!
+    if (msg.type === 'assistant' && msg.message!.id) {
+      messageIdsInKeptRange.add(msg.message!.id)
+    }
+  }
+
+  for (let i = adjustedIndex - 1; i >= 0; i--) {
+    const message = messages[i]!
+    if (
+      message.type === 'assistant' &&
+      message.message!.id &&
+      messageIdsInKeptRange.has(message.message!.id)
+    ) {
+      adjustedIndex = i
+    }
+  }
+
+  return adjustedIndex
 }

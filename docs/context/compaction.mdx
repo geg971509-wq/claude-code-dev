@@ -120,7 +120,7 @@ export function calculateMessagesToKeepIndex(messages, lastSummarizedIndex) {
 API 要求每个 `tool_result` 都有对应的 `tool_use`，反之亦然。如果压缩恰好切在一条 `tool_result` 消息处，会导致 API 报错。
 
 ```typescript
-// sessionMemoryCompact.ts:232-314
+// grouping.ts — adjustIndexToPreserveAPIInvariants
 // Step 1: 向前扫描，找到所有被保留消息中 tool_result 引用的 tool_use
 // Step 2: 向前扫描，找到与被保留 assistant 消息共享 message.id 的 thinking block
 // 两种情况都需要将 startIndex 向前移动

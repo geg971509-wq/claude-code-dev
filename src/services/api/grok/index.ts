@@ -24,6 +24,7 @@ import {
   getOpenAIRetryDelayMs,
   getOpenAIStreamMaxRetries,
   isOpenAIUserAbortError,
+  createThinkingLoopDetector,
   isSemanticOpenAIEvent,
   isTransientOpenAIError,
   toProviderHttpError,
@@ -141,11 +142,11 @@ export async function* queryModelGrok(
     )
 
     // Codex: keep the 300s idle watchdog; retry the sampling request when the
-    // stream dies before any semantic output escapes. Handshake 5xx still goes
-    // through withTransientOpenAIRetry. Scaffolding events (message_start,
-    // empty blocks) are buffered in `prelude` rather than yielded, so a stream
-    // that opens and then goes silent is still retryable; once real content is
-    // committed we never retry, since the REPL would replay those tokens.
+    // stream dies before any user-visible output escapes. Handshake 5xx still
+    // goes through withTransientOpenAIRetry. Scaffolding and thinking-only
+    // events stay in `prelude` so a long think that then goes silent is still
+    // retryable; once text/tool content is committed we never retry, since the
+    // REPL would replay those tokens.
     const streamMaxRetries = getOpenAIStreamMaxRetries()
     let streamRetries = 0
     const collectedMessages: AssistantMessage[] = []
@@ -160,6 +161,7 @@ export async function* queryModelGrok(
       let completed = false
       let committed = false
       const prelude: StreamEvent[] = []
+      const thinkingLoop = createThinkingLoopDetector()
       usage = { ...EMPTY_USAGE }
 
       const {
@@ -273,6 +275,18 @@ export async function* queryModelGrok(
                   block.thinking =
                     ((block.thinking as string | undefined) || '') +
                     delta.thinking
+                  if (thinkingLoop.push(delta.thinking)) {
+                    throw new ProviderStreamError(
+                      'Thinking loop detected: the same planning sentence repeated until the stream was cut.',
+                      {
+                        kind: 'protocol',
+                        retryable: false,
+                        terminal: true,
+                        completionState: 'open',
+                        requestId,
+                      },
+                    )
+                  }
                 } else if (delta.type === 'signature_delta') {
                   block.signature = delta.signature
                 }
