@@ -37,6 +37,14 @@ export type ModelCatalogEntry = {
     supports1mBeta: boolean
     /** 官方 `supports_1m_suffix`：只决定显示名是否追加 " (1M context)"。 */
     supports1mSuffix: boolean
+    /**
+     * 官方 `native_1m_3p`：原生 1M 在三方平台上是否也成立。
+     *
+     * `native_1m` 只在一方直连时无条件成立；bedrock / vertex / foundry 上
+     * 官方要求这里逐 provider 为 true。缺省即三方没有原生 1M —— 官方全表
+     * 只有 sonnet-5 带这个字段。
+     */
+    native1m3p?: { bedrock?: boolean; vertex?: boolean; foundry?: boolean }
   }
   /** 官方 `max_output_tokens`。 */
   maxOutputTokens: { default: number; upper: number }
@@ -258,8 +266,9 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     context: {
       window: 1_000_000,
       native1m: true,
-      supports1mBeta: false,
+      supports1mBeta: true,
       supports1mSuffix: false,
+      native1m3p: { bedrock: true, vertex: true, foundry: true },
     },
     maxOutputTokens: { default: 64_000, upper: 128_000 },
     pricing: 'tier_3_15',

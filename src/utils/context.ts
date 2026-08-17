@@ -3,13 +3,17 @@ import { CONTEXT_1M_BETA_HEADER } from '../constants/betas.js'
 import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
-import { lookupModelCatalog } from './model/configs.js'
+import { lookupModelCatalog, type ModelCatalogEntry } from './model/configs.js'
 import { resolveAntModel } from './model/antModels.js'
 import {
   CHATGPT_CODEX_MAX_OUTPUT_TOKENS,
   getChatGPTModelContextWindow,
 } from './model/chatgptModels.js'
 import { getModelCapability } from './model/modelCapabilities.js'
+import {
+  getAPIProvider,
+  isFirstPartyAnthropicBaseUrl,
+} from './model/providers.js'
 
 // Model context window size (200k tokens for all models right now)
 export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
@@ -62,6 +66,38 @@ export function modelSupports1M(model: string): boolean {
   return entry.context.native1m || entry.context.supports1mBeta
 }
 
+/**
+ * 原生 1M 是否在**当前 provider** 上成立。镜像官方的判定：`native_1m` 只在
+ * 一方直连（且 base URL 确实是官方端点）时无条件成立，bedrock / vertex /
+ * foundry 要逐 provider 查 `native_1m_3p`。
+ *
+ * dev 此前对所有 native_1m 机型无条件返回 1M —— 实测 Bedrock 上
+ * opus-4-7 / 4-8 / opus-5 / fable-5 官方是 200k 而 dev 给 1M，autocompact
+ * 因此迟迟不触发，最后吃真实 413。与 sonnet-4-5 那次高估是同一类错误，
+ * 只是换到了 provider 这条轴上。
+ *
+ * openai / gemini / grok 是 dev 自有的兼容层，官方表里没有对应 provider：
+ * 走到这里说明用户把一个 claude-* 机型名指到了三方端点，其 1M 能力无从判断，
+ * 保持改造前的行为不做收紧。
+ */
+function hasNative1mHere(entry: ModelCatalogEntry | undefined): boolean {
+  if (!entry?.context.native1m) {
+    return false
+  }
+  const provider = getAPIProvider()
+  if (provider === 'firstParty') {
+    return isFirstPartyAnthropicBaseUrl()
+  }
+  if (
+    provider === 'bedrock' ||
+    provider === 'vertex' ||
+    provider === 'foundry'
+  ) {
+    return entry.context.native1m3p?.[provider] === true
+  }
+  return true
+}
+
 export function getContextWindowForModel(
   model: string,
   betas?: string[],
@@ -98,7 +134,7 @@ export function getContextWindowForModel(
   ) {
     return 1_000_000
   }
-  if (catalogEntry?.context.native1m && !is1mContextDisabled()) {
+  if (hasNative1mHere(catalogEntry) && !is1mContextDisabled()) {
     return 1_000_000
   }
 
@@ -143,7 +179,11 @@ export function getContextWindowForModel(
       return antModel.contextWindow
     }
   }
-  return catalogEntry?.context.window ?? MODEL_CONTEXT_WINDOW_DEFAULT
+  // 官方兜底是常量 200k，不回落到 per-model 的 `context.window` —— 后者是
+  // 该机型的"标称窗口"（native-1M 机型写的就是 1000000），拿它当兜底会把上面
+  // 那道 provider 门控整个抵消掉：Bedrock 上 opus-4-7 明明没有原生 1M，却
+  // 因为标称值是 1M 而又被判回 1M。
+  return MODEL_CONTEXT_WINDOW_DEFAULT
 }
 
 export function getSonnet1mExpTreatmentEnabled(model: string): boolean {

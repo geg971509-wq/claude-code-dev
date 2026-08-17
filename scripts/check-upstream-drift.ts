@@ -21,6 +21,11 @@
  *   bun scripts/check-upstream-drift.ts --bundle=/path/to/cli.js
  *   CLAUDE_OFFICIAL_BUNDLE=/path/to/cli.js bun run check:drift
  *
+ * 已知未覆盖的官方字段（刻意不补）：`fallback_3p`（逐模型 3P 降级链）、
+ * `eager_input_streaming`、`vertex_region_env_var`、`advisor_rank`。这几个在
+ * 官方 bundle 里全部只出现在数据行与 zod schema 中，查不到任何消费点 ——
+ * 官方自己都没用，录进 dev 只会是无人读取的死数据。
+ *
  * 这是报告工具，不是棘轮 —— 漂移是常态，不进 precheck。
  */
 import { Glob } from 'bun'
@@ -138,6 +143,26 @@ const OFFICIAL_ID_TO_CANONICAL: Record<string, string> = {
 }
 
 /**
+ * 按大括号配对取出 `key: { ... }` 整块 —— 官方的 `context` 里嵌着
+ * `native_1m_3p: { bedrock, vertex, foundry }`，用 `\{([^}]*)\}` 会在嵌套
+ * 对象的第一个 `}` 处截断，把排在它**之后**的字段（sonnet-5 的
+ * `supports_1m_beta`）整个吞掉，于是对账器拿着残缺的"官方值"与 dev 比对、
+ * 报告一切正常。同一个文件里第二次栽在"正则跨结构取值"上了。
+ */
+function extractBlock(seg: string, key: string): string {
+  const at = seg.indexOf(`${key}: {`)
+  if (at < 0) return ''
+  let depth = 0
+  const open = seg.indexOf('{', at)
+  for (let i = open; i < seg.length; i++) {
+    if (seg[i] === '{') depth++
+    else if (seg[i] === '}') depth--
+    if (depth === 0) return seg.slice(open, i + 1)
+  }
+  return ''
+}
+
+/**
  * 只在 `provider_ids: { ... }` 这一段内取值，且把 `null` 当作缺省。
  *
  * 早先是直接在整段 3000 字符窗口里 `/bedrock: "([^"]+)"/` —— 一旦某个机型的
@@ -150,7 +175,7 @@ function parseProviderIds(seg: string): {
   bedrock: string | undefined
   vertex: string | undefined
 } {
-  const block = /provider_ids: \{([^}]*)\}/.exec(seg)?.[1] ?? ''
+  const block = extractBlock(seg, 'provider_ids')
   const pick = (field: string): string | undefined =>
     new RegExp(`\\b${field}: "([^"]+)"`).exec(block)?.[1]
   return {
@@ -166,7 +191,7 @@ export function parseOfficialModelTable(bundle: string): OfficialModel[] {
     /id: "(claude-[a-z0-9-]+)",\s*\n?\s*family:/g,
   )) {
     const seg = bundle.slice(m.index, m.index + 3000).replace(/\s+/g, ' ')
-    const ctx = /context: \{ ([^}]*) \}/.exec(seg)?.[1] ?? ''
+    const ctx = extractBlock(seg, 'context')
     const out2 = /max_output_tokens: \{ default: (\d+), upper: (\d+) \}/.exec(
       seg,
     )

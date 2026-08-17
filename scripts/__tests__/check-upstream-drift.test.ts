@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { diffSets, extractSet } from '../check-upstream-drift.js'
+import {
+  diffSets,
+  extractSet,
+  parseOfficialModelTable,
+} from '../check-upstream-drift.js'
 
 describe('extractSet', () => {
   test('collects every match, deduplicated', () => {
@@ -32,5 +36,36 @@ describe('diffSets', () => {
       onlyOfficial: ['a', 'b'],
       onlyDev: ['z'],
     })
+  })
+})
+
+describe('parseOfficialModelTable', () => {
+  // 这个解析器两次栽在「正则跨结构取值」上：先是 provider_ids 里的 null 让
+  // /bedrock: "([^"]+)"/ 抓到相邻机型的值，后是 context 里嵌套的
+  // native_1m_3p 让 \{([^}]*)\} 截断、吞掉排在它之后的 supports_1m_beta。
+  // 两次的失效方式都是**静默报平安**，比它监控的任何字段都危险。
+  const FRAGMENT = `
+    id: "claude-fake-1",
+    family: "fake",
+    provider_ids: { first_party: "claude-fake-1", bedrock: null, vertex: "vx-fake-1" },
+    context: { window: 1000000, native_1m: true, native_1m_3p: { bedrock: true }, supports_1m_beta: true },
+    max_output_tokens: { default: 64000, upper: 128000 },
+    pricing: "tier_5_25",
+    capabilities: ["effort"]
+  `
+
+  test('取得到嵌套对象之后的字段', () => {
+    const [model] = parseOfficialModelTable(FRAGMENT)
+    expect(model?.native1m).toBe(true)
+    // 截断的解析器会把这个漏成 false —— 正是 sonnet-5 被录错的那一格。
+    expect(model?.supports1mBeta).toBe(true)
+  })
+
+  test('provider 为 null 时不串到别的字段', () => {
+    const [model] = parseOfficialModelTable(FRAGMENT)
+    expect(model?.firstParty).toBe('claude-fake-1')
+    expect(model?.vertex).toBe('vx-fake-1')
+    // bedrock 是 null，必须是缺省而不是隔壁的值。
+    expect(model?.bedrock).toBeUndefined()
   })
 })
