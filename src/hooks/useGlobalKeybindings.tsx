@@ -91,7 +91,7 @@ export function GlobalKeybindingHandlers({
       // Only needed in the prompt screen — transcript mode already ignores
       // isBriefOnly (Messages.tsx filter is gated on !isTranscriptMode).
       const { isBriefEnabled } =
-        require('@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js') as typeof import('@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js');
+        require('src/tools/BriefTool/BriefTool.js') as typeof import('src/tools/BriefTool/BriefTool.js');
       if (!isBriefEnabled() && isBriefOnlyState && screen !== 'transcript') {
         setAppState(prev => {
           if (!prev.isBriefOnly) return prev;
@@ -156,7 +156,7 @@ export function GlobalKeybindingHandlers({
   const handleToggleBrief = useCallback(() => {
     if (feature('KAIROS') || feature('KAIROS_BRIEF')) {
       const { isBriefEnabled } =
-        require('@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js') as typeof import('@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js');
+        require('src/tools/BriefTool/BriefTool.js') as typeof import('src/tools/BriefTool/BriefTool.js');
       if (!isBriefEnabled() && !isBriefOnlyState) return;
       const next = !isBriefOnlyState;
       logEvent('tengu_brief_mode_toggled', {

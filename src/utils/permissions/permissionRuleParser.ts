@@ -1,7 +1,7 @@
 import { feature } from 'bun:bundle'
-import { AGENT_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/AgentTool/constants.js'
-import { TASK_OUTPUT_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/TaskOutputTool/constants.js'
-import { TASK_STOP_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/TaskStopTool/prompt.js'
+import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
+import { TASK_OUTPUT_TOOL_NAME } from 'src/tools/TaskOutputTool/constants.js'
+import { TASK_STOP_TOOL_NAME } from 'src/tools/TaskStopTool/prompt.js'
 import type { PermissionRuleValue } from './PermissionRule.js'
 
 // Dead code elimination: ant-only tool names are conditionally required so
@@ -9,7 +9,7 @@ import type { PermissionRuleValue } from './PermissionRule.js'
 const BRIEF_TOOL_NAME: string | null =
   feature('KAIROS') || feature('KAIROS_BRIEF')
     ? (
-        require('@claude-code-best/builtin-tools/tools/BriefTool/prompt.js') as typeof import('@claude-code-best/builtin-tools/tools/BriefTool/prompt.js')
+        require('src/tools/BriefTool/prompt.js') as typeof import('src/tools/BriefTool/prompt.js')
       ).BRIEF_TOOL_NAME
     : null
 

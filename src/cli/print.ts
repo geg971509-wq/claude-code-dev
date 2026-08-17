@@ -37,7 +37,7 @@ import {
   type AgentDefinition,
   isBuiltInAgent,
   parseAgentsFromJson,
-} from '@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js'
+} from 'src/tools/AgentTool/loadAgentsDir.js'
 import type { Message, NormalizedUserMessage } from 'src/types/message.js'
 import type { QueuedCommand } from 'src/types/textInputTypes.js'
 import {
@@ -200,7 +200,7 @@ import {
   getInitJsonSchema,
   setSdkAgentProgressSummariesEnabled,
 } from 'src/bootstrap/state.js'
-import { createSyntheticOutputTool } from '@claude-code-best/builtin-tools/tools/SyntheticOutputTool/SyntheticOutputTool.js'
+import { createSyntheticOutputTool } from 'src/tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import { parseSessionIdentifier } from 'src/utils/sessionUrl.js'
 import {
   hydrateRemoteSession,
@@ -376,7 +376,7 @@ const cronSchedulerModule =
 const cronJitterConfigModule =
   require('../utils/cronJitterConfig.js') as typeof import('../utils/cronJitterConfig.js')
 const cronGate =
-  require('@claude-code-best/builtin-tools/tools/ScheduleCronTool/prompt.js') as typeof import('@claude-code-best/builtin-tools/tools/ScheduleCronTool/prompt.js')
+  require('src/tools/ScheduleCronTool/prompt.js') as typeof import('src/tools/ScheduleCronTool/prompt.js')
 
 const SHUTDOWN_TEAM_PROMPT = `<system-reminder>
 You are running in non-interactive mode and cannot return a response to the user until your team is shut down.
@@ -2795,41 +2795,6 @@ function runHeadlessStreaming(
     }
   }
 
-  // Set up UDS inbox callback so the query loop is kicked off
-  // when a message arrives via the UDS socket in headless mode.
-  if (feature('UDS_INBOX')) {
-    const { drainInbox, setOnEnqueue } =
-      require('../utils/udsMessaging.js') as typeof import('../utils/udsMessaging.js')
-
-    const enqueueUdsInboxMessages = (): boolean => {
-      const entries = drainInbox()
-      for (const entry of entries) {
-        const value =
-          typeof entry.message.data === 'string'
-            ? entry.message.data
-            : jsonStringify(entry.message.data)
-        enqueue({
-          mode: 'prompt',
-          value,
-          uuid: randomUUID(),
-        })
-      }
-      return entries.length > 0
-    }
-
-    setOnEnqueue(() => {
-      if (!inputClosed) {
-        if (enqueueUdsInboxMessages()) {
-          void run()
-        }
-      }
-    })
-
-    if (enqueueUdsInboxMessages()) {
-      void run()
-    }
-  }
-
   // Cron scheduler: runs scheduled_tasks.json tasks in SDK/-p mode.
   // Mirrors REPL's useScheduledTasks hook. Fired prompts enqueue + kick
   // off run() directly — unlike REPL, there's no queue subscriber here
@@ -5165,7 +5130,7 @@ async function loadInitialMessages(
               getAgentDefinitionsWithOverrides,
               getActiveAgentsFromList,
             } =
-              require('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js') as typeof import('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js')
+              require('src/tools/AgentTool/loadAgentsDir.js') as typeof import('src/tools/AgentTool/loadAgentsDir.js')
             getAgentDefinitionsWithOverrides.cache.clear?.()
             const freshAgentDefs = await getAgentDefinitionsWithOverrides(
               getCwd(),
@@ -5366,7 +5331,7 @@ async function loadInitialMessages(
           process.stderr.write(warning + '\n')
           // Refresh agent definitions to reflect the mode switch
           const { getAgentDefinitionsWithOverrides, getActiveAgentsFromList } =
-            require('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js') as typeof import('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js')
+            require('src/tools/AgentTool/loadAgentsDir.js') as typeof import('src/tools/AgentTool/loadAgentsDir.js')
           getAgentDefinitionsWithOverrides.cache.clear?.()
           const freshAgentDefs = await getAgentDefinitionsWithOverrides(
             getCwd(),

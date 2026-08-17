@@ -10,16 +10,16 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../services/analytics/index.js'
-import { FILE_EDIT_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/FileEditTool/constants.js'
-import { inputSchema as editInputSchema } from '@claude-code-best/builtin-tools/tools/FileEditTool/types.js'
-import { FileReadTool } from '@claude-code-best/builtin-tools/tools/FileReadTool/FileReadTool.js'
-import { FILE_READ_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/FileReadTool/prompt.js'
-import { FileWriteTool } from '@claude-code-best/builtin-tools/tools/FileWriteTool/FileWriteTool.js'
-import { FILE_WRITE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/FileWriteTool/prompt.js'
-import { GlobTool } from '@claude-code-best/builtin-tools/tools/GlobTool/GlobTool.js'
-import { GLOB_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/GlobTool/prompt.js'
-import { GrepTool } from '@claude-code-best/builtin-tools/tools/GrepTool/GrepTool.js'
-import { GREP_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/GrepTool/prompt.js'
+import { FILE_EDIT_TOOL_NAME } from 'src/tools/FileEditTool/constants.js'
+import { inputSchema as editInputSchema } from 'src/tools/FileEditTool/types.js'
+import { FileReadTool } from 'src/tools/FileReadTool/FileReadTool.js'
+import { FILE_READ_TOOL_NAME } from 'src/tools/FileReadTool/prompt.js'
+import { FileWriteTool } from 'src/tools/FileWriteTool/FileWriteTool.js'
+import { FILE_WRITE_TOOL_NAME } from 'src/tools/FileWriteTool/prompt.js'
+import { GlobTool } from 'src/tools/GlobTool/GlobTool.js'
+import { GLOB_TOOL_NAME } from 'src/tools/GlobTool/prompt.js'
+import { GrepTool } from 'src/tools/GrepTool/GrepTool.js'
+import { GREP_TOOL_NAME } from 'src/tools/GrepTool/prompt.js'
 import type { HookCallback } from '../types/hooks.js'
 import {
   detectSessionFileType,
@@ -28,12 +28,6 @@ import {
   memoryScopeForPath,
 } from './memoryFileDetection.js'
 
-const teamMemPaths = feature('TEAMMEM')
-  ? (require('../memdir/teamMemPaths.js') as typeof import('../memdir/teamMemPaths.js'))
-  : null
-const teamMemWatcher = feature('TEAMMEM')
-  ? (require('../services/teamMemorySync/watcher.js') as typeof import('../services/teamMemorySync/watcher.js'))
-  : null
 const memoryShapeTelemetry = feature('MEMORY_SHAPE_TELEMETRY')
   ? (require('../memdir/memoryShapeTelemetry.js') as typeof import('../memdir/memoryShapeTelemetry.js'))
   : null
@@ -127,11 +121,7 @@ export function isMemoryFileAccess(
   }
 
   const filePath = getFilePathFromInput(toolName, toolInput)
-  if (
-    filePath &&
-    (isAutoMemFile(filePath) ||
-      (feature('TEAMMEM') && teamMemPaths!.isTeamMemFile(filePath)))
-  ) {
+  if (filePath && isAutoMemFile(filePath)) {
     return true
   }
 
@@ -182,28 +172,6 @@ async function handleSessionFileAccess(
         break
       case FILE_WRITE_TOOL_NAME:
         logEvent('tengu_memdir_file_write', { ...subagentProps })
-        break
-    }
-  }
-
-  // Team memory access tracking
-  if (feature('TEAMMEM') && filePath && teamMemPaths!.isTeamMemFile(filePath)) {
-    logEvent('tengu_team_mem_accessed', {
-      tool: input.tool_name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      ...subagentProps,
-    })
-
-    switch (input.tool_name) {
-      case FILE_READ_TOOL_NAME:
-        logEvent('tengu_team_mem_file_read', { ...subagentProps })
-        break
-      case FILE_EDIT_TOOL_NAME:
-        logEvent('tengu_team_mem_file_edit', { ...subagentProps })
-        teamMemWatcher?.notifyTeamMemoryWrite()
-        break
-      case FILE_WRITE_TOOL_NAME:
-        logEvent('tengu_team_mem_file_write', { ...subagentProps })
-        teamMemWatcher?.notifyTeamMemoryWrite()
         break
     }
   }

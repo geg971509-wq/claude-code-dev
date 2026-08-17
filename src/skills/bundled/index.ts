@@ -43,10 +43,6 @@ export function initBundledSkills(): void {
   registerCronListSkill()
   registerCronDeleteSkill()
   registerDreamSkill()
-  if (feature('REVIEW_ARTIFACT')) {
-    const { registerHunterSkill } = require('./hunter.js')
-    registerHunterSkill()
-  }
   if (feature('AGENT_TRIGGERS_REMOTE')) {
     const {
       registerScheduleRemoteAgentsSkill,

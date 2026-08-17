@@ -1,103 +1,94 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { toolMatchesName, type Tool, type Tools } from './Tool.js'
-import { AgentTool } from '@claude-code-best/builtin-tools/tools/AgentTool/AgentTool.js'
-import { SkillTool } from '@claude-code-best/builtin-tools/tools/SkillTool/SkillTool.js'
-import { BashTool } from '@claude-code-best/builtin-tools/tools/BashTool/BashTool.js'
-import { FileEditTool } from '@claude-code-best/builtin-tools/tools/FileEditTool/FileEditTool.js'
-import { FileReadTool } from '@claude-code-best/builtin-tools/tools/FileReadTool/FileReadTool.js'
-import { FileWriteTool } from '@claude-code-best/builtin-tools/tools/FileWriteTool/FileWriteTool.js'
-import { GlobTool } from '@claude-code-best/builtin-tools/tools/GlobTool/GlobTool.js'
-import { NotebookEditTool } from '@claude-code-best/builtin-tools/tools/NotebookEditTool/NotebookEditTool.js'
-import { WebFetchTool } from '@claude-code-best/builtin-tools/tools/WebFetchTool/WebFetchTool.js'
-import { TaskStopTool } from '@claude-code-best/builtin-tools/tools/TaskStopTool/TaskStopTool.js'
-import { BriefTool } from '@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js'
+import { AgentTool } from 'src/tools/AgentTool/AgentTool.js'
+import { SkillTool } from 'src/tools/SkillTool/SkillTool.js'
+import { BashTool } from 'src/tools/BashTool/BashTool.js'
+import { FileEditTool } from 'src/tools/FileEditTool/FileEditTool.js'
+import { FileReadTool } from 'src/tools/FileReadTool/FileReadTool.js'
+import { FileWriteTool } from 'src/tools/FileWriteTool/FileWriteTool.js'
+import { GlobTool } from 'src/tools/GlobTool/GlobTool.js'
+import { NotebookEditTool } from 'src/tools/NotebookEditTool/NotebookEditTool.js'
+import { WebFetchTool } from 'src/tools/WebFetchTool/WebFetchTool.js'
+import { TaskStopTool } from 'src/tools/TaskStopTool/TaskStopTool.js'
+import { BriefTool } from 'src/tools/BriefTool/BriefTool.js'
 // Dead code elimination: conditional import for ant-only tools
 const REPLTool =
   process.env.USER_TYPE === 'ant'
-    ? require('@claude-code-best/builtin-tools/tools/REPLTool/REPLTool.js')
-        .REPLTool
+    ? require('src/tools/REPLTool/REPLTool.js').REPLTool
     : null
 const SuggestBackgroundPRTool =
   process.env.USER_TYPE === 'ant'
-    ? require('@claude-code-best/builtin-tools/tools/SuggestBackgroundPRTool/SuggestBackgroundPRTool.js')
+    ? require('src/tools/SuggestBackgroundPRTool/SuggestBackgroundPRTool.js')
         .SuggestBackgroundPRTool
     : null
 const SleepTool =
   feature('PROACTIVE') || feature('KAIROS')
-    ? require('@claude-code-best/builtin-tools/tools/SleepTool/SleepTool.js')
-        .SleepTool
+    ? require('src/tools/SleepTool/SleepTool.js').SleepTool
     : null
 const cronTools = [
-  require('@claude-code-best/builtin-tools/tools/ScheduleCronTool/CronCreateTool.js')
-    .CronCreateTool,
-  require('@claude-code-best/builtin-tools/tools/ScheduleCronTool/CronDeleteTool.js')
-    .CronDeleteTool,
-  require('@claude-code-best/builtin-tools/tools/ScheduleCronTool/CronListTool.js')
-    .CronListTool,
+  require('src/tools/ScheduleCronTool/CronCreateTool.js').CronCreateTool,
+  require('src/tools/ScheduleCronTool/CronDeleteTool.js').CronDeleteTool,
+  require('src/tools/ScheduleCronTool/CronListTool.js').CronListTool,
 ]
 const RemoteTriggerTool = feature('AGENT_TRIGGERS_REMOTE')
-  ? require('@claude-code-best/builtin-tools/tools/RemoteTriggerTool/RemoteTriggerTool.js')
+  ? require('src/tools/RemoteTriggerTool/RemoteTriggerTool.js')
       .RemoteTriggerTool
   : null
 const MonitorTool = feature('MONITOR_TOOL')
-  ? require('@claude-code-best/builtin-tools/tools/MonitorTool/MonitorTool.js')
-      .MonitorTool
+  ? require('src/tools/MonitorTool/MonitorTool.js').MonitorTool
   : null
 const SendUserFileTool = feature('KAIROS')
-  ? require('@claude-code-best/builtin-tools/tools/SendUserFileTool/SendUserFileTool.js')
-      .SendUserFileTool
+  ? require('src/tools/SendUserFileTool/SendUserFileTool.js').SendUserFileTool
   : null
 const PushNotificationTool =
   feature('KAIROS') || feature('KAIROS_PUSH_NOTIFICATION')
-    ? require('@claude-code-best/builtin-tools/tools/PushNotificationTool/PushNotificationTool.js')
+    ? require('src/tools/PushNotificationTool/PushNotificationTool.js')
         .PushNotificationTool
     : null
 const SubscribePRTool = feature('KAIROS_GITHUB_WEBHOOKS')
-  ? require('@claude-code-best/builtin-tools/tools/SubscribePRTool/SubscribePRTool.js')
-      .SubscribePRTool
+  ? require('src/tools/SubscribePRTool/SubscribePRTool.js').SubscribePRTool
   : null
-import { TaskOutputTool } from '@claude-code-best/builtin-tools/tools/TaskOutputTool/TaskOutputTool.js'
-import { WebSearchTool } from '@claude-code-best/builtin-tools/tools/WebSearchTool/WebSearchTool.js'
-import { TodoWriteTool } from '@claude-code-best/builtin-tools/tools/TodoWriteTool/TodoWriteTool.js'
-import { ExitPlanModeV2Tool } from '@claude-code-best/builtin-tools/tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
-import { ArtifactTool } from '@claude-code-best/builtin-tools/tools/ArtifactTool/ArtifactTool.js'
-import { TestingPermissionTool } from '@claude-code-best/builtin-tools/tools/testing/TestingPermissionTool.js'
-import { GrepTool } from '@claude-code-best/builtin-tools/tools/GrepTool/GrepTool.js'
-import { TungstenTool } from '@claude-code-best/builtin-tools/tools/TungstenTool/TungstenTool.js'
+import { TaskOutputTool } from 'src/tools/TaskOutputTool/TaskOutputTool.js'
+import { WebSearchTool } from 'src/tools/WebSearchTool/WebSearchTool.js'
+import { TodoWriteTool } from 'src/tools/TodoWriteTool/TodoWriteTool.js'
+import { ExitPlanModeV2Tool } from 'src/tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
+import { ArtifactTool } from 'src/tools/ArtifactTool/ArtifactTool.js'
+import { TestingPermissionTool } from 'src/tools/testing/TestingPermissionTool.js'
+import { GrepTool } from 'src/tools/GrepTool/GrepTool.js'
+import { TungstenTool } from 'src/tools/TungstenTool/TungstenTool.js'
 // Lazy require to break circular dependency: tools.ts -> TeamCreateTool/TeamDeleteTool -> ... -> tools.ts
 const getTeamCreateTool = () =>
-  require('@claude-code-best/builtin-tools/tools/TeamCreateTool/TeamCreateTool.js')
-    .TeamCreateTool as typeof import('@claude-code-best/builtin-tools/tools/TeamCreateTool/TeamCreateTool.js').TeamCreateTool
+  require('src/tools/TeamCreateTool/TeamCreateTool.js')
+    .TeamCreateTool as typeof import('src/tools/TeamCreateTool/TeamCreateTool.js').TeamCreateTool
 const getTeamDeleteTool = () =>
-  require('@claude-code-best/builtin-tools/tools/TeamDeleteTool/TeamDeleteTool.js')
-    .TeamDeleteTool as typeof import('@claude-code-best/builtin-tools/tools/TeamDeleteTool/TeamDeleteTool.js').TeamDeleteTool
+  require('src/tools/TeamDeleteTool/TeamDeleteTool.js')
+    .TeamDeleteTool as typeof import('src/tools/TeamDeleteTool/TeamDeleteTool.js').TeamDeleteTool
 const getSendMessageTool = () =>
-  require('@claude-code-best/builtin-tools/tools/SendMessageTool/SendMessageTool.js')
-    .SendMessageTool as typeof import('@claude-code-best/builtin-tools/tools/SendMessageTool/SendMessageTool.js').SendMessageTool
-import { AskUserQuestionTool } from '@claude-code-best/builtin-tools/tools/AskUserQuestionTool/AskUserQuestionTool.js'
-import { LSPTool } from '@claude-code-best/builtin-tools/tools/LSPTool/LSPTool.js'
-import { ListMcpResourcesTool } from '@claude-code-best/builtin-tools/tools/ListMcpResourcesTool/ListMcpResourcesTool.js'
-import { ReadMcpResourceTool } from '@claude-code-best/builtin-tools/tools/ReadMcpResourceTool/ReadMcpResourceTool.js'
-import { SearchExtraToolsTool } from '@claude-code-best/builtin-tools/tools/SearchExtraToolsTool/SearchExtraToolsTool.js'
-import { ExecuteTool } from '@claude-code-best/builtin-tools/tools/ExecuteTool/ExecuteTool.js'
-import { EnterPlanModeTool } from '@claude-code-best/builtin-tools/tools/EnterPlanModeTool/EnterPlanModeTool.js'
-import { EnterWorktreeTool } from '@claude-code-best/builtin-tools/tools/EnterWorktreeTool/EnterWorktreeTool.js'
-import { ExitWorktreeTool } from '@claude-code-best/builtin-tools/tools/ExitWorktreeTool/ExitWorktreeTool.js'
-import { ConfigTool } from '@claude-code-best/builtin-tools/tools/ConfigTool/ConfigTool.js'
+  require('src/tools/SendMessageTool/SendMessageTool.js')
+    .SendMessageTool as typeof import('src/tools/SendMessageTool/SendMessageTool.js').SendMessageTool
+import { AskUserQuestionTool } from 'src/tools/AskUserQuestionTool/AskUserQuestionTool.js'
+import { LSPTool } from 'src/tools/LSPTool/LSPTool.js'
+import { ListMcpResourcesTool } from 'src/tools/ListMcpResourcesTool/ListMcpResourcesTool.js'
+import { ReadMcpResourceTool } from 'src/tools/ReadMcpResourceTool/ReadMcpResourceTool.js'
+import { SearchExtraToolsTool } from 'src/tools/SearchExtraToolsTool/SearchExtraToolsTool.js'
+import { ExecuteTool } from 'src/tools/ExecuteTool/ExecuteTool.js'
+import { EnterPlanModeTool } from 'src/tools/EnterPlanModeTool/EnterPlanModeTool.js'
+import { EnterWorktreeTool } from 'src/tools/EnterWorktreeTool/EnterWorktreeTool.js'
+import { ExitWorktreeTool } from 'src/tools/ExitWorktreeTool/ExitWorktreeTool.js'
+import { ConfigTool } from 'src/tools/ConfigTool/ConfigTool.js'
 const GoalTool = feature('GOAL')
-  ? require('@claude-code-best/builtin-tools/tools/GoalTool/GoalTool.js')
-      .GoalTool
+  ? require('src/tools/GoalTool/GoalTool.js').GoalTool
   : null
-import { LocalMemoryRecallTool } from '@claude-code-best/builtin-tools/tools/LocalMemoryRecallTool/LocalMemoryRecallTool.js'
-import { VaultHttpFetchTool } from '@claude-code-best/builtin-tools/tools/VaultHttpFetchTool/VaultHttpFetchTool.js'
-import { TaskCreateTool } from '@claude-code-best/builtin-tools/tools/TaskCreateTool/TaskCreateTool.js'
-import { TaskGetTool } from '@claude-code-best/builtin-tools/tools/TaskGetTool/TaskGetTool.js'
-import { TaskUpdateTool } from '@claude-code-best/builtin-tools/tools/TaskUpdateTool/TaskUpdateTool.js'
-import { TaskListTool } from '@claude-code-best/builtin-tools/tools/TaskListTool/TaskListTool.js'
+import { LocalMemoryRecallTool } from 'src/tools/LocalMemoryRecallTool/LocalMemoryRecallTool.js'
+import { VaultHttpFetchTool } from 'src/tools/VaultHttpFetchTool/VaultHttpFetchTool.js'
+import { TaskCreateTool } from 'src/tools/TaskCreateTool/TaskCreateTool.js'
+import { TaskGetTool } from 'src/tools/TaskGetTool/TaskGetTool.js'
+import { TaskUpdateTool } from 'src/tools/TaskUpdateTool/TaskUpdateTool.js'
+import { TaskListTool } from 'src/tools/TaskListTool/TaskListTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { isSearchExtraToolsEnabledOptimistic } from './utils/searchExtraTools.js'
 import { isTodoV2Enabled } from './utils/tasks.js'
-import { setAgentLaunchThrottle } from '@claude-code-best/builtin-tools/tools/AgentTool/launchThrottle.js'
+import { setAgentLaunchThrottle } from 'src/tools/AgentTool/launchThrottle.js'
 import { acquireLaunchSlot } from './services/api/agentLaunchController.js'
 
 // Wire the agent launch throttle (src) into builtin-tools' runAgent without
@@ -107,10 +98,10 @@ setAgentLaunchThrottle(acquireLaunchSlot)
 // Dead code elimination: conditional import for CLAUDE_CODE_VERIFY_PLAN
 const VerifyPlanExecutionTool =
   process.env.CLAUDE_CODE_VERIFY_PLAN === 'true'
-    ? require('@claude-code-best/builtin-tools/tools/VerifyPlanExecutionTool/VerifyPlanExecutionTool.js')
+    ? require('src/tools/VerifyPlanExecutionTool/VerifyPlanExecutionTool.js')
         .VerifyPlanExecutionTool
     : null
-import { SYNTHETIC_OUTPUT_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/SyntheticOutputTool/SyntheticOutputTool.js'
+import { SYNTHETIC_OUTPUT_TOOL_NAME } from 'src/tools/SyntheticOutputTool/SyntheticOutputTool.js'
 export {
   ALL_AGENT_DISALLOWED_TOOLS,
   CUSTOM_AGENT_DISALLOWED_TOOLS,
@@ -120,39 +111,24 @@ export {
 import { feature } from 'bun:bundle'
 // Dead code elimination: conditional import for OVERFLOW_TEST_TOOL
 const OverflowTestTool = feature('OVERFLOW_TEST_TOOL')
-  ? require('@claude-code-best/builtin-tools/tools/OverflowTestTool/OverflowTestTool.js')
-      .OverflowTestTool
-  : null
-const CtxInspectTool = feature('CONTEXT_COLLAPSE')
-  ? require('@claude-code-best/builtin-tools/tools/CtxInspectTool/CtxInspectTool.js')
-      .CtxInspectTool
+  ? require('src/tools/OverflowTestTool/OverflowTestTool.js').OverflowTestTool
   : null
 const TerminalCaptureTool = feature('TERMINAL_PANEL')
-  ? require('@claude-code-best/builtin-tools/tools/TerminalCaptureTool/TerminalCaptureTool.js')
+  ? require('src/tools/TerminalCaptureTool/TerminalCaptureTool.js')
       .TerminalCaptureTool
   : null
 const WebBrowserTool = feature('WEB_BROWSER_TOOL')
-  ? require('@claude-code-best/builtin-tools/tools/WebBrowserTool/WebBrowserTool.js')
-      .WebBrowserTool
+  ? require('src/tools/WebBrowserTool/WebBrowserTool.js').WebBrowserTool
   : null
 const coordinatorModeModule = feature('COORDINATOR_MODE')
   ? (require('./coordinator/coordinatorMode.js') as typeof import('./coordinator/coordinatorMode.js'))
   : null
 const SnipTool = feature('HISTORY_SNIP')
-  ? require('@claude-code-best/builtin-tools/tools/SnipTool/SnipTool.js')
-      .SnipTool
+  ? require('src/tools/SnipTool/SnipTool.js').SnipTool
   : null
 const DiscoverSkillsTool = feature('EXPERIMENTAL_SKILL_SEARCH')
-  ? require('@claude-code-best/builtin-tools/tools/DiscoverSkillsTool/DiscoverSkillsTool.js')
+  ? require('src/tools/DiscoverSkillsTool/DiscoverSkillsTool.js')
       .DiscoverSkillsTool
-  : null
-const ReviewArtifactTool = feature('REVIEW_ARTIFACT')
-  ? require('@claude-code-best/builtin-tools/tools/ReviewArtifactTool/ReviewArtifactTool.js')
-      .ReviewArtifactTool
-  : null
-const ListPeersTool = feature('UDS_INBOX')
-  ? require('@claude-code-best/builtin-tools/tools/ListPeersTool/ListPeersTool.js')
-      .ListPeersTool
   : null
 const WorkflowTool = feature('WORKFLOW_SCRIPTS')
   ? require('./workflow/wiring.js').createWorkflowToolCore()
@@ -168,12 +144,12 @@ import {
   REPL_TOOL_NAME,
   REPL_ONLY_TOOLS,
   isReplModeEnabled,
-} from '@claude-code-best/builtin-tools/tools/REPLTool/constants.js'
+} from 'src/tools/REPLTool/constants.js'
 export { REPL_ONLY_TOOLS }
 const getPowerShellTool = () => {
   if (!isPowerShellToolEnabled()) return null
   return (
-    require('@claude-code-best/builtin-tools/tools/PowerShellTool/PowerShellTool.js') as typeof import('@claude-code-best/builtin-tools/tools/PowerShellTool/PowerShellTool.js')
+    require('src/tools/PowerShellTool/PowerShellTool.js') as typeof import('src/tools/PowerShellTool/PowerShellTool.js')
   ).PowerShellTool
 }
 
@@ -245,12 +221,10 @@ export function getAllBaseTools(): Tools {
       ? [TaskCreateTool, TaskGetTool, TaskUpdateTool, TaskListTool]
       : []),
     ...(OverflowTestTool ? [OverflowTestTool] : []),
-    ...(CtxInspectTool ? [CtxInspectTool] : []),
     ...(TerminalCaptureTool ? [TerminalCaptureTool] : []),
     ...(isEnvTruthy(process.env.ENABLE_LSP_TOOL) ? [LSPTool] : []),
     ...(isWorktreeModeEnabled() ? [EnterWorktreeTool, ExitWorktreeTool] : []),
     getSendMessageTool(),
-    ...(ListPeersTool ? [ListPeersTool] : []),
     getTeamCreateTool(),
     getTeamDeleteTool(),
     ...(VerifyPlanExecutionTool ? [VerifyPlanExecutionTool] : []),
@@ -264,7 +238,6 @@ export function getAllBaseTools(): Tools {
     ...(SendUserFileTool ? [SendUserFileTool] : []),
     ...(PushNotificationTool ? [PushNotificationTool] : []),
     ...(SubscribePRTool ? [SubscribePRTool] : []),
-    ...(ReviewArtifactTool ? [ReviewArtifactTool] : []),
     ...(getPowerShellTool() ? [getPowerShellTool()] : []),
     ...(SnipTool ? [SnipTool] : []),
     ...(DiscoverSkillsTool ? [DiscoverSkillsTool] : []),

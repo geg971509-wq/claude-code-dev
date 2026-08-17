@@ -10,7 +10,7 @@ const projectRoot = dirname(fileURLToPath(import.meta.url))
 
 const acknowledgedBuildWarnings = [
   'src/utils/sandbox/sandbox-adapter.ts',
-  'packages/builtin-tools/src/tools/ToolSearchTool/prompt.ts',
+  'src/tools/ToolSearchTool/prompt.ts',
   'src/utils/claudemd.ts',
   'src/services/SessionMemory/sessionMemoryUtils.ts',
   'src/commands/logout/logout.tsx',

@@ -29,7 +29,7 @@ import type {
 import type {
   AgentDefinition,
   AgentDefinitionsResult,
-} from '@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js'
+} from 'src/tools/AgentTool/loadAgentsDir.js'
 import type {
   AssistantMessage,
   AttachmentMessage,
@@ -300,13 +300,6 @@ export type ToolUseContext = {
    * resumeAgentBackground threads one reconstructed from sidechain records.
    */
   contentReplacementState?: ContentReplacementState
-  /**
-   * Parent's rendered system prompt bytes, frozen at turn start.
-   * Used by fork subagents to share the parent's prompt cache — re-calling
-   * getSystemPrompt() at fork-spawn time can diverge (GrowthBook cold→warm)
-   * and bust the cache. See forkSubagent.ts.
-   */
-  renderedSystemPrompt?: SystemPrompt
 }
 
 // Re-export ToolProgressData from centralized location

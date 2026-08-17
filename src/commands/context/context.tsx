@@ -17,11 +17,6 @@ import { renderToAnsiString } from '../../utils/staticRender.js';
  */
 function toApiView(messages: Message[]): Message[] {
   let view = getMessagesAfterCompactBoundary(messages);
-  if (feature('CONTEXT_COLLAPSE')) {
-    const { projectView } =
-      require('../../services/contextCollapse/operations.js') as typeof import('../../services/contextCollapse/operations.js');
-    view = projectView(view);
-  }
   return view;
 }
 

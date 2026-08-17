@@ -10,7 +10,7 @@ import type {
 import {
   AGENT_TOOL_NAME,
   LEGACY_AGENT_TOOL_NAME,
-} from '@claude-code-best/builtin-tools/tools/AgentTool/constants.js'
+} from 'src/tools/AgentTool/constants.js'
 import { getAnthropicApiKeyWithSource } from '../auth.js'
 import { getCwd } from '../cwd.js'
 import { getFastModeState } from '../fastMode.js'
@@ -83,11 +83,6 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
       source: plugin.source,
     })),
     uuid: randomUUID(),
-  }
-  // Hidden from public SDK types — ant-only UDS messaging socket path
-  if (feature('UDS_INBOX')) {
-    ;(initMessage as Record<string, unknown>).messaging_socket_path =
-      require('../udsMessaging.js').getUdsMessagingSocketPath()
   }
   initMessage.fast_mode_state = getFastModeState(inputs.model, inputs.fastMode)
   return initMessage

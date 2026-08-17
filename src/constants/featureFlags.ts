@@ -44,7 +44,6 @@ export const FEATURE_FLAGS = [
   'COMPACT_TAIL_PRESERVATION', // compact 后逐字保留最近 N 个 API round（借鉴 opencode tail preservation）
   'COMPACTION_REMINDERS', // 压缩提醒
   'CONNECTOR_TEXT', // Connector 文本块类型，扩展 API 内容格式
-  'CONTEXT_COLLAPSE', // 上下文折叠（已禁用：空壳 stub）
   'COORDINATOR_MODE', // 多 worker 编排模式
   'COWORKER_TYPE_TELEMETRY', // Coworker 类型遥测
   'DAEMON', // 守护进程模式，长驻 supervisor 管理后台 worker
@@ -57,7 +56,6 @@ export const FEATURE_FLAGS = [
   'EXTRACT_MEMORIES', // 每次 turn 结束提取记忆
   'FILE_PERSISTENCE', // 文件持久化
   'FILE_MUTATION_QUEUE', // 同文件 mutation 串行化（跨 query loop 文件写互斥）
-  'FORK_SUBAGENT', // fork 子代理（已由 Agent tool 等效实现）
   'GOAL', // 持久线程目标命令（src/services/goal）
   'HARD_FAIL', // 硬失败模式
   'HISTORY_PICKER', // 历史记录选择器
@@ -70,7 +68,6 @@ export const FEATURE_FLAGS = [
   'KAIROS_CHANNELS', // Kairos 通知渠道
   'KAIROS_GITHUB_WEBHOOKS', // Kairos GitHub webhook 触发
   'KAIROS_PUSH_NOTIFICATION', // Kairos 推送通知
-  'LAN_PIPES', // 局域网管道（已禁用：依赖 UDS_INBOX）
   'LODESTONE', // 上下文锚点，优化长对话相关性检索
   'MCP_RICH_OUTPUT', // MCP 富输出渲染
   'MCP_SKILLS', // MCP 技能支持
@@ -89,7 +86,6 @@ export const FEATURE_FLAGS = [
   'PROMPT_CACHE_BREAK_DETECTION', // 检测 prompt cache 是否被打破
   'QUICK_SEARCH', // 快速搜索
   'REACTIVE_COMPACT', // 响应式压缩
-  'REVIEW_ARTIFACT', // 代码审查产物（已禁用：API 无响应待排查）
   'RUN_SKILL_GENERATOR', // 技能生成器
   'SHOT_STATS', // 单次请求统计信息收集
   'SKILL_IMPROVEMENT', // 技能改进
@@ -99,7 +95,6 @@ export const FEATURE_FLAGS = [
   'SSH_REMOTE', // SSH 远程连接，本地 REPL + 远端工具执行
   'STREAMLINED_OUTPUT', // 精简输出模式
   'SUBAGENT_SUMMARY_GATE', // 子代理摘要质量门（最终文本过短时追加一轮扩写）
-  'TEAMMEM', // Team Memory（已禁用：依赖 COORDINATOR_MODE）
   'TEMPLATES', // 模板任务（new/list/reply 子命令）
   'TERMINAL_PANEL', // 终端面板
   'TOKEN_BUDGET', // Token 预算管理与控制
@@ -108,7 +103,6 @@ export const FEATURE_FLAGS = [
   'TRANSCRIPT_CLASSIFIER', // 对话分类器，用于标注会话类型
   'TREE_SITTER_BASH', // tree-sitter Bash 解析
   'TREE_SITTER_BASH_SHADOW', // tree-sitter Bash 影子模式（对照验证）
-  'UDS_INBOX', // 进程间通信管道（已禁用：构建后 nodejs 环境卡住）
   'ULTRAPLAN', // 超级规划模式，深度分析后生成实施计划
   'ULTRATHINK', // 超深度思考模式，增加推理链长度
   'UNATTENDED_RETRY', // 无人值守重试

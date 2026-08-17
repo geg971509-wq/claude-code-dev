@@ -2,7 +2,7 @@ import { feature } from 'bun:bundle'
 import type { QuerySource } from '../../constants/querySource.js'
 import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
 import { getUserContext } from '../../context.js'
-import { clearSpeculativeChecks } from '@claude-code-best/builtin-tools/tools/BashTool/bashPermissions.js'
+import { clearSpeculativeChecks } from 'src/tools/BashTool/bashPermissions.js'
 import { clearClassifierApprovals } from '../../utils/classifierApprovals.js'
 import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
 import { logError } from '../../utils/log.js'
@@ -51,13 +51,6 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
     querySource === 'sdk'
 
   resetMicrocompactState()
-  if (feature('CONTEXT_COLLAPSE')) {
-    if (isMainThreadCompact) {
-      ;(
-        require('../contextCollapse/index.js') as typeof import('../contextCollapse/index.js')
-      ).resetContextCollapse()
-    }
-  }
   if (isMainThreadCompact) {
     // getUserContext is a memoized outer layer wrapping getClaudeMds() →
     // getMemoryFiles(). If only the inner getMemoryFiles cache is cleared,

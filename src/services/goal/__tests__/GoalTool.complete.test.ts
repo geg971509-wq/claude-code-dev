@@ -13,7 +13,7 @@ mock.module('src/services/goal/goalStorage.js', () => ({
   restoreGoalFromSession: () => null,
 }))
 
-import { GoalTool } from '@claude-code-best/builtin-tools/tools/GoalTool/GoalTool.js'
+import { GoalTool } from 'src/tools/GoalTool/GoalTool.js'
 import {
   _clearAllGoalsForTesting,
   setGoal,

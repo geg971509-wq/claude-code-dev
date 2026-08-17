@@ -83,7 +83,7 @@ bun run docs:dev
 - **为什么 Vite 必须代码分割**: Bun/JSC 会全量解析单个大 JS 文件的 bytecode 和 JIT，单文件 17MB 产物导致 RSS 暴涨至 ~1GB（Node/V8 懒解析仅需 ~220MB）。代码分割为 600+ 小 chunk 后 Bun 按需加载，`--version` RSS 从 966MB 降至 35MB，完整加载从 1GB+ 降至 ~500MB。
 - **Dev mode**: `scripts/dev.ts` 通过 Bun `-d` flag 注入 `MACRO.*` defines，并以 `--feature` 启用 `DEFAULT_BUILD_FEATURES`（与 build 同一列表，见 `scripts/defines.ts`），另可用 `FEATURE_<NAME>=1` 追加。裸跑 `bun src/entrypoints/cli.tsx` 不会注入任何 feature（全关）。
 - **Module system**: ESM (`"type": "module"`), TSX with `react-jsx` transform.
-- **Monorepo**: Bun workspaces — 20 个 workspace packages（含 package.json，经 `workspace:*` 解析）+ 若干辅助目录 in `packages/`。
+- **Monorepo**: Bun workspaces — 19 个 workspace packages（含 package.json，经 `workspace:*` 解析）+ 若干辅助目录 in `packages/`。
 - **Lint/Format**: Biome (`biome.json`)。覆盖 `src/`、`scripts/`、`packages/` 全项目（含 `packages/@ant/`）。`bun run lint` / `bun run lint:fix` / `bun run format` / `bun run check` / `bun run check:fix`。42 条规则因 decompiled 代码被关闭，仅保留 `recommended` 基线。
 - **Pre-commit**: husky + lint-staged。提交时自动对暂存文件执行 `biome check --fix`（TS/JS）和 `biome format --write`（JSON）。
 - **CI Lint**: `ci.yml` 在依赖安装后、类型检查前执行 `bunx biome ci .`，lint 或格式化不达标则 CI 失败。
@@ -123,9 +123,9 @@ bun run docs:dev
 ### Tool System
 
 - **`src/Tool.ts`** — Tool interface definition (`Tool` type) and utilities (`findToolByName`, `toolMatchesName`).
-- **`src/tools.ts`** — Tool registry. Assembles the tool list; tools are imported from `@claude-code-best/builtin-tools` package. Some tools are conditionally loaded via `feature()` flags or `process.env.USER_TYPE`.
+- **`src/tools.ts`** — Tool registry. Assembles the tool list; tools live under `src/tools/`. Some tools are conditionally loaded via `feature()` flags or `process.env.USER_TYPE`.
 - **`src/constants/tools.ts`** — `CORE_TOOLS` 白名单常量（29 个核心工具名），用于 `isDeferredTool` 白名单制判定。
-- **`packages/builtin-tools/src/tools/`** — 60 个工具目录（含 shared/testing 等工具目录），通过 `@claude-code-best/builtin-tools` 包导出。主要分类：
+- **`src/tools/`** — 工具实现目录（含 shared/testing 等辅助目录），由 `src/tools/index.ts` 汇总导出。主要分类：
   - **文件操作**: FileEditTool, FileReadTool, FileWriteTool, GlobTool, GrepTool
   - **Shell/执行**: BashTool, PowerShellTool, REPLTool
   - **Agent 系统**: AgentTool, TaskCreateTool, TaskUpdateTool, TaskListTool, TaskGetTool
@@ -134,7 +134,7 @@ bun run docs:dev
   - **调度**: CronCreateTool, CronDeleteTool, CronListTool
   - **工具发现**: SearchExtraToolsTool, ExecuteExtraTool, SyntheticOutputTool（wire name 为 `StructuredOutput`）（CORE_TOOLS，用于延迟工具按需加载）
   - **其他**: LSPTool, ConfigTool, SkillTool, EnterWorktreeTool, ExitWorktreeTool 等
-- **`src/tools/shared/`** / **`packages/builtin-tools/src/tools/shared/`** — Tool 共享工具函数。
+- **`src/tools/shared/`** — Tool 共享工具函数。
 - **`src/services/searchExtraTools/`** — TF-IDF 工具索引模块（`toolIndex.ts`），为延迟工具提供语义搜索能力。复用 `localSearch.ts` 的 TF-IDF 算法函数（`computeWeightedTf`、`computeIdf`、`cosineSimilarity` 已导出）。修改这些函数时需同步检查工具索引测试。`prefetch.ts` 的 `extractQueryFromMessages` 复用了 `skillSearch/prefetch.ts` 的同名导出函数，修改 skill prefetch 的该函数时需同步检查工具预取行为。工具预取使用独立的 `discoveredToolsThisSession` Set，与 skill prefetch 的去重集合互不影响。
 
 ### UI Layer (Ink)
@@ -168,7 +168,6 @@ bun run docs:dev
 | `packages/@ant/computer-use-swift/` | 截图 + 应用管理（dispatcher + per-platform backend） |
 | `packages/@ant/claude-for-chrome-mcp/` | Chrome 浏览器控制（通过 `--chrome` 启用） |
 | `packages/@ant/model-provider/` | Model provider 抽象层 |
-| `packages/builtin-tools/` | 内置工具集（60 个 tool 实现，通过 `@claude-code-best/builtin-tools` 导出） |
 | `packages/agent-tools/` | Agent 工具集 |
 | `packages/acp-link/` | ACP 代理服务器（WebSocket → ACP agent 桥接） |
 | `packages/mcp-client/` | MCP 客户端库 |
@@ -228,9 +227,9 @@ Feature flags control which functionality is enabled at runtime. 代码中统一
 - 多 worker: `COORDINATOR_MODE`, `BG_SESSIONS`, `TEMPLATES`
 - 连接器: `CONNECTOR_TEXT`, `COMMIT_ATTRIBUTION`, `DIRECT_CONNECT`
 - 实验性: `EXPERIMENTAL_SKILL_SEARCH`, `EXPERIMENTAL_SEARCH_EXTRA_TOOLS`
-- Agent 增强: `TOOL_LOOP_DETECTION`（工具死循环分级干预）, `SUBAGENT_SUMMARY_GATE`（子代理摘要质量门）, `COMPACT_PRESERVE_USER_MESSAGES`（compact 保留真实用户消息 HEAD+TAIL）, `COMPACT_TAIL_PRESERVATION`（compact 后逐字保留最近 N 个 API round，预算为上下文 25% 夹取 2k-8k，借鉴 opencode）, `REACTIVE_COMPACT`（413/media-size 应急压缩；本地单次 compactConversation，非官方全阶梯、非 reactive-only）, `FILE_MUTATION_QUEUE`（同文件 mutation 串行化）, `AGENT_LAUNCH_THROTTLE`（子代理启动限速）
+- Agent 增强: `TOOL_LOOP_DETECTION`（工具死循环分级干预）, `SUBAGENT_SUMMARY_GATE`（子代理摘要质量门）, `COMPACT_PRESERVE_USER_MESSAGES`（compact 保留真实用户消息 HEAD+TAIL）, `COMPACT_TAIL_PRESERVATION`（compact 后逐字保留最近 N 个 API round，借鉴 opencode；与 `COMPACT_PRESERVE_USER_MESSAGES` 共用 `postCompactBudget.ts` 的单一天花板：窗口 25% 夹取 2k-16k，tail 优先分配，两者之和不再无条件叠加）, `REACTIVE_COMPACT`（413/media-size 应急压缩；本地单次 compactConversation，非官方全阶梯、非 reactive-only）, `FILE_MUTATION_QUEUE`（同文件 mutation 串行化）, `AGENT_LAUNCH_THROTTLE`（子代理启动限速）
 - 模式: `POOR`, `SSH_REMOTE`
-- 已禁用: `CONTEXT_COLLAPSE`, `FORK_SUBAGENT`, `UDS_INBOX`, `LAN_PIPES`, `REVIEW_ARTIFACT`, `TEAMMEM`, `SKILL_LEARNING`
+- 已禁用: `SKILL_LEARNING`
 
 **Dev mode 默认**: 与 build 相同，启用 `DEFAULT_BUILD_FEATURES`（不是注册表里的全部 flag）；`FEATURE_<NAME>=1` 可追加。裸 `cli.tsx` 全关。
 
@@ -446,7 +445,7 @@ bun run precheck
 - **Biome 配置** — 42 条 lint 规则因 decompiled 代码被关闭，仅保留 `recommended` 基线。格式化覆盖全项目（`src/`、`scripts/`、`packages/`，含 `packages/@ant/`）。`.tsx` 文件用 120 行宽 + 强制分号；其他文件 80 行宽 + 按需分号。JSON 格式化已启用。`.editorconfig` 与 Biome 配置对齐（2-space 缩进）。修改任何代码后应运行 `bun run precheck` 确认无类型/lint/格式/测试问题，pre-commit hook 会自动拦截不合格提交。
 - **tsc 与 Biome 冲突处理** — 当 tsc 要求声明属性（赋值使用）但 biome 报 `noUnusedPrivateClassMembers`（只写不读）时，用 `// biome-ignore lint/correctness/noUnusedPrivateClassMembers: <原因>` 抑制 lint 警告，保留类型声明。`biome ci` 必须零 warnings。
 - **`eslint-disable` 注释是历史遗留，不是生效的抑制** — 本仓库没有 ESLint（无依赖、无配置文件），`custom-rules/*` 的规则实现也已不在仓库里。所以任何 `eslint-disable` 都**不会**被任何工具读取。无理由的裸压制已清理；保留下来的都带 `--` 理由（例如 `no-sync-fs -- must be sync to flush before process.exit`），它们的价值只在于**记录当初的设计意图**，读代码时应当这样理解，不要以为存在对应的守卫。需要真正的强制时用 Biome 规则或 `scripts/` 下的检查（参考 `check-boundaries.ts`）。
-- **依赖边界棘轮** — `packages/` 内禁止新增 `from 'src/...'` 反向导入主应用。棘轮**按包**计数（基线见 `scripts/boundaries-baseline.json` 的 `perPackage`，每个包各自只减不增；基线中没有的包上限为 0，新包一旦越界立刻失败）。存量 1207 条里 1205 条属于 `builtin-tools`，是已知架构债 —— 按包计数正是为此：总数棘轮下，`builtin-tools` 的清理能为别的包新增的越界导入买单，总数不变而方向性退化已经发生。共享逻辑应下沉到 workspace 包或通过参数/注入传入；跨 `packages/` ↔ `src/` 的小工具确实无法共享时，两侧各留一份并在注释里互指（如 `strip1mContextSuffix`）。解耦后运行 `bun scripts/check-boundaries.ts --update` 收紧基线并提交。
+- **依赖边界棘轮** — `packages/` 内禁止新增 `from 'src/...'` 反向导入主应用。棘轮**按包**计数（基线见 `scripts/boundaries-baseline.json` 的 `perPackage`，每个包各自只减不增；基线中没有的包上限为 0，新包一旦越界立刻失败）。存量已降到 3 条（`builtin-tools` 曾占 1205 条，该包已并回 `src/tools/`）。按包计数的意义在于：总数棘轮下，一个大包的清理能为别的包新增的越界导入买单，总数不变而方向性退化已经发生。共享逻辑应下沉到 workspace 包或通过参数/注入传入；跨 `packages/` ↔ `src/` 的小工具确实无法共享时，两侧各留一份并在注释里互指（如 `strip1mContextSuffix`）。解耦后运行 `bun scripts/check-boundaries.ts --update` 收紧基线并提交。
 - **`@ts-expect-error` 维护** — 只在下方代码确实有类型错误时保留 `@ts-expect-error`。如果类型系统已更新导致 directive 变为 unused（TS2578），直接移除注释。MACRO 替换产生的永假比较（如 `'production' === 'development'`）仍需保留 `@ts-expect-error`。
 - **Ink 框架在 `packages/@ant/ink/`** — 不是 `src/ink/`（该目录不存在）。Ink 相关的组件、hooks、keybindings 都在 packages 中。
 - **Provider 优先级** — `modelType` 参数 > 环境变量 > 默认 `firstParty`。新增 provider 需在 `src/utils/model/providers.ts` 注册。

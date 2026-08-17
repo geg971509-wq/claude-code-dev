@@ -32,12 +32,12 @@ import {
 import type {
   AgentDefinition,
   AgentDefinitionsResult,
-} from '@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js'
-import { SKILL_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/SkillTool/constants.js'
+} from 'src/tools/AgentTool/loadAgentsDir.js'
+import { SKILL_TOOL_NAME } from 'src/tools/SkillTool/constants.js'
 import {
   getLimitedSkillToolCommands,
   getSkillToolInfo as getSlashCommandInfo,
-} from '@claude-code-best/builtin-tools/tools/SkillTool/prompt.js'
+} from 'src/tools/SkillTool/prompt.js'
 import type {
   AssistantMessage,
   AttachmentMessage,
@@ -389,7 +389,7 @@ async function countBuiltInToolTokens(
   // Check if tool search is enabled
   const { isSearchExtraToolsEnabled } = await import('./searchExtraTools.js')
   const { isDeferredTool } = await import(
-    '@claude-code-best/builtin-tools/tools/SearchExtraToolsTool/prompt.js'
+    'src/tools/SearchExtraToolsTool/prompt.js'
   )
   const isDeferred = await isSearchExtraToolsEnabled(
     model ?? '',
@@ -675,7 +675,7 @@ export async function countMcpToolTokens(
   // isSearchExtraToolsEnabled handles threshold calculation internally for TstAuto mode
   const { isSearchExtraToolsEnabled } = await import('./searchExtraTools.js')
   const { isDeferredTool } = await import(
-    '@claude-code-best/builtin-tools/tools/SearchExtraToolsTool/prompt.js'
+    'src/tools/SearchExtraToolsTool/prompt.js'
   )
 
   const isDeferred = await isSearchExtraToolsEnabled(
@@ -1135,13 +1135,6 @@ export async function analyzeContextUsage(
   let skipReservedBuffer = false
   if (feature('REACTIVE_COMPACT')) {
     if (getFeatureValue_CACHED_MAY_BE_STALE('tengu_cobalt_raccoon', false)) {
-      skipReservedBuffer = true
-    }
-  }
-  if (feature('CONTEXT_COLLAPSE')) {
-    const { isContextCollapseEnabled } =
-      require('../services/contextCollapse/index.js') as typeof import('../services/contextCollapse/index.js')
-    if (isContextCollapseEnabled()) {
       skipReservedBuffer = true
     }
   }

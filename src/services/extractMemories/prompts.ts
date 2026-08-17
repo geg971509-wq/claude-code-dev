@@ -16,12 +16,12 @@ import {
   TYPES_SECTION_INDIVIDUAL,
   WHAT_NOT_TO_SAVE_SECTION,
 } from '../../memdir/memoryTypes.js'
-import { BASH_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/BashTool/toolName.js'
-import { FILE_EDIT_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/FileEditTool/constants.js'
-import { FILE_READ_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/FileReadTool/prompt.js'
-import { FILE_WRITE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/FileWriteTool/prompt.js'
-import { GLOB_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/GlobTool/prompt.js'
-import { GREP_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/GrepTool/prompt.js'
+import { BASH_TOOL_NAME } from 'src/tools/BashTool/toolName.js'
+import { FILE_EDIT_TOOL_NAME } from 'src/tools/FileEditTool/constants.js'
+import { FILE_READ_TOOL_NAME } from 'src/tools/FileReadTool/prompt.js'
+import { FILE_WRITE_TOOL_NAME } from 'src/tools/FileWriteTool/prompt.js'
+import { GLOB_TOOL_NAME } from 'src/tools/GlobTool/prompt.js'
+import { GREP_TOOL_NAME } from 'src/tools/GrepTool/prompt.js'
 
 /**
  * Shared opener for both extract-prompt variants.
@@ -88,66 +88,6 @@ export function buildExtractAutoOnlyPrompt(
     '',
     ...TYPES_SECTION_INDIVIDUAL,
     ...WHAT_NOT_TO_SAVE_SECTION,
-    '',
-    ...howToSave,
-  ].join('\n')
-}
-
-/**
- * Build the extraction prompt for combined auto + team memory.
- * Four-type taxonomy with per-type <scope> guidance (directory choice
- * is baked into each type block, no separate routing section needed).
- */
-export function buildExtractCombinedPrompt(
-  newMessageCount: number,
-  existingMemories: string,
-  skipIndex = false,
-): string {
-  if (!feature('TEAMMEM')) {
-    return buildExtractAutoOnlyPrompt(
-      newMessageCount,
-      existingMemories,
-      skipIndex,
-    )
-  }
-
-  const howToSave = skipIndex
-    ? [
-        '## How to save memories',
-        '',
-        "Write each memory to its own file in the chosen directory (private or team, per the type's scope guidance) using this frontmatter format:",
-        '',
-        ...MEMORY_FRONTMATTER_EXAMPLE,
-        '',
-        '- Organize memory semantically by topic, not chronologically',
-        '- Update or remove memories that turn out to be wrong or outdated',
-        '- Do not write duplicate memories. First check if there is an existing memory you can update before writing a new one.',
-      ]
-    : [
-        '## How to save memories',
-        '',
-        'Saving a memory is a two-step process:',
-        '',
-        "**Step 1** — write the memory to its own file in the chosen directory (private or team, per the type's scope guidance) using this frontmatter format:",
-        '',
-        ...MEMORY_FRONTMATTER_EXAMPLE,
-        '',
-        "**Step 2** — add a pointer to that file in the same directory's `MEMORY.md`. Each directory (private and team) has its own `MEMORY.md` index — each entry should be one line, under ~150 characters: `- [Title](file.md) — one-line hook`. They have no frontmatter. Never write memory content directly into a `MEMORY.md`.",
-        '',
-        '- Both `MEMORY.md` indexes are loaded into your system prompt — lines after 200 will be truncated, so keep them concise',
-        '- Organize memory semantically by topic, not chronologically',
-        '- Update or remove memories that turn out to be wrong or outdated',
-        '- Do not write duplicate memories. First check if there is an existing memory you can update before writing a new one.',
-      ]
-
-  return [
-    opener(newMessageCount, existingMemories),
-    '',
-    'If the user explicitly asks you to remember something, save it immediately as whichever type fits best. If they ask you to forget something, find and remove the relevant entry.',
-    '',
-    ...TYPES_SECTION_COMBINED,
-    ...WHAT_NOT_TO_SAVE_SECTION,
-    '- You MUST avoid saving sensitive data within shared team memories. For example, never save API keys or user credentials.',
     '',
     ...howToSave,
   ].join('\n')

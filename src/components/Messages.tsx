@@ -17,7 +17,7 @@ import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
 import type { Screen } from '../screens/REPL.js';
 import type { Tools } from '../Tool.js';
 import { findToolByName } from '../Tool.js';
-import type { AgentDefinitionsResult } from '@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js';
+import type { AgentDefinitionsResult } from 'src/tools/AgentTool/loadAgentsDir.js';
 import type {
   AssistantMessage,
   Message as MessageType,
@@ -102,14 +102,11 @@ const LogoHeader = React.memo(function LogoHeader({
 const proactiveModule = feature('PROACTIVE') || feature('KAIROS') ? require('../proactive/index.js') : null;
 const BRIEF_TOOL_NAME: string | null =
   feature('KAIROS') || feature('KAIROS_BRIEF')
-    ? (
-        require('@claude-code-best/builtin-tools/tools/BriefTool/prompt.js') as typeof import('@claude-code-best/builtin-tools/tools/BriefTool/prompt.js')
-      ).BRIEF_TOOL_NAME
+    ? (require('src/tools/BriefTool/prompt.js') as typeof import('src/tools/BriefTool/prompt.js')).BRIEF_TOOL_NAME
     : null;
 const SEND_USER_FILE_TOOL_NAME: string | null = feature('KAIROS')
-  ? (
-      require('@claude-code-best/builtin-tools/tools/SendUserFileTool/prompt.js') as typeof import('@claude-code-best/builtin-tools/tools/SendUserFileTool/prompt.js')
-    ).SEND_USER_FILE_TOOL_NAME
+  ? (require('src/tools/SendUserFileTool/prompt.js') as typeof import('src/tools/SendUserFileTool/prompt.js'))
+      .SEND_USER_FILE_TOOL_NAME
   : null;
 
 import { VirtualMessageList } from './VirtualMessageList.js';

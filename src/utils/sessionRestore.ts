@@ -12,14 +12,14 @@ import {
 import { clearSystemPromptSections } from '../constants/systemPromptSections.js'
 import { restoreCostStateForSession } from '../cost-tracker.js'
 import type { AppState } from '../state/AppState.js'
-import type { AgentColorName } from '@claude-code-best/builtin-tools/tools/AgentTool/agentColorManager.js'
+import type { AgentColorName } from 'src/tools/AgentTool/agentColorManager.js'
 import {
   type AgentDefinition,
   type AgentDefinitionsResult,
   getActiveAgentsFromList,
   getAgentDefinitionsWithOverrides,
-} from '@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js'
-import { TODO_WRITE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/TodoWriteTool/constants.js'
+} from 'src/tools/AgentTool/loadAgentsDir.js'
+import { TODO_WRITE_TOOL_NAME } from 'src/tools/TodoWriteTool/constants.js'
 import { asSessionId } from '../types/ids.js'
 import type {
   AttributionSnapshotMessage,
@@ -124,14 +124,6 @@ export function restoreSessionStateFromLog(
   // undefined/empty entries) because restoreFromEntries resets the store
   // first — without that, an in-session /resume into a session with no
   // commits would leave the prior session's stale commit log intact.
-  if (feature('CONTEXT_COLLAPSE')) {
-    ;(
-      require('../services/contextCollapse/persist.js') as typeof import('../services/contextCollapse/persist.js')
-    ).restoreFromEntries(
-      result.contextCollapseCommits ?? [],
-      result.contextCollapseSnapshot,
-    )
-  }
 
   // Restore TodoWrite state from transcript (SDK/non-interactive only).
   // Interactive mode uses file-backed v2 tasks, so AppState.todos is unused there.
@@ -501,14 +493,6 @@ export async function processResumedConversation(
   // /resume path goes through restoreSessionStateFromLog (REPL.tsx); CLI
   // --continue/--resume goes through here instead. Called unconditionally
   // — see the restoreSessionStateFromLog callsite above for why.
-  if (feature('CONTEXT_COLLAPSE')) {
-    ;(
-      require('../services/contextCollapse/persist.js') as typeof import('../services/contextCollapse/persist.js')
-    ).restoreFromEntries(
-      result.contextCollapseCommits ?? [],
-      result.contextCollapseSnapshot,
-    )
-  }
 
   // Restore agent setting from resumed session
   const { agentDefinition: restoredAgent, agentType: resumedAgentType } =

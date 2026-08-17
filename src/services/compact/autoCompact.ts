@@ -318,11 +318,6 @@ export async function shouldAutoCompact(
   // which destroys the MAIN thread's committed log (module-level state
   // shared across forks). Inside feature() so the string DCEs from
   // external builds (it's in excluded-strings.txt).
-  if (feature('CONTEXT_COLLAPSE')) {
-    if (querySource === 'marble_origami') {
-      return false
-    }
-  }
 
   if (!isAutoCompactEnabled()) {
     return false
@@ -349,16 +344,6 @@ export async function shouldAutoCompact(
   // than in isAutoCompactEnabled() keeps reactiveCompact alive as the 413
   // fallback (it consults isAutoCompactEnabled directly) and leaves
   // sessionMemory + manual /compact working.
-  //
-  // Consult isContextCollapseEnabled (not the raw gate) so the
-  // CLAUDE_CONTEXT_COLLAPSE env override is honored here too.
-  if (feature('CONTEXT_COLLAPSE')) {
-    const { isContextCollapseEnabled } =
-      require('../contextCollapse/index.js') as typeof import('../contextCollapse/index.js')
-    if (isContextCollapseEnabled()) {
-      return false
-    }
-  }
 
   const tokenCount = tokenCountWithEstimation(messages) - snipTokensFreed
   const threshold = getAutoCompactThreshold(model)

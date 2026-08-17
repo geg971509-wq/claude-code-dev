@@ -1,45 +1,45 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { feature } from 'bun:bundle'
-import { TASK_OUTPUT_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/TaskOutputTool/constants.js'
-import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/ExitPlanModeTool/constants.js'
-import { ENTER_PLAN_MODE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/EnterPlanModeTool/constants.js'
-import { AGENT_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/AgentTool/constants.js'
-import { ASK_USER_QUESTION_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/AskUserQuestionTool/prompt.js'
-import { TASK_STOP_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/TaskStopTool/prompt.js'
-import { FILE_READ_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/FileReadTool/prompt.js'
-import { WEB_SEARCH_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/WebSearchTool/prompt.js'
-import { TODO_WRITE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/TodoWriteTool/constants.js'
-import { GREP_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/GrepTool/prompt.js'
-import { WEB_FETCH_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/WebFetchTool/prompt.js'
-import { GLOB_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/GlobTool/prompt.js'
+import { TASK_OUTPUT_TOOL_NAME } from 'src/tools/TaskOutputTool/constants.js'
+import { EXIT_PLAN_MODE_V2_TOOL_NAME } from 'src/tools/ExitPlanModeTool/constants.js'
+import { ENTER_PLAN_MODE_TOOL_NAME } from 'src/tools/EnterPlanModeTool/constants.js'
+import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
+import { ASK_USER_QUESTION_TOOL_NAME } from 'src/tools/AskUserQuestionTool/prompt.js'
+import { TASK_STOP_TOOL_NAME } from 'src/tools/TaskStopTool/prompt.js'
+import { FILE_READ_TOOL_NAME } from 'src/tools/FileReadTool/prompt.js'
+import { WEB_SEARCH_TOOL_NAME } from 'src/tools/WebSearchTool/prompt.js'
+import { TODO_WRITE_TOOL_NAME } from 'src/tools/TodoWriteTool/constants.js'
+import { GREP_TOOL_NAME } from 'src/tools/GrepTool/prompt.js'
+import { WEB_FETCH_TOOL_NAME } from 'src/tools/WebFetchTool/prompt.js'
+import { GLOB_TOOL_NAME } from 'src/tools/GlobTool/prompt.js'
 import { SHELL_TOOL_NAMES } from '../utils/shell/shellToolUtils.js'
-import { FILE_EDIT_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/FileEditTool/constants.js'
-import { FILE_WRITE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/FileWriteTool/prompt.js'
-import { NOTEBOOK_EDIT_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/NotebookEditTool/constants.js'
-import { SKILL_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/SkillTool/constants.js'
-import { SEND_MESSAGE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/SendMessageTool/constants.js'
-import { TASK_CREATE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/TaskCreateTool/constants.js'
-import { TASK_GET_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/TaskGetTool/constants.js'
-import { TASK_LIST_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/TaskListTool/constants.js'
-import { TASK_UPDATE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/TaskUpdateTool/constants.js'
-import { SEARCH_EXTRA_TOOLS_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/SearchExtraToolsTool/constants.js'
-import { SYNTHETIC_OUTPUT_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/SyntheticOutputTool/SyntheticOutputTool.js'
-import { SLEEP_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/SleepTool/prompt.js'
-import { LSP_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/LSPTool/prompt.js'
-import { VERIFY_PLAN_EXECUTION_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/VerifyPlanExecutionTool/constants.js'
-import { TEAM_CREATE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/TeamCreateTool/constants.js'
-import { TEAM_DELETE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/TeamDeleteTool/constants.js'
-import { EXECUTE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/ExecuteTool/constants.js'
-import { ENTER_WORKTREE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/EnterWorktreeTool/constants.js'
-import { EXIT_WORKTREE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/ExitWorktreeTool/constants.js'
+import { FILE_EDIT_TOOL_NAME } from 'src/tools/FileEditTool/constants.js'
+import { FILE_WRITE_TOOL_NAME } from 'src/tools/FileWriteTool/prompt.js'
+import { NOTEBOOK_EDIT_TOOL_NAME } from 'src/tools/NotebookEditTool/constants.js'
+import { SKILL_TOOL_NAME } from 'src/tools/SkillTool/constants.js'
+import { SEND_MESSAGE_TOOL_NAME } from 'src/tools/SendMessageTool/constants.js'
+import { TASK_CREATE_TOOL_NAME } from 'src/tools/TaskCreateTool/constants.js'
+import { TASK_GET_TOOL_NAME } from 'src/tools/TaskGetTool/constants.js'
+import { TASK_LIST_TOOL_NAME } from 'src/tools/TaskListTool/constants.js'
+import { TASK_UPDATE_TOOL_NAME } from 'src/tools/TaskUpdateTool/constants.js'
+import { SEARCH_EXTRA_TOOLS_TOOL_NAME } from 'src/tools/SearchExtraToolsTool/constants.js'
+import { SYNTHETIC_OUTPUT_TOOL_NAME } from 'src/tools/SyntheticOutputTool/SyntheticOutputTool.js'
+import { SLEEP_TOOL_NAME } from 'src/tools/SleepTool/prompt.js'
+import { LSP_TOOL_NAME } from 'src/tools/LSPTool/prompt.js'
+import { VERIFY_PLAN_EXECUTION_TOOL_NAME } from 'src/tools/VerifyPlanExecutionTool/constants.js'
+import { TEAM_CREATE_TOOL_NAME } from 'src/tools/TeamCreateTool/constants.js'
+import { TEAM_DELETE_TOOL_NAME } from 'src/tools/TeamDeleteTool/constants.js'
+import { EXECUTE_TOOL_NAME } from 'src/tools/ExecuteTool/constants.js'
+import { ENTER_WORKTREE_TOOL_NAME } from 'src/tools/EnterWorktreeTool/constants.js'
+import { EXIT_WORKTREE_TOOL_NAME } from 'src/tools/ExitWorktreeTool/constants.js'
 import { WORKFLOW_TOOL_NAME } from '@claude-code-best/workflow-engine'
 import {
   CRON_CREATE_TOOL_NAME,
   CRON_DELETE_TOOL_NAME,
   CRON_LIST_TOOL_NAME,
-} from '@claude-code-best/builtin-tools/tools/ScheduleCronTool/prompt.js'
-import { LOCAL_MEMORY_RECALL_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/LocalMemoryRecallTool/constants.js'
-import { VAULT_HTTP_FETCH_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/VaultHttpFetchTool/constants.js'
+} from 'src/tools/ScheduleCronTool/prompt.js'
+import { LOCAL_MEMORY_RECALL_TOOL_NAME } from 'src/tools/LocalMemoryRecallTool/constants.js'
+import { VAULT_HTTP_FETCH_TOOL_NAME } from 'src/tools/VaultHttpFetchTool/constants.js'
 
 export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
   TASK_OUTPUT_TOOL_NAME,
@@ -53,8 +53,6 @@ export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
   ...(feature('WORKFLOW_SCRIPTS') ? [WORKFLOW_TOOL_NAME] : []),
   // LOCAL-WIRING PR-1: keep local-memory recall on the main thread only.
   // Cross-session user notes shouldn't be siphoned by spawned subagents.
-  // Layer 2 of the gate (fork path useExactTools) is enforced separately
-  // by filterParentToolsForFork in src/utils/agentToolFilter.ts.
   LOCAL_MEMORY_RECALL_TOOL_NAME,
   // LOCAL-WIRING PR-2: vault HTTP fetch is even more sensitive (touches
   // user secrets). Same two-layer gate applies — keep main thread only.

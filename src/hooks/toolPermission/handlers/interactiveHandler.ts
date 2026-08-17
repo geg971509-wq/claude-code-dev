@@ -18,8 +18,8 @@ import {
   shortRequestId,
   truncateForPreview,
 } from '../../../services/mcp/channelPermissions.js'
-import { executeAsyncClassifierCheck } from '@claude-code-best/builtin-tools/tools/BashTool/bashPermissions.js'
-import { BASH_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/BashTool/toolName.js'
+import { executeAsyncClassifierCheck } from 'src/tools/BashTool/bashPermissions.js'
+import { BASH_TOOL_NAME } from 'src/tools/BashTool/toolName.js'
 import {
   clearClassifierChecking,
   setClassifierApproval,
@@ -27,11 +27,6 @@ import {
   setYoloClassifierApproval,
 } from '../../../utils/classifierApprovals.js'
 import { errorMessage } from '../../../utils/errors.js'
-import {
-  forgetPipePermissionRequest,
-  notifyPipePermissionCancel,
-  tryRelayPipePermissionRequest,
-} from '../../../utils/pipePermissionRelay.js'
 import type { PermissionDecision } from '../../../utils/permissions/PermissionResult.js'
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js'
 import { hasPermissionsToUseTool } from '../../../utils/permissions/permissions.js'
@@ -163,18 +158,6 @@ function handleInteractivePermission(
 
   const permissionPromptStartTimeMs = Date.now()
   const displayInput = result.updatedInput ?? ctx.input
-  let pipePermissionRequestId: string | null = null
-
-  function forgetPipePermission(reason?: string): void {
-    notifyPipePermissionCancel(pipePermissionRequestId, reason)
-    forgetPipePermissionRequest(pipePermissionRequestId)
-    pipePermissionRequestId = null
-  }
-
-  function forgetPipePermissionSilently(): void {
-    forgetPipePermissionRequest(pipePermissionRequestId)
-    pipePermissionRequestId = null
-  }
 
   function clearClassifierIndicator(): void {
     if (feature('BASH_CLASSIFIER')) {
@@ -229,7 +212,6 @@ function handleInteractivePermission(
     },
     onAbort() {
       if (!claim()) return
-      forgetPipePermission('Permission request was aborted locally in sub.')
       if (bridgeCallbacks && bridgeRequestId) {
         bridgeCallbacks.sendResponse(bridgeRequestId, {
           behavior: 'deny',
@@ -252,7 +234,6 @@ function handleInteractivePermission(
       contentBlocks?: ContentBlockParam[],
     ) {
       if (!claim()) return // atomic check-and-mark before await
-      forgetPipePermission('Permission request was approved locally in sub.')
 
       if (bridgeCallbacks && bridgeRequestId) {
         bridgeCallbacks.sendResponse(bridgeRequestId, {
@@ -277,7 +258,6 @@ function handleInteractivePermission(
     },
     onReject(feedback?: string, contentBlocks?: ContentBlockParam[]) {
       if (!claim()) return
-      forgetPipePermission('Permission request was rejected locally in sub.')
 
       if (bridgeCallbacks && bridgeRequestId) {
         bridgeCallbacks.sendResponse(bridgeRequestId, {
@@ -316,7 +296,6 @@ function handleInteractivePermission(
         // a CCR-initiated mode switch, the very case this callback exists
         // for after useReplBridge started calling it).
         if (!claim()) return
-        forgetPipePermission('Permission request was resolved locally in sub.')
         if (bridgeCallbacks && bridgeRequestId) {
           bridgeCallbacks.cancelRequest(bridgeRequestId)
         }
@@ -329,62 +308,6 @@ function handleInteractivePermission(
   }
 
   ctx.pushToQueue(toolUseConfirm)
-  pipePermissionRequestId = tryRelayPipePermissionRequest(
-    toolUseConfirm,
-    response => {
-      if (!claim()) return
-      forgetPipePermissionSilently()
-      clearClassifierChecking(ctx.toolUseID)
-      clearClassifierIndicator()
-      ctx.removeFromQueue()
-      channelUnsubscribe?.()
-      if (bridgeCallbacks && bridgeRequestId) {
-        bridgeCallbacks.cancelRequest(bridgeRequestId)
-      }
-
-      if (response.behavior === 'allow') {
-        void (async () => {
-          if (response.permissionUpdates?.length) {
-            void ctx.persistPermissions(response.permissionUpdates)
-          }
-          ctx.logDecision(
-            {
-              decision: 'accept',
-              source: {
-                type: 'user',
-                permanent: !!response.permissionUpdates?.length,
-              },
-            },
-            { permissionPromptStartTimeMs },
-          )
-          resolveOnce(
-            ctx.buildAllow(response.updatedInput ?? displayInput, {
-              acceptFeedback: response.feedback,
-              contentBlocks: response.contentBlocks,
-            }),
-          )
-        })()
-      } else {
-        ctx.logDecision(
-          {
-            decision: 'reject',
-            source: {
-              type: 'user_reject',
-              hasFeedback: !!response.feedback,
-            },
-          },
-          { permissionPromptStartTimeMs },
-        )
-        resolveOnce(
-          ctx.cancelAndAbort(
-            response.feedback,
-            undefined,
-            response.contentBlocks,
-          ),
-        )
-      }
-    },
-  )
 
   // Race 4: Bridge permission response from CCR (claude.ai)
   // When the bridge is connected, send the permission request to CCR and
@@ -393,9 +316,9 @@ function handleInteractivePermission(
   //
   // All tools are forwarded — CCR's generic allow/deny modal handles any
   // tool, and can return `updatedInput` when it has a dedicated renderer
-  // (e.g. plan edit). Tools whose local dialog injects fields (ReviewArtifact
-  // `selected`, AskUserQuestion `answers`) tolerate the field being missing
-  // so generic remote approval degrades gracefully instead of throwing.
+  // (e.g. plan edit). Tools whose local dialog injects fields
+  // (AskUserQuestion `answers`) tolerate the field being missing so generic
+  // remote approval degrades gracefully instead of throwing.
   if (bridgeCallbacks && bridgeRequestId) {
     bridgeCallbacks.sendRequest(
       bridgeRequestId,
@@ -412,9 +335,6 @@ function handleInteractivePermission(
       bridgeRequestId,
       response => {
         if (!claim()) return // Local user/hook/classifier already responded
-        forgetPipePermission(
-          'Permission request was resolved by bridge before pipe response.',
-        )
         signal.removeEventListener('abort', unsubscribe)
         clearClassifierChecking(ctx.toolUseID)
         clearClassifierIndicator()
@@ -464,9 +384,9 @@ function handleInteractivePermission(
   //
   // Unlike the bridge block, this still guards on `requiresUserInteraction` —
   // channel replies are pure yes/no with no `updatedInput` path. In practice
-  // the guard is dead code today: all three `requiresUserInteraction` tools
-  // (ExitPlanMode, AskUserQuestion, ReviewArtifact) return `isEnabled()===false`
-  // when channels are configured, so they never reach this handler.
+  // the guard is dead code today: both `requiresUserInteraction` tools
+  // (ExitPlanMode, AskUserQuestion) return `isEnabled()===false` when
+  // channels are configured, so they never reach this handler.
   //
   // Fire-and-forget send: if callTool fails (channel down, tool missing),
   // the subscription never fires and another racer wins. Graceful degradation
@@ -533,9 +453,6 @@ function handleInteractivePermission(
         channelRequestId,
         response => {
           if (!claim()) return // Another racer won
-          forgetPipePermission(
-            'Permission request was resolved by channel before pipe response.',
-          )
           channelUnsubscribe?.() // both: map delete + listener remove
           clearClassifierChecking(ctx.toolUseID)
           clearClassifierIndicator()
@@ -593,9 +510,6 @@ function handleInteractivePermission(
         permissionPromptStartTimeMs,
       )
       if (!hookDecision || !claim()) return
-      forgetPipePermission(
-        'Permission request was resolved by hook before pipe response.',
-      )
       if (bridgeCallbacks && bridgeRequestId) {
         bridgeCallbacks.cancelRequest(bridgeRequestId)
       }
@@ -628,9 +542,6 @@ function handleInteractivePermission(
         },
         onAllow: decisionReason => {
           if (!claim()) return
-          forgetPipePermission(
-            'Permission request was auto-approved before pipe response.',
-          )
           if (bridgeCallbacks && bridgeRequestId) {
             bridgeCallbacks.cancelRequest(bridgeRequestId)
           }

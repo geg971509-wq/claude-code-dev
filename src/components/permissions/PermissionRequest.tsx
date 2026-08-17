@@ -1,21 +1,21 @@
 import { feature } from 'bun:bundle';
 import * as React from 'react';
-import { EnterPlanModeTool } from '@claude-code-best/builtin-tools/tools/EnterPlanModeTool/EnterPlanModeTool.js';
-import { ExitPlanModeV2Tool } from '@claude-code-best/builtin-tools/tools/ExitPlanModeTool/ExitPlanModeV2Tool.js';
+import { EnterPlanModeTool } from 'src/tools/EnterPlanModeTool/EnterPlanModeTool.js';
+import { ExitPlanModeV2Tool } from 'src/tools/ExitPlanModeTool/ExitPlanModeV2Tool.js';
 import { useNotifyAfterTimeout } from '../../hooks/useNotifyAfterTimeout.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import type { AnyObject, Tool, ToolUseContext } from '../../Tool.js';
-import { AskUserQuestionTool } from '@claude-code-best/builtin-tools/tools/AskUserQuestionTool/AskUserQuestionTool.js';
-import { BashTool } from '@claude-code-best/builtin-tools/tools/BashTool/BashTool.js';
-import { FileEditTool } from '@claude-code-best/builtin-tools/tools/FileEditTool/FileEditTool.js';
-import { FileReadTool } from '@claude-code-best/builtin-tools/tools/FileReadTool/FileReadTool.js';
-import { FileWriteTool } from '@claude-code-best/builtin-tools/tools/FileWriteTool/FileWriteTool.js';
-import { GlobTool } from '@claude-code-best/builtin-tools/tools/GlobTool/GlobTool.js';
-import { GrepTool } from '@claude-code-best/builtin-tools/tools/GrepTool/GrepTool.js';
-import { NotebookEditTool } from '@claude-code-best/builtin-tools/tools/NotebookEditTool/NotebookEditTool.js';
-import { PowerShellTool } from '@claude-code-best/builtin-tools/tools/PowerShellTool/PowerShellTool.js';
-import { SkillTool } from '@claude-code-best/builtin-tools/tools/SkillTool/SkillTool.js';
-import { WebFetchTool } from '@claude-code-best/builtin-tools/tools/WebFetchTool/WebFetchTool.js';
+import { AskUserQuestionTool } from 'src/tools/AskUserQuestionTool/AskUserQuestionTool.js';
+import { BashTool } from 'src/tools/BashTool/BashTool.js';
+import { FileEditTool } from 'src/tools/FileEditTool/FileEditTool.js';
+import { FileReadTool } from 'src/tools/FileReadTool/FileReadTool.js';
+import { FileWriteTool } from 'src/tools/FileWriteTool/FileWriteTool.js';
+import { GlobTool } from 'src/tools/GlobTool/GlobTool.js';
+import { GrepTool } from 'src/tools/GrepTool/GrepTool.js';
+import { NotebookEditTool } from 'src/tools/NotebookEditTool/NotebookEditTool.js';
+import { PowerShellTool } from 'src/tools/PowerShellTool/PowerShellTool.js';
+import { SkillTool } from 'src/tools/SkillTool/SkillTool.js';
+import { WebFetchTool } from 'src/tools/WebFetchTool/WebFetchTool.js';
 import type { AssistantMessage } from '../../types/message.js';
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js';
 import { AskUserQuestionPermissionRequest } from './AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.js';
@@ -31,18 +31,6 @@ import { PowerShellPermissionRequest } from './PowerShellPermissionRequest/Power
 import { SkillPermissionRequest } from './SkillPermissionRequest/SkillPermissionRequest.js';
 import { WebFetchPermissionRequest } from './WebFetchPermissionRequest/WebFetchPermissionRequest.js';
 
-const ReviewArtifactTool = feature('REVIEW_ARTIFACT')
-  ? (
-      require('@claude-code-best/builtin-tools/tools/ReviewArtifactTool/ReviewArtifactTool.js') as typeof import('@claude-code-best/builtin-tools/tools/ReviewArtifactTool/ReviewArtifactTool.js')
-    ).ReviewArtifactTool
-  : null;
-
-const ReviewArtifactPermissionRequest = feature('REVIEW_ARTIFACT')
-  ? (
-      require('./ReviewArtifactPermissionRequest/ReviewArtifactPermissionRequest.js') as typeof import('./ReviewArtifactPermissionRequest/ReviewArtifactPermissionRequest.js')
-    ).ReviewArtifactPermissionRequest
-  : null;
-
 const WorkflowTool = feature('WORKFLOW_SCRIPTS')
   ? (require('../../workflow/wiring.js') as typeof import('../../workflow/wiring.js')).createWorkflowToolCore()
   : null;
@@ -54,9 +42,8 @@ const WorkflowPermissionRequest = feature('WORKFLOW_SCRIPTS')
   : null;
 
 const MonitorTool = feature('MONITOR_TOOL')
-  ? (
-      require('@claude-code-best/builtin-tools/tools/MonitorTool/MonitorTool.js') as typeof import('@claude-code-best/builtin-tools/tools/MonitorTool/MonitorTool.js')
-    ).MonitorTool
+  ? (require('src/tools/MonitorTool/MonitorTool.js') as typeof import('src/tools/MonitorTool/MonitorTool.js'))
+      .MonitorTool
   : null;
 
 const MonitorPermissionRequest = feature('MONITOR_TOOL')
@@ -80,8 +67,6 @@ function permissionComponentForTool(tool: Tool): React.ComponentType<PermissionR
       return BashPermissionRequest;
     case PowerShellTool:
       return PowerShellPermissionRequest;
-    case ReviewArtifactTool:
-      return ReviewArtifactPermissionRequest ?? FallbackPermissionRequest;
     case WebFetchTool:
       return WebFetchPermissionRequest;
     case NotebookEditTool:
@@ -168,10 +153,6 @@ function getNotificationMessage(toolUseConfirm: ToolUseConfirm): string {
 
   if (toolUseConfirm.tool === EnterPlanModeTool) {
     return 'Claude Code wants to enter plan mode';
-  }
-
-  if (feature('REVIEW_ARTIFACT') && toolUseConfirm.tool === ReviewArtifactTool) {
-    return 'Claude needs your approval for a review artifact';
   }
 
   if (!toolName || toolName.trim() === '') {

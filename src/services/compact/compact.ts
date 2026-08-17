@@ -13,12 +13,12 @@ import type { QuerySource } from '../../constants/querySource.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
-import { FileReadTool } from '@claude-code-best/builtin-tools/tools/FileReadTool/FileReadTool.js'
+import { FileReadTool } from 'src/tools/FileReadTool/FileReadTool.js'
 import {
   FILE_READ_TOOL_NAME,
   FILE_UNCHANGED_STUB,
-} from '@claude-code-best/builtin-tools/tools/FileReadTool/prompt.js'
-import { SearchExtraToolsTool } from '@claude-code-best/builtin-tools/tools/SearchExtraToolsTool/SearchExtraToolsTool.js'
+} from 'src/tools/FileReadTool/prompt.js'
+import { SearchExtraToolsTool } from 'src/tools/SearchExtraToolsTool/SearchExtraToolsTool.js'
 import type { AgentId } from '../../types/ids.js'
 import type {
   AssistantMessage,
@@ -126,8 +126,8 @@ import {
   getCompactUserSummaryMessage,
   getPartialCompactPrompt,
 } from './prompt.js'
+import { allocatePostCompactBudget } from './postCompactBudget.js'
 import {
-  preserveRecentBudget,
   selectPreservedTail,
   type TailSelection,
   tailMaxRounds,
@@ -549,14 +549,18 @@ export async function compactConversation(
     // compress everything away. feature() must sit alone in the if condition
     // (Bun compiler restriction), hence the nested form.
     const hasUserCustomInstructions = Boolean(customInstructions?.trim())
+    // Single arbitration point: tail preservation and preserved user messages
+    // both keep verbatim text in the post-compact context, so they split one
+    // ceiling instead of each clamping against its own constant.
+    const preserveBudget = allocatePostCompactBudget(
+      getEffectiveContextWindowSize(context.options.mainLoopModel),
+    )
     let tailSelection: TailSelection = { head: messages, tail: [] }
     if (feature('COMPACT_TAIL_PRESERVATION')) {
       if (!hasUserCustomInstructions) {
         tailSelection = selectPreservedTail(
           messages,
-          preserveRecentBudget(
-            getEffectiveContextWindowSize(context.options.mainLoopModel),
-          ),
+          preserveBudget.tail,
           tailMaxRounds(),
           round =>
             roughTokenCountEstimationForMessages(
@@ -637,7 +641,10 @@ export async function compactConversation(
     let preservedUserSection = ''
     if (feature('COMPACT_PRESERVE_USER_MESSAGES')) {
       preservedUserSection = formatPreservedSection(
-        selectPreservedUserMessages(tailSelection.head),
+        selectPreservedUserMessages(
+          tailSelection.head,
+          preserveBudget.preservedUser,
+        ),
       )
     }
 

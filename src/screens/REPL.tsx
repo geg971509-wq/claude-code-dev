@@ -213,9 +213,9 @@ import {
 import { buildPermissionUpdates } from '../components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js';
 import { stripDangerousPermissionsForAutoMode } from '../utils/permissions/permissionSetup.js';
 import { getScratchpadDir, isScratchpadEnabled } from '../utils/permissions/filesystem.js';
-import { WEB_FETCH_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/WebFetchTool/prompt.js';
-import { SLEEP_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/SleepTool/prompt.js';
-import { clearSpeculativeChecks } from '@claude-code-best/builtin-tools/tools/BashTool/bashPermissions.js';
+import { WEB_FETCH_TOOL_NAME } from 'src/tools/WebFetchTool/prompt.js';
+import { SLEEP_TOOL_NAME } from 'src/tools/SleepTool/prompt.js';
+import { clearSpeculativeChecks } from 'src/tools/BashTool/bashPermissions.js';
 import type { AutoUpdaterResult } from '../utils/autoUpdater.js';
 import { getGlobalConfig, saveGlobalConfig, getGlobalConfigWriteCount } from '../utils/config.js';
 import { hasConsoleBillingAccess } from '../utils/billing.js';
@@ -242,14 +242,7 @@ import {
   formatCommandInputTags,
 } from '../utils/messages.js';
 import { generateSessionTitle } from '../utils/sessionTitle.js';
-import {
-  BASH_INPUT_TAG,
-  COMMAND_MESSAGE_TAG,
-  COMMAND_NAME_TAG,
-  FORK_BOILERPLATE_TAG,
-  LOCAL_COMMAND_STDOUT_TAG,
-} from '../constants/xml.js';
-import { FORK_SUBAGENT_TYPE } from '@claude-code-best/builtin-tools/tools/AgentTool/forkSubagent.js';
+import { BASH_INPUT_TAG, COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG, LOCAL_COMMAND_STDOUT_TAG } from '../constants/xml.js';
 import { escapeXml } from '../utils/xml.js';
 import type { ThinkingConfig } from '../utils/thinking.js';
 import { gracefulShutdownSync } from '../utils/gracefulShutdown.js';
@@ -275,7 +268,6 @@ import { useManagePlugins } from '../hooks/useManagePlugins.js';
 import { Messages } from '../components/Messages.js';
 import { TaskListV2 } from '../components/TaskListV2.js';
 import { TeammateViewHeader } from '../components/TeammateViewHeader.js';
-import { getPipeIpc } from '../utils/pipeTransport.js';
 import { useTasksV2WithCollapseEffect } from '../hooks/useTasksV2.js';
 import { maybeMarkProjectOnboardingComplete } from '../projectOnboardingState.js';
 import type { MCPServerConnection } from '../services/mcp/types.js';
@@ -285,9 +277,9 @@ import { processSessionStartHooks } from '../utils/sessionStart.js';
 import { executeSessionEndHooks, getSessionEndHookTimeoutMs } from '../utils/hooks.js';
 import { type IDESelection, useIdeSelection } from '../hooks/useIdeSelection.js';
 import { getTools, assembleToolPool } from '../tools.js';
-import type { AgentDefinition } from '@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js';
-import { resolveAgentTools } from '@claude-code-best/builtin-tools/tools/AgentTool/agentToolUtils.js';
-import { resumeAgentBackground } from '@claude-code-best/builtin-tools/tools/AgentTool/resumeAgent.js';
+import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
+import { resolveAgentTools } from 'src/tools/AgentTool/agentToolUtils.js';
+import { resumeAgentBackground } from 'src/tools/AgentTool/resumeAgent.js';
 import { useMainLoopModel } from '../hooks/useMainLoopModel.js';
 import { useAppState, useSetAppState, useAppStateStore } from '../state/AppState.js';
 import type { ContentBlockParam, ContentBlock, ImageBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
@@ -319,7 +311,7 @@ import {
 } from '../utils/toolResultStorage.js';
 import { partialCompactConversation } from '../services/compact/compact.js';
 import type { LogOption } from '../types/logs.js';
-import type { AgentColorName } from '@claude-code-best/builtin-tools/tools/AgentTool/agentColorManager.js';
+import type { AgentColorName } from 'src/tools/AgentTool/agentColorManager.js';
 import {
   fileHistoryMakeSnapshot,
   type FileHistoryState,
@@ -355,23 +347,6 @@ const useScheduledTasks = feature('AGENT_TRIGGERS') ? require('../hooks/useSched
 const useGoalContinuation: typeof import('../hooks/useGoalContinuation.js').useGoalContinuation | null = feature('GOAL')
   ? require('../hooks/useGoalContinuation.js').useGoalContinuation
   : null;
-const useMasterMonitor = feature('UDS_INBOX')
-  ? require('../hooks/useMasterMonitor.js').useMasterMonitor
-  : () => undefined;
-const useSlaveNotifications = feature('UDS_INBOX')
-  ? require('../hooks/useSlaveNotifications.js').useSlaveNotifications
-  : () => undefined;
-const usePipeIpc = feature('UDS_INBOX') ? require('../hooks/usePipeIpc.js').usePipeIpc : () => undefined;
-const usePipeRelay = feature('UDS_INBOX')
-  ? require('../hooks/usePipeRelay.js').usePipeRelay
-  : () => ({ relayPipeMessage: () => false, pipeReturnHadErrorRef: { current: false } });
-const usePipePermissionForward = feature('UDS_INBOX')
-  ? require('../hooks/usePipePermissionForward.js').usePipePermissionForward
-  : () => undefined;
-const usePipeMuteSync = feature('UDS_INBOX') ? require('../hooks/usePipeMuteSync.js').usePipeMuteSync : () => undefined;
-const usePipeRouter = feature('UDS_INBOX')
-  ? require('../hooks/usePipeRouter.js').usePipeRouter
-  : () => ({ routeToSelectedPipes: () => false });
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js';
 import { useTaskListWatcher } from '../hooks/useTaskListWatcher.js';
 import type { SandboxAskCallback, NetworkHostPattern } from '../utils/sandbox/sandbox-adapter.js';
@@ -470,7 +445,7 @@ import {
   type AutoRunIssueReason,
 } from '../utils/autoRunIssue.js';
 import type { HookProgress } from '../types/hooks.js';
-import { TungstenLiveMonitor } from '@claude-code-best/builtin-tools/tools/TungstenTool/TungstenLiveMonitor.js';
+import { TungstenLiveMonitor } from 'src/tools/TungstenTool/TungstenLiveMonitor.js';
 // WebBrowserPanel removed — browser-lite returns results inline via tool_result.
 // For full browser interaction use Claude-in-Chrome MCP tools.
 import { IssueFlagBanner } from '../components/PromptInput/IssueFlagBanner.js';
@@ -814,21 +789,6 @@ export type Props = {
 };
 
 export type Screen = 'prompt' | 'transcript';
-
-// Boilerplate carrier lives in a mixed user message ([tool_result..., text])
-// that AgentTool/forkSubagent.buildForkedMessages emits as the fork child's
-// first user turn. The text block wraps <FORK_BOILERPLATE_TAG>...</..> + the
-// user prompt; tool_result siblings keep the parent's tool calls closed.
-const FORK_BOILERPLATE_OPEN_TAG = `<${FORK_BOILERPLATE_TAG}>`;
-
-function isForkBoilerplateTextBlock(block: { type: string; text?: string }): boolean {
-  return block.type === 'text' && typeof block.text === 'string' && block.text.includes(FORK_BOILERPLATE_OPEN_TAG);
-}
-
-function isForkBoilerplateMessage(message: MessageType): boolean {
-  if (message.type !== 'user' || !Array.isArray(message.message?.content)) return false;
-  return message.message.content.some(isForkBoilerplateTextBlock);
-}
 
 export function REPL({
   commands: initialCommands,
@@ -2145,7 +2105,7 @@ export function REPL({
             // Re-derive agent definitions after mode switch so built-in agents
             // reflect the new coordinator/normal mode
             const { getAgentDefinitionsWithOverrides, getActiveAgentsFromList } =
-              require('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js') as typeof import('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js');
+              require('src/tools/AgentTool/loadAgentsDir.js') as typeof import('src/tools/AgentTool/loadAgentsDir.js');
             getAgentDefinitionsWithOverrides.cache.clear?.();
             const freshAgentDefs = await getAgentDefinitionsWithOverrides(getOriginalCwd());
 
@@ -3089,7 +3049,6 @@ export function REPL({
         defaultSystemPrompt,
         appendSystemPrompt,
       });
-      toolUseContext.renderedSystemPrompt = systemPrompt;
 
       const notificationAttachments = await getQueuedCommandAttachments(removedNotifications).catch(() => []);
       const notificationMessages = notificationAttachments.map(createAttachmentMessage);
@@ -3264,34 +3223,6 @@ export function REPL({
                   priority: 'immediate',
                 });
               }
-            }
-          }
-          // Relay assistant response to master when in slave mode.
-          if (feature('UDS_INBOX') && newMessage.type === 'assistant') {
-            // Extract text from content blocks (API format)
-            const msg = newMessage.message as any;
-            const contentBlocks = msg?.content ?? (newMessage as any).content ?? [];
-            const textParts: string[] = [];
-            if (Array.isArray(contentBlocks)) {
-              for (const block of contentBlocks) {
-                if (typeof block === 'string') {
-                  textParts.push(block);
-                } else if (block?.type === 'text' && block.text) {
-                  textParts.push(block.text);
-                }
-              }
-            } else if (typeof contentBlocks === 'string') {
-              textParts.push(contentBlocks);
-            }
-            const text = textParts.join('\n').trim();
-            if ('isApiErrorMessage' in newMessage && newMessage.isApiErrorMessage) {
-              pipeReturnHadErrorRef.current = true;
-              relayPipeMessage({
-                type: 'error',
-                data: text || 'Slave request failed',
-              });
-            } else if (text) {
-              relayPipeMessage({ type: 'stream', data: text });
             }
           }
         },
@@ -3497,7 +3428,6 @@ export function REPL({
         defaultSystemPrompt,
         appendSystemPrompt,
       });
-      toolUseContext.renderedSystemPrompt = systemPrompt;
 
       queryCheckpoint('query_query_start');
       resetTurnHookDuration();
@@ -3531,16 +3461,6 @@ export function REPL({
       }
 
       queryCheckpoint('query_end');
-
-      if (feature('UDS_INBOX')) {
-        if (abortController.signal.aborted) {
-          pipeReturnHadErrorRef.current = true;
-          relayPipeMessage({
-            type: 'error',
-            data: 'Slave request was interrupted before completion.',
-          });
-        }
-      }
 
       // Capture ant-only API metrics before resetLoadingState clears the ref.
       // For multi-request turns (tool use loops), compute P50 across all requests.
@@ -3653,7 +3573,6 @@ export function REPL({
       }
 
       try {
-        pipeReturnHadErrorRef.current = false;
         setWasAborted(false);
         // isLoading is derived from queryGuard — tryStart() above already
         // transitioned dispatching→running, so no setter call needed here.
@@ -3687,26 +3606,15 @@ export function REPL({
           }
         }
 
-        try {
-          await onQueryImpl(
-            latestMessages,
-            newMessages,
-            abortController,
-            shouldQuery,
-            additionalAllowedTools,
-            mainLoopModelParam,
-            effort,
-          );
-        } catch (error) {
-          if (feature('UDS_INBOX')) {
-            pipeReturnHadErrorRef.current = true;
-            relayPipeMessage({
-              type: 'error',
-              data: error instanceof Error ? error.message : String(error),
-            });
-          }
-          throw error;
-        }
+        await onQueryImpl(
+          latestMessages,
+          newMessages,
+          abortController,
+          shouldQuery,
+          additionalAllowedTools,
+          mainLoopModelParam,
+          effort,
+        );
       } finally {
         // queryGuard.end() atomically checks generation and transitions
         // running→idle. Returns false if a newer query owns the guard
@@ -3721,13 +3629,6 @@ export function REPL({
           resetLoadingState();
 
           await mrOnTurnComplete(messagesRef.current, abortController.signal.aborted);
-
-          if (feature('UDS_INBOX') && !pipeReturnHadErrorRef.current) {
-            relayPipeMessage({
-              type: 'done',
-              data: '',
-            });
-          }
 
           // Notify bridge clients that the turn is complete so mobile apps
           // can stop the spark animation and show post-turn UI.
@@ -3979,27 +3880,6 @@ export function REPL({
       // Resume loop mode if paused
       if (feature('PROACTIVE') || feature('KAIROS')) {
         proactiveModule?.resumeProactive();
-      }
-
-      // Route user input to selected pipe targets (extracted to usePipeRouter)
-      if (routeToSelectedPipes(input)) {
-        // Show the user's prompt in the message list so they can see what was sent
-        const userMessage = createUserMessage({ content: input });
-        setMessages(prev => [...prev, userMessage]);
-
-        if (!options?.fromKeybinding) {
-          addToHistory({
-            display: prependModeCharacterToInput(input, inputMode),
-            pastedContents,
-          });
-        }
-        setInputValue('');
-        helpers.setCursorOffset(0);
-        helpers.clearBuffer();
-        setPastedContents({});
-        setInputMode('prompt');
-        setIDESelection(undefined);
-        return;
       }
 
       // Handle immediate commands - these bypass the queue and execute right away
@@ -4579,17 +4459,6 @@ export function REPL({
       // Reset cached microcompact state so stale pinned cache edits
       // don't reference tool_use_ids from truncated messages
       resetMicrocompactState();
-      if (feature('CONTEXT_COLLAPSE')) {
-        // Rewind truncates the REPL array. Commits whose archived span
-        // was past the rewind point can't be projected anymore
-        // (projectView silently skips them) but the staged queue and ID
-        // maps reference stale uuids. Simplest safe reset: drop
-        // everything. The ctx-agent will re-stage on the next
-        // threshold crossing.
-        (
-          require('../services/contextCollapse/index.js') as typeof import('../services/contextCollapse/index.js')
-        ).resetContextCollapse();
-      }
 
       // Restore state from the message we're rewinding to
       const permMode = message.permissionMode as InternalPermissionMode | undefined;
@@ -5049,8 +4918,6 @@ export function REPL({
     [onQuery, mainLoopModel, store],
   );
 
-  const { relayPipeMessage, pipeReturnHadErrorRef } = usePipeRelay();
-
   // Voice input integration (VOICE_MODE builds only)
   const voiceIntegrationResult = useVoiceIntegration({ setInputValueRaw, inputValueRef, insertTextRef });
   const voice = feature('VOICE_MODE')
@@ -5070,17 +4937,6 @@ export function REPL({
   });
 
   useMailboxBridge({ isLoading, onSubmitMessage: handleIncomingPrompt });
-  useMasterMonitor();
-  useSlaveNotifications();
-  const _pipeIpcState = useAppState(s => getPipeIpc(s));
-
-  usePipePermissionForward({ store, tools, setMessages, setToolUseConfirmQueue, getToolUseContext, mainLoopModel });
-  usePipeMuteSync({ setToolUseConfirmQueue });
-
-  // Pipe IPC lifecycle — extracted to usePipeIpc hook
-  usePipeIpc({ store, handleIncomingPrompt });
-  const { routeToSelectedPipes } = usePipeRouter({ store, setAppState, addNotification });
-
   // Scheduled tasks from .claude/scheduled_tasks.json (CronCreate/Delete/List)
   if (feature('AGENT_TRIGGERS')) {
     // Assistant mode bypasses the isLoading gate (the proactive tick →
@@ -5128,7 +4984,10 @@ export function REPL({
     isInPlanMode: toolPermissionContext.mode === 'plan',
     isQueryActiveNow: queryGuard.getSnapshot,
     onContinuationEnqueued: ({ turn, objective }) => {
-      const visibleGoalTurnInput = `Goal auto-continue (${turn}/1): continue advancing "${objective}".`;
+      const { getGoal, MAX_GOAL_TURNS } =
+        require('../services/goal/goalState.js') as typeof import('../services/goal/goalState.js');
+      const cap = getGoal()?.turnBudget ?? MAX_GOAL_TURNS;
+      const visibleGoalTurnInput = `Goal auto-continue (${turn}/${cap}): continue advancing "${objective}".`;
       setMessages(oldMessages => [
         ...oldMessages,
         createUserMessage({
@@ -5503,15 +5362,8 @@ export function REPL({
   // Handle shift+down for teammate navigation and background task management.
   // Guard onOpenBackgroundTasks when a local-jsx dialog (e.g. /mcp) is open —
   // otherwise Shift+Down stacks BackgroundTasksDialog on top and deadlocks input.
-  // Third case: Shift+Down toggles the pipe IPC selector panel when pipes are active.
   useBackgroundTaskNavigation({
     onOpenBackgroundTasks: isShowingLocalJSXCommand ? undefined : () => setShowBashesDialog(true),
-    onTogglePipeSelector: () => {
-      setAppState((prev: any) => {
-        const pIpc = prev.pipeIpc ?? {};
-        return { ...prev, pipeIpc: { ...pIpc, selectorOpen: !pIpc.selectorOpen } };
-      });
-    },
   });
   // Auto-exit viewing mode when teammate completes or errors
   useTeammateViewAutoExit();
@@ -5534,74 +5386,7 @@ export function REPL({
   // When viewing an agent, never fall through to leader — empty until
   // bootstrap/stream fills. Closes the see-leader-type-agent footgun.
   const rawAgentMessages = viewedAgentTask?.messages;
-  // Fork sidechain encodes the user prompt inside a mixed user message alongside
-  // tool_result blocks; surface the prompt as a standalone bubble and strip the
-  // boilerplate text from its original carrier while preserving tool_results.
-  const displayedAgentMessages = useMemo(() => {
-    if (!viewedAgentTask) return undefined;
-    const agentMessages = rawAgentMessages ?? [];
-    if (
-      !isLocalAgentTask(viewedAgentTask) ||
-      viewedAgentTask.agentType !== FORK_SUBAGENT_TYPE ||
-      !viewedAgentTask.prompt
-    ) {
-      return agentMessages;
-    }
-    // Single pass: locate boilerplate carrier, check whether the prompt text is
-    // already present elsewhere, and find the fallback insertion point (after
-    // the last parent assistant tool_use).
-    const trimmedPrompt = viewedAgentTask.prompt.trim();
-    let boilerplateIndex = -1;
-    let lastAssistantToolUseIndex = -1;
-    let promptAlreadyRendered = false;
-    for (let i = 0; i < agentMessages.length; i++) {
-      const m = agentMessages[i]!;
-      if (m.type === 'user' && Array.isArray(m.message?.content)) {
-        const hasBoilerplate = m.message.content.some(isForkBoilerplateTextBlock);
-        if (hasBoilerplate) {
-          boilerplateIndex = i;
-        } else if (!promptAlreadyRendered) {
-          const firstText = m.message.content.find(b => b.type === 'text' && typeof b.text === 'string') as
-            | { type: 'text'; text: string }
-            | undefined;
-          if (firstText && firstText.text.trim() === trimmedPrompt) promptAlreadyRendered = true;
-        }
-        continue;
-      }
-      if (m.type === 'assistant' && Array.isArray(m.message?.content)) {
-        if (m.message.content.some(b => b.type === 'tool_use')) lastAssistantToolUseIndex = i;
-      }
-    }
-
-    const stripped =
-      boilerplateIndex === -1
-        ? agentMessages
-        : agentMessages.map((m, i) => {
-            if (i !== boilerplateIndex) return m;
-            if (!Array.isArray(m.message?.content)) return m;
-            return {
-              ...m,
-              message: {
-                ...m.message,
-                content: m.message.content.filter(b => !isForkBoilerplateTextBlock(b)),
-              },
-            };
-          });
-
-    if (promptAlreadyRendered) return stripped;
-
-    const insertAt = boilerplateIndex !== -1 ? boilerplateIndex + 1 : lastAssistantToolUseIndex + 1;
-    const synthetic = createUserMessage({
-      content: viewedAgentTask.prompt,
-      timestamp: new Date(viewedAgentTask.startTime).toISOString(),
-    });
-    return [...stripped.slice(0, insertAt), synthetic, ...stripped.slice(insertAt)];
-  }, [viewedAgentTask, rawAgentMessages]);
-  const displayedMessages = viewedAgentTask
-    ? (displayedAgentMessages ?? [])
-    : usesSyncMessages
-      ? messages
-      : deferredMessages;
+  const displayedMessages = viewedAgentTask ? (rawAgentMessages ?? []) : usesSyncMessages ? messages : deferredMessages;
 
   if (screen === 'transcript') {
     // Virtual scroll replaces the 30-message cap: everything is scrollable

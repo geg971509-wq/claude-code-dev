@@ -4,7 +4,7 @@ import React, { useRef } from 'react';
 import { useMinDisplayTime } from '../../hooks/useMinDisplayTime.js';
 import { Ansi, Box, Text, useTheme } from '@anthropic/ink';
 import { findToolByName, type Tools } from '../../Tool.js';
-import { getReplPrimitiveTools } from '@claude-code-best/builtin-tools/tools/REPLTool/primitiveTools.js';
+import { getReplPrimitiveTools } from 'src/tools/REPLTool/primitiveTools.js';
 import type { CollapsedReadSearchGroup, NormalizedAssistantMessage } from '../../types/message.js';
 import { uniq } from '../../utils/array.js';
 import { getToolUseIdsFromCollapsedGroup } from '../../utils/collapseReadSearch.js';
@@ -17,10 +17,6 @@ import { CtrlOToExpand } from '../CtrlOToExpand.js';
 import { useSelectedMessageBg } from '../messageActions.js';
 import { PrBadge } from '../PrBadge.js';
 import { ToolUseLoader } from '../ToolUseLoader.js';
-
-const teamMemCollapsed = feature('TEAMMEM')
-  ? (require('./teamMemCollapsed.js') as typeof import('./teamMemCollapsed.js'))
-  : null;
 
 // Hold each ⤿ hint for a minimum duration so fast-completing tool calls
 // (bash commands, file reads, search patterns) are actually readable instead
@@ -122,7 +118,6 @@ export function CollapsedReadSearchContent({
   const toolUseIds = getToolUseIdsFromCollapsedGroup(message);
   const anyError = toolUseIds.some(id => lookups.erroredToolUseIDs.has(id));
   const hasMemoryOps = memorySearchCount > 0 || memoryReadCount > 0 || memoryWriteCount > 0;
-  const hasTeamMemoryOps = feature('TEAMMEM') ? teamMemCollapsed!.checkHasTeamMemOps(message) : false;
 
   // Track the max seen counts so they only ever increase. The debounce timer
   // causes extra re-renders at arbitrary times; during a brief "invisible window"
@@ -255,7 +250,7 @@ export function CollapsedReadSearchContent({
 
   // Defensive: If all counts are 0, don't render the collapsed group
   // This shouldn't happen in normal operation, but handles edge cases
-  if (!hasMemoryOps && !hasTeamMemoryOps && !hasNonMemoryOps) {
+  if (!hasMemoryOps && !hasNonMemoryOps) {
     return null;
   }
 
@@ -477,13 +472,6 @@ export function CollapsedReadSearchContent({
         <Text dimColor={!isActiveGroup}>
           {nonMemParts}
           {memParts}
-          {feature('TEAMMEM')
-            ? teamMemCollapsed!.TeamMemCountParts({
-                message,
-                isActiveGroup,
-                hasPrecedingParts: hasPrecedingNonMem || memParts.length > 0,
-              })
-            : null}
           {isActiveGroup && <Text key="ellipsis">…</Text>} <CtrlOToExpand />
         </Text>
       </Box>

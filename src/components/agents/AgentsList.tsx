@@ -2,14 +2,14 @@ import figures from 'figures';
 import * as React from 'react';
 import type { SettingSource } from 'src/utils/settings/constants.js';
 import { type KeyboardEvent, Box, Text } from '@anthropic/ink';
-import type { ResolvedAgent } from '@claude-code-best/builtin-tools/tools/AgentTool/agentDisplay.js';
+import type { ResolvedAgent } from 'src/tools/AgentTool/agentDisplay.js';
 import {
   AGENT_SOURCE_GROUPS,
   compareAgentsByName,
   getOverrideSourceLabel,
   resolveAgentModelDisplay,
-} from '@claude-code-best/builtin-tools/tools/AgentTool/agentDisplay.js';
-import type { AgentDefinition } from '@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js';
+} from 'src/tools/AgentTool/agentDisplay.js';
+import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
 import { count } from '../../utils/array.js';
 import { Dialog, Divider } from '@anthropic/ink';
 import { getAgentSourceDisplayName } from './utils.js';

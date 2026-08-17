@@ -148,12 +148,9 @@ System Prompt 明确指示："如果已提供最近使用的工具列表，不�
 ```typescript
 // memdir.ts:419-507
 export async function loadMemoryPrompt(): Promise<string | null> {
-  // 优先级：KAIROS 日志模式 → TEAMMEM 组合模式 → 纯自动记忆
+  // 优先级：KAIROS 日志模式 → 纯自动记忆
   if (feature('KAIROS') && autoEnabled && getKairosActive()) {
     return buildAssistantDailyLogPrompt(skipIndex)
-  }
-  if (feature('TEAMMEM') && teamMemPaths!.isTeamMemoryEnabled()) {
-    return teamMemPrompts!.buildCombinedMemoryPrompt(...)
   }
   if (autoEnabled) {
     return buildMemoryLines('auto memory', autoDir, ...).join('\n')

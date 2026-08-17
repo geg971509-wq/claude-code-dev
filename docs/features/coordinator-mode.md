@@ -134,7 +134,7 @@ export function isCoordinatorMode(): boolean {
 FEATURE_COORDINATOR_MODE=1 CLAUDE_CODE_COORDINATOR_MODE=1 bun run dev
 
 # 配合 Fork Subagent
-FEATURE_COORDINATOR_MODE=1 FEATURE_FORK_SUBAGENT=1 \
+FEATURE_COORDINATOR_MODE=1 \
 CLAUDE_CODE_COORDINATOR_MODE=1 bun run dev
 
 # Simple 模式（worker 只有 Bash/Read/Edit）

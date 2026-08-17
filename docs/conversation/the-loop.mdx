@@ -31,7 +31,6 @@ messagesForQuery（原始消息）
   ↓ applyToolResultBudget()    — 工具结果预算截断（按 maxResultSizeChars）
   ↓ snipCompactIfNeeded()      — 历史 Snip 压缩（HISTORY_SNIP feature）
   ↓ microcompact()             — 微压缩（工具结果摘要）
-  ↓ applyCollapsesIfNeeded()   — 上下文折叠（CONTEXT_COLLAPSE feature）
   ↓ autocompact()              — 自动压缩（超出阈值时触发）
 messagesForQuery（处理后的消息）→ 发往 API
 ```
@@ -167,7 +166,7 @@ type State = {
 
 ```
 迭代 1: 思考→行动
-  预处理管道: applyToolResultBudget → snipCompact(HISTORY_SNIP feature) → microcompact → applyCollapses(CONTEXT_COLLAPSE feature) → autocompact
+  预处理管道: applyToolResultBudget → snipCompact(HISTORY_SNIP feature) → microcompact → autocompact
     → 上下文很短，无需压缩
   API 调用: 返回 tool_use(Glob, "**/*.ts")
   工具执行: 返回 42 个文件路径

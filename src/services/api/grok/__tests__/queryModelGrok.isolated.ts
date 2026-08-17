@@ -378,6 +378,30 @@ describe('queryModelGrok terminal assembly', () => {
     )
   })
 
+  test('retries after thinking-only then idle', async () => {
+    process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS = '5'
+    process.env.OPENAI_STREAM_MAX_RETRIES = '1'
+    const result = await runQuery([
+      {
+        events: [
+          messageStart(),
+          blockStart(0, { type: 'thinking', thinking: '', signature: '' }),
+          blockDelta(0, { type: 'thinking_delta', thinking: 'plan' }),
+        ],
+        hangAfterEvents: true,
+        requestId: 'req_think_idle',
+      },
+      { events: completedEvents(), requestId: 'req_think_recovered' },
+    ])
+
+    expect(createCalls).toBe(2)
+    expect(normalMessages(result.assistantMessages)).toHaveLength(1)
+    expect(errorMessages(result.assistantMessages)).toHaveLength(0)
+    expect(normalMessages(result.assistantMessages)[0]!.requestId).toBe(
+      'req_think_recovered',
+    )
+  })
+
   test('retries a stream that opens and then goes idle', async () => {
     process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS = '5'
     process.env.OPENAI_STREAM_MAX_RETRIES = '1'
@@ -414,6 +438,36 @@ describe('queryModelGrok terminal assembly', () => {
     expect(createCalls).toBe(1)
     expect(normalMessages(result.assistantMessages)).toHaveLength(0)
     expect(errorMessages(result.assistantMessages)).toHaveLength(1)
+  })
+
+  test('cuts a thinking loop without retrying the same prompt', async () => {
+    process.env.OPENAI_STREAM_MAX_RETRIES = '3'
+    const repeated =
+      'The leftover test is still not written. I need to write it now. Also I need to look at the idle timeout more carefully. '
+    const result = await runQuery([
+      {
+        events: [
+          messageStart(),
+          blockStart(0, { type: 'thinking', thinking: '', signature: '' }),
+          ...Array.from({ length: 8 }, () =>
+            blockDelta(0, { type: 'thinking_delta', thinking: repeated }),
+          ),
+        ],
+        requestId: 'req_think_loop',
+      },
+      { events: completedEvents(), requestId: 'req_must_not_retry' },
+    ])
+
+    expect(createCalls).toBe(1)
+    expect(normalMessages(result.assistantMessages)).toHaveLength(0)
+    expect(errorMessages(result.assistantMessages)).toHaveLength(1)
+    expect(
+      (
+        errorMessages(result.assistantMessages)[0]!.message.content![0] as {
+          text: string
+        }
+      ).text,
+    ).toContain('Thinking loop detected')
   })
 
   test('retries request establishment and uses the successful request ID', async () => {

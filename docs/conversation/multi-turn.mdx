@@ -110,8 +110,7 @@ J --> K["构建有效系统提示"]
 K --> L["重置各类耗时计时器"]
 L --> M["执行query生成器，流式处理事件"]
 M --> N["若BUDDY开启，触发companion观察者"]
-N --> O["若UDS_INBOX且中断，记录错误"]
-O --> P["ant用户：收集API指标并插入指标消息"]
+N --> P["ant用户：收集API指标并插入指标消息"]
 P --> Q["重置加载状态，输出性能报告，调用onTurnComplete"]
 Q --> R["结束"]
 D --> R
@@ -281,18 +280,7 @@ if (feature('BUDDY') && typeof fireCompanionObserver === 'function') {
 
 - 将当前消息列表传递给 companion 观察者，并根据返回的反应更新全局状态。
 
-##### 3.7.2 UDS_INBOX 中断处理
-
-```typescript
-if (feature('UDS_INBOX') && abortController.signal.aborted) {
-  pipeReturnHadErrorRef.current = true;
-  relayPipeMessage({ type: 'error', data: 'Slave request was interrupted before completion.' });
-}
-```
-
-- 若因中断导致查询未完成，标记错误并通过管道中继消息。
-
-##### 3.7.3 Ant 内部用户的 API 指标记录
+##### 3.7.2 Ant 内部用户的 API 指标记录
 
 ```typescript
 if (process.env.USER_TYPE === 'ant' && apiMetricsRef.current.length > 0) {

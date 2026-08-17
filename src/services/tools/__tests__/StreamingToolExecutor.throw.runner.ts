@@ -4,7 +4,7 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { z } from 'zod'
 import type { ToolUseBlock } from '@anthropic-ai/sdk/resources/index.mjs'
-import { BASH_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/BashTool/toolName.js'
+import { BASH_TOOL_NAME } from 'src/tools/BashTool/toolName.js'
 import type { Tool, ToolUseContext } from '../../../Tool.js'
 import type { AssistantMessage } from '../../../types/message.js'
 

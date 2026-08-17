@@ -3,18 +3,14 @@ import { join } from 'path'
 import { getFsImplementation } from '../utils/fsOperations.js'
 import { getAutoMemPath, isAutoMemoryEnabled } from './paths.js'
 
-const teamMemPaths = feature('TEAMMEM')
-  ? (require('./teamMemPaths.js') as typeof import('./teamMemPaths.js'))
-  : null
-
 import { getKairosActive, getOriginalCwd } from '../bootstrap/state.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../services/analytics/index.js'
-import { GREP_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/GrepTool/prompt.js'
-import { isReplModeEnabled } from '@claude-code-best/builtin-tools/tools/REPLTool/constants.js'
+import { GREP_TOOL_NAME } from 'src/tools/GrepTool/prompt.js'
+import { isReplModeEnabled } from 'src/tools/REPLTool/constants.js'
 import { logForDebugging } from '../utils/debug.js'
 import { hasEmbeddedSearchTools } from '../utils/embeddedTools.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
@@ -99,10 +95,6 @@ export function truncateEntrypointContent(raw: string): EntrypointTruncation {
     wasByteTruncated,
   }
 }
-
-const teamMemPrompts = feature('TEAMMEM')
-  ? (require('./teamMemPrompts.js') as typeof import('./teamMemPrompts.js'))
-  : null
 
 /**
  * Shared guidance text appended to each memory directory prompt line.
@@ -439,33 +431,6 @@ export async function loadMemoryPrompt(): Promise<string | null> {
     coworkExtraGuidelines && coworkExtraGuidelines.trim().length > 0
       ? [coworkExtraGuidelines]
       : undefined
-
-  if (feature('TEAMMEM')) {
-    if (teamMemPaths!.isTeamMemoryEnabled()) {
-      const autoDir = getAutoMemPath()
-      const teamDir = teamMemPaths!.getTeamMemPath()
-      // Harness guarantees these directories exist so the model can write
-      // without checking. The prompt text reflects this ("already exists").
-      // Only creating teamDir is sufficient: getTeamMemPath() is defined as
-      // join(getAutoMemPath(), 'team'), so recursive mkdir of the team dir
-      // creates the auto dir as a side effect. If the team dir ever moves
-      // out from under the auto dir, add a second ensureMemoryDirExists call
-      // for autoDir here.
-      await ensureMemoryDirExists(teamDir)
-      logMemoryDirCounts(autoDir, {
-        memory_type:
-          'auto' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      })
-      logMemoryDirCounts(teamDir, {
-        memory_type:
-          'team' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      })
-      return teamMemPrompts!.buildCombinedMemoryPrompt(
-        extraGuidelines,
-        skipIndex,
-      )
-    }
-  }
 
   if (autoEnabled) {
     const autoDir = getAutoMemPath()

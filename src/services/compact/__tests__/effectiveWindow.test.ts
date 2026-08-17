@@ -19,7 +19,17 @@
  * introduced here; the tracked buildPostCompactMessages.test.ts dies
  * identically under the same load order.
  */
-import { afterEach, describe, expect, test } from 'bun:test'
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import { getSdkBetas, setSdkBetas } from '../../../bootstrap/state'
 import { CONTEXT_1M_BETA_HEADER } from '../../../constants/betas'
 import { getMaxOutputTokensForModel } from '../../api/claude'
@@ -34,6 +44,38 @@ import {
 // MAX_OUTPUT_TOKENS_FOR_SUMMARY, which the reserve test below depends on.
 const MODEL = 'claude-opus-4-7'
 const ENV_VAR = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW'
+
+const CONFIG_DIR_VAR = 'CLAUDE_CONFIG_DIR'
+let previousConfigDir: string | undefined
+let tempConfigDir: string
+
+/**
+ * getContextWindowForModel consults the model-capability cache — a real file
+ * under the developer's config dir, refreshed from `/v1/models` and therefore
+ * account-specific. That branch returns before the 1M-beta branch, so once the
+ * account's cache started reporting `max_input_tokens: 1000000` for current
+ * models, both tests below went quietly vacuous: MODEL was pinned at 1M, which
+ * swamped the reserve comparison and left the beta with nothing to raise.
+ *
+ * Point the config dir at an empty temp dir so the lookup misses and models
+ * fall back to MODEL_CONTEXT_WINDOW_DEFAULT — the 200k baseline these two
+ * tests are written against. `getClaudeConfigHomeDir` and `loadCache` are both
+ * memoized on this variable precisely so tests can do this.
+ */
+beforeAll(() => {
+  previousConfigDir = process.env[CONFIG_DIR_VAR]
+  tempConfigDir = mkdtempSync(join(tmpdir(), 'effective-window-'))
+  process.env[CONFIG_DIR_VAR] = tempConfigDir
+})
+
+afterAll(() => {
+  if (previousConfigDir === undefined) {
+    delete process.env[CONFIG_DIR_VAR]
+  } else {
+    process.env[CONFIG_DIR_VAR] = previousConfigDir
+  }
+  rmSync(tempConfigDir, { recursive: true, force: true })
+})
 
 function windowWith(pin: string | undefined): number {
   if (pin === undefined) {

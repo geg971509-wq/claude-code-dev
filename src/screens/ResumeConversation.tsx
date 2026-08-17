@@ -18,8 +18,8 @@ import {
 import type { MCPServerConnection, ScopedMcpServerConfig } from '../services/mcp/types.js';
 import { useAppState, useSetAppState } from '../state/AppState.js';
 import type { Tool } from '../Tool.js';
-import type { AgentColorName } from '@claude-code-best/builtin-tools/tools/AgentTool/agentColorManager.js';
-import type { AgentDefinition } from '@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js';
+import type { AgentColorName } from 'src/tools/AgentTool/agentColorManager.js';
+import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
 import { asSessionId } from '../types/ids.js';
 import type { LogOption } from '../types/logs.js';
 import type { Message } from '../types/message.js';
@@ -258,7 +258,7 @@ export function ResumeConversation({
         const warning = coordinatorModule.matchSessionMode(result.mode);
         if (warning) {
           const { getAgentDefinitionsWithOverrides, getActiveAgentsFromList } =
-            require('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js') as typeof import('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js');
+            require('src/tools/AgentTool/loadAgentsDir.js') as typeof import('src/tools/AgentTool/loadAgentsDir.js');
           getAgentDefinitionsWithOverrides.cache.clear?.();
           const freshAgentDefs = await getAgentDefinitionsWithOverrides(getOriginalCwd());
           setAppState(prev => ({
@@ -317,12 +317,6 @@ export function ResumeConversation({
         const goalsMap = new Map<UUID, import('src/types/logs.js').GoalState>();
         goalsMap.set(result.sessionId, result.goal);
         hydrateGoalFromTranscript(goalsMap, result.sessionId);
-      }
-
-      if (feature('CONTEXT_COLLAPSE')) {
-        (
-          require('../services/contextCollapse/persist.js') as typeof import('../services/contextCollapse/persist.js')
-        ).restoreFromEntries(result.contextCollapseCommits ?? [], result.contextCollapseSnapshot);
       }
 
       logEvent('tengu_session_resumed', {

@@ -77,10 +77,6 @@ import { pathInWorkingPath } from './permissions/filesystem.js'
 import { isSettingSourceEnabled } from './settings/constants.js'
 import { getInitialSettings } from './settings/settings.js'
 
-const teamMemPaths = feature('TEAMMEM')
-  ? (require('../memdir/teamMemPaths.js') as typeof import('../memdir/teamMemPaths.js'))
-  : null
-
 let hasLoggedInitialLoad = false
 
 const MEMORY_INSTRUCTION_PROMPT =
@@ -377,7 +373,7 @@ function parseMemoryFileContent(
 
   // Truncate MEMORY.md entrypoints to the line AND byte caps
   let finalContent = strippedContent
-  if (type === 'AutoMem' || type === 'TeamMem') {
+  if (type === 'AutoMem') {
     finalContent = truncateEntrypointContent(strippedContent).content
   }
 
@@ -989,19 +985,6 @@ export const getMemoryFiles = memoize(
     }
 
     // Team memory entrypoint - only if feature is on and file exists
-    if (feature('TEAMMEM') && teamMemPaths!.isTeamMemoryEnabled()) {
-      const { info: teamMemEntry } = await safelyReadMemoryFileAsync(
-        teamMemPaths!.getTeamMemEntrypoint(),
-        'TeamMem',
-      )
-      if (teamMemEntry) {
-        const normalizedPath = normalizePathForComparison(teamMemEntry.path)
-        if (!processedPaths.has(normalizedPath)) {
-          processedPaths.add(normalizedPath)
-          result.push(teamMemEntry)
-        }
-      }
-    }
 
     const totalContentLength = result.reduce(
       (sum, f) => sum + f.content.length,
@@ -1029,9 +1012,6 @@ export const getMemoryFiles = memoize(
         local_count: typeCounts['Local'] ?? 0,
         managed_count: typeCounts['Managed'] ?? 0,
         automem_count: typeCounts['AutoMem'] ?? 0,
-        ...(feature('TEAMMEM')
-          ? { teammem_count: typeCounts['TeamMem'] ?? 0 }
-          : {}),
         duration_ms: Date.now() - startTime,
       })
     }
@@ -1144,7 +1124,7 @@ export function filterInjectedMemoryFiles(
     false,
   )
   if (!skipMemoryIndex) return files
-  return files.filter(f => f.type !== 'AutoMem' && f.type !== 'TeamMem')
+  return files.filter(f => f.type !== 'AutoMem')
 }
 
 export const getClaudeMds = (
@@ -1167,20 +1147,12 @@ export const getClaudeMds = (
           ? ' (project instructions, checked into the codebase)'
           : file.type === 'Local'
             ? " (user's private project instructions, not checked in)"
-            : feature('TEAMMEM') && file.type === 'TeamMem'
-              ? ' (shared team memory, synced across the organization)'
-              : file.type === 'AutoMem'
-                ? " (user's auto-memory, persists across conversations)"
-                : " (user's private global instructions for all projects)"
+            : file.type === 'AutoMem'
+              ? " (user's auto-memory, persists across conversations)"
+              : " (user's private global instructions for all projects)"
 
       const content = file.content.trim()
-      if (feature('TEAMMEM') && file.type === 'TeamMem') {
-        memories.push(
-          `Contents of ${file.path}${description}:\n\n<team-memory-content source="shared">\n${content}\n</team-memory-content>`,
-        )
-      } else {
-        memories.push(`Contents of ${file.path}${description}:\n\n${content}`)
-      }
+      memories.push(`Contents of ${file.path}${description}:\n\n${content}`)
     }
   }
 

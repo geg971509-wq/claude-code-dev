@@ -6,16 +6,12 @@ import {
   isAutoMemoryEnabled,
   isAutoMemPath,
 } from '../memdir/paths.js'
-import { isAgentMemoryPath } from '@claude-code-best/builtin-tools/tools/AgentTool/agentMemory.js'
+import { isAgentMemoryPath } from 'src/tools/AgentTool/agentMemory.js'
 import { getClaudeConfigHomeDir } from './envUtils.js'
 import {
   posixPathToWindowsPath,
   windowsPathToPosixPath,
 } from './windowsPaths.js'
-
-const teamMemPaths = feature('TEAMMEM')
-  ? (require('../memdir/teamMemPaths.js') as typeof import('../memdir/teamMemPaths.js'))
-  : null
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -102,9 +98,6 @@ export type MemoryScope = 'personal' | 'team'
  * hierarchy handles the overlap differently (team writes intentionally fire both).
  */
 export function memoryScopeForPath(filePath: string): MemoryScope | null {
-  if (feature('TEAMMEM') && teamMemPaths!.isTeamMemFile(filePath)) {
-    return 'team'
-  }
   if (isAutoMemFile(filePath)) {
     return 'personal'
   }
@@ -130,9 +123,6 @@ function isAgentMemFile(filePath: string): boolean {
  */
 export function isAutoManagedMemoryFile(filePath: string): boolean {
   if (isAutoMemFile(filePath)) {
-    return true
-  }
-  if (feature('TEAMMEM') && teamMemPaths!.isTeamMemFile(filePath)) {
     return true
   }
   if (detectSessionFileType(filePath) !== null) {
@@ -164,13 +154,6 @@ export function isMemoryDirectory(dirPath: string): boolean {
     return true
   }
   // Team memory directories live under <autoMemPath>/team/
-  if (
-    feature('TEAMMEM') &&
-    teamMemPaths!.isTeamMemoryEnabled() &&
-    teamMemPaths!.isTeamMemPath(normalizedPath)
-  ) {
-    return true
-  }
   // Check the auto-memory path override (CLAUDE_COWORK_MEMORY_PATH_OVERRIDE)
   if (isAutoMemoryEnabled()) {
     const autoMemPath = getAutoMemPath()

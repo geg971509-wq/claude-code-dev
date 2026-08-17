@@ -4,7 +4,6 @@ import * as React from 'react';
 import { NO_CONTENT_MESSAGE } from '../../constants/messages.js';
 import {
   COMMAND_MESSAGE_TAG,
-  FORK_BOILERPLATE_TAG,
   LOCAL_COMMAND_CAVEAT_TAG,
   TASK_NOTIFICATION_TAG,
   TEAMMATE_MESSAGE_TAG,
@@ -120,33 +119,6 @@ export function UserTextMessage({
   // MCP resource and polling update notifications
   if (param.text.includes('<mcp-resource-update') || param.text.includes('<mcp-polling-update')) {
     return <UserResourceUpdateMessage addMargin={addMargin} param={param} />;
-  }
-
-  // Fork child's first message: collapse the rules/format boilerplate, show
-  // only the user prompt. Independent of FORK_SUBAGENT flag — the fork agent
-  // transcript always needs to render the prompt as a normal user bubble.
-  if (param.text.includes(`<${FORK_BOILERPLATE_TAG}>`)) {
-    const { UserForkBoilerplateMessage } =
-      require('./UserForkBoilerplateMessage.js') as typeof import('./UserForkBoilerplateMessage.js');
-    return (
-      <UserForkBoilerplateMessage
-        addMargin={addMargin}
-        param={param}
-        isTranscriptMode={isTranscriptMode}
-        timestamp={timestamp}
-      />
-    );
-  }
-
-  // Cross-session UDS message (from another Claude session's SendMessage).
-  // CROSS_SESSION_MESSAGE_TAG is inlined so the import doesn't ship in
-  // external builds where feature('UDS_INBOX') is false.
-  if (feature('UDS_INBOX')) {
-    if (param.text.includes('<cross-session-message')) {
-      const { UserCrossSessionMessage } =
-        require('./UserCrossSessionMessage.js') as typeof import('./UserCrossSessionMessage.js');
-      return <UserCrossSessionMessage addMargin={addMargin} param={param} />;
-    }
   }
 
   // Inbound channel message (MCP server push).

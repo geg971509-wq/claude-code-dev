@@ -400,11 +400,6 @@ mock.module('../../../../utils/searchExtraTools.js', () => ({
   isDeferredToolsDeltaEnabled: () => false,
 }))
 
-mock.module('../../../../tools/SearchExtraToolsTool/prompt.js', () => ({
-  isDeferredTool: () => false,
-  SEARCH_EXTRA_TOOLS_TOOL_NAME: '__tool_search__',
-}))
-
 mock.module('../../../../cost-tracker.js', () => ({
   addToTotalSessionCost: () => {},
 }))
@@ -820,6 +815,30 @@ describe('queryModelOpenAI — retry boundaries', () => {
     expect(otherOutputs.map(output => output.retryAttempt)).toEqual([1, 1])
   })
 
+  test('retries after thinking-only then stream error', async () => {
+    const { assistantMessages, otherOutputs } = await runQueryModel(
+      [],
+      { OPENAI_STREAM_MAX_RETRIES: '1' },
+      [
+        {
+          events: [
+            makeMessageStart(),
+            makeContentBlockStart(0, 'thinking'),
+            makeThinkingDelta(0, 'visible'),
+            makeSignatureDelta(0, 'signature'),
+          ],
+          streamError: transientStreamError(),
+        },
+        { events: completedEvents('recovered after think') },
+      ],
+    )
+
+    expect(_createCalls).toBe(2)
+    expect(otherOutputs).toHaveLength(1)
+    expect(assistantMessages).toHaveLength(1)
+    expect(assistantMessages[0]!.isApiErrorMessage).toBeUndefined()
+  })
+
   const committedFailures: Array<{
     name: string
     events: BetaRawMessageStreamEvent[]
@@ -830,22 +849,6 @@ describe('queryModelOpenAI — retry boundaries', () => {
         makeMessageStart(),
         makeContentBlockStart(0, 'text'),
         makeTextDelta(0, 'visible'),
-      ],
-    },
-    {
-      name: 'thinking',
-      events: [
-        makeMessageStart(),
-        makeContentBlockStart(0, 'thinking'),
-        makeThinkingDelta(0, 'visible'),
-      ],
-    },
-    {
-      name: 'signature',
-      events: [
-        makeMessageStart(),
-        makeContentBlockStart(0, 'thinking'),
-        makeSignatureDelta(0, 'signature'),
       ],
     },
     {

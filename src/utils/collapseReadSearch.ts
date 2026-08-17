@@ -1,19 +1,19 @@
 import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
 import { findToolByName, type Tools } from '../Tool.js'
-import { extractBashCommentLabel } from '@claude-code-best/builtin-tools/tools/BashTool/commentLabel.js'
-import { BASH_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/BashTool/toolName.js'
-import { FILE_EDIT_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/FileEditTool/constants.js'
-import { FILE_WRITE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/FileWriteTool/prompt.js'
-import { REPL_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/REPLTool/constants.js'
-import { getReplPrimitiveTools } from '@claude-code-best/builtin-tools/tools/REPLTool/primitiveTools.js'
+import { extractBashCommentLabel } from 'src/tools/BashTool/commentLabel.js'
+import { BASH_TOOL_NAME } from 'src/tools/BashTool/toolName.js'
+import { FILE_EDIT_TOOL_NAME } from 'src/tools/FileEditTool/constants.js'
+import { FILE_WRITE_TOOL_NAME } from 'src/tools/FileWriteTool/prompt.js'
+import { REPL_TOOL_NAME } from 'src/tools/REPLTool/constants.js'
+import { getReplPrimitiveTools } from 'src/tools/REPLTool/primitiveTools.js'
 import {
   type BranchAction,
   type CommitKind,
   detectGitOperation,
   type PrAction,
-} from '@claude-code-best/builtin-tools/tools/shared/gitOperationTracking.js'
-import { SEARCH_EXTRA_TOOLS_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/SearchExtraToolsTool/prompt.js'
+} from 'src/tools/shared/gitOperationTracking.js'
+import { SEARCH_EXTRA_TOOLS_TOOL_NAME } from 'src/tools/SearchExtraToolsTool/prompt.js'
 import type {
   CollapsedReadSearchGroup,
   CollapsibleMessage,
@@ -52,12 +52,9 @@ import {
   isShellCommandTargetingMemory,
 } from './memoryFileDetection.js'
 
-const teamMemOps = feature('TEAMMEM')
-  ? (require('./teamMemoryOps.js') as typeof import('./teamMemoryOps.js'))
-  : null
 const SNIP_TOOL_NAME = feature('HISTORY_SNIP')
   ? (
-      require('@claude-code-best/builtin-tools/tools/SnipTool/prompt.js') as typeof import('@claude-code-best/builtin-tools/tools/SnipTool/prompt.js')
+      require('src/tools/SnipTool/prompt.js') as typeof import('src/tools/SnipTool/prompt.js')
     ).SNIP_TOOL_NAME
   : null
 
@@ -661,10 +658,6 @@ type GroupAccumulator = {
   memorySearchCount: number
   memoryReadFilePaths: Set<string>
   memoryWriteCount: number
-  // Team memory file operation counts (tracked separately)
-  teamMemorySearchCount?: number
-  teamMemoryReadFilePaths?: Set<string>
-  teamMemoryWriteCount?: number
   // Non-memory search patterns for display beneath the collapsed summary
   nonMemSearchArgs: string[]
   /** Most recently added non-memory operation, pre-formatted for display */
@@ -709,11 +702,6 @@ function createEmptyGroup(): GroupAccumulator {
     hookCount: 0,
     hookInfos: [],
   }
-  if (feature('TEAMMEM')) {
-    group.teamMemorySearchCount = 0
-    group.teamMemoryReadFilePaths = new Set()
-    group.teamMemoryWriteCount = 0
-  }
   group.mcpCallCount = 0
   group.mcpServerNames = new Set()
   if (isFullscreenEnvEnabled()) {
@@ -747,34 +735,15 @@ function createCollapsedGroup(
   const toolMemoryReadCount = group.memoryReadFilePaths.size
   const memoryReadCount =
     toolMemoryReadCount + (group.relevantMemories?.length ?? 0)
-  // Non-memory read file paths: exclude memory and team memory paths
-  const teamMemReadPaths = feature('TEAMMEM')
-    ? group.teamMemoryReadFilePaths
-    : undefined
+  // Non-memory read file paths: exclude memory paths
   const nonMemReadFilePaths = [...group.readFilePaths].filter(
-    p =>
-      !group.memoryReadFilePaths.has(p) && !(teamMemReadPaths?.has(p) ?? false),
+    p => !group.memoryReadFilePaths.has(p),
   )
-  const teamMemSearchCount = feature('TEAMMEM')
-    ? (group.teamMemorySearchCount ?? 0)
-    : 0
-  const teamMemReadCount = feature('TEAMMEM')
-    ? (group.teamMemoryReadFilePaths?.size ?? 0)
-    : 0
-  const teamMemWriteCount = feature('TEAMMEM')
-    ? (group.teamMemoryWriteCount ?? 0)
-    : 0
   const result: CollapsedReadSearchGroup = {
     type: 'collapsed_read_search',
-    // Subtract memory + team memory counts so regular counts only reflect non-memory operations
-    searchCount: Math.max(
-      0,
-      group.searchCount - group.memorySearchCount - teamMemSearchCount,
-    ),
-    readCount: Math.max(
-      0,
-      totalReadCount - toolMemoryReadCount - teamMemReadCount,
-    ),
+    // Subtract memory counts so regular counts only reflect non-memory operations
+    searchCount: Math.max(0, group.searchCount - group.memorySearchCount),
+    readCount: Math.max(0, totalReadCount - toolMemoryReadCount),
     listCount: group.listCount,
     // REPL operations are intentionally not collapsed (see isCollapsible: false at line 32),
     // so replCount in collapsed groups is always 0. The replCount field is kept for
@@ -790,11 +759,6 @@ function createCollapsedGroup(
     displayMessage: firstMsg,
     uuid: `collapsed-${firstMsg.uuid}` as UUID,
     timestamp: firstMsg.timestamp,
-  }
-  if (feature('TEAMMEM')) {
-    result.teamMemorySearchCount = teamMemSearchCount
-    result.teamMemoryReadCount = teamMemReadCount
-    result.teamMemoryWriteCount = teamMemWriteCount
   }
   if ((group.mcpCallCount ?? 0) > 0) {
     result.mcpCallCount = group.mcpCallCount
@@ -857,15 +821,7 @@ export function collapseReadSearchGroups(
       if (toolInfo.isMemoryWrite) {
         // Memory file write/edit — check if it's team memory
         const count = countToolUses(msg)
-        if (
-          feature('TEAMMEM') &&
-          teamMemOps?.isTeamMemoryWriteOrEdit(toolInfo.name, toolInfo.input)
-        ) {
-          currentGroup.teamMemoryWriteCount =
-            (currentGroup.teamMemoryWriteCount ?? 0) + count
-        } else {
-          currentGroup.memoryWriteCount += count
-        }
+        currentGroup.memoryWriteCount += count
       } else if (toolInfo.isAbsorbedSilently) {
         // Snip/SearchExtraTools absorbed silently — no count, no summary text.
         // Hidden from the default view but still shown in verbose mode
@@ -911,13 +867,7 @@ export function collapseReadSearchGroups(
         const count = countToolUses(msg)
         currentGroup.searchCount += count
         // Check if the search targets memory files (via path or glob pattern)
-        if (
-          feature('TEAMMEM') &&
-          teamMemOps?.isTeamMemorySearch(toolInfo.input)
-        ) {
-          currentGroup.teamMemorySearchCount =
-            (currentGroup.teamMemorySearchCount ?? 0) + count
-        } else if (isMemorySearch(toolInfo.input)) {
+        if (isMemorySearch(toolInfo.input)) {
           currentGroup.memorySearchCount += count
         } else {
           // Regular (non-memory) search — collect pattern for display
@@ -932,9 +882,7 @@ export function collapseReadSearchGroups(
         const filePaths = getFilePathsFromReadMessage(msg)
         for (const filePath of filePaths) {
           currentGroup.readFilePaths.add(filePath)
-          if (feature('TEAMMEM') && teamMemOps?.isTeamMemFile(filePath)) {
-            currentGroup.teamMemoryReadFilePaths?.add(filePath)
-          } else if (isAutoManagedMemoryFile(filePath)) {
+          if (isAutoManagedMemoryFile(filePath)) {
             currentGroup.memoryReadFilePaths.add(filePath)
           } else {
             // Non-memory file read — update display hint
@@ -1037,9 +985,6 @@ export function getSearchReadSummaryText(
     memorySearchCount: number
     memoryReadCount: number
     memoryWriteCount: number
-    teamMemorySearchCount?: number
-    teamMemoryReadCount?: number
-    teamMemoryWriteCount?: number
   },
   listCount: number = 0,
 ): string {
@@ -1084,9 +1029,6 @@ export function getSearchReadSummaryText(
       )
     }
     // Team memory operations
-    if (feature('TEAMMEM') && teamMemOps) {
-      teamMemOps.appendTeamMemorySummaryParts(memoryCounts, isActive, parts)
-    }
   }
 
   if (searchCount > 0) {
