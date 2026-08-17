@@ -143,7 +143,7 @@ function getLatestModelsLine(): string {
       return entry?.displayName ? `${entry.displayName}: '${id}'` : null
     })
     .filter((part): part is string => part !== null)
-  return `The most recent Claude models are ${MODEL_CATALOG.filter(e => e.key !== undefined && e.generation >= 5).length > 0 ? 'the Claude 5 family' : 'the latest Claude family'}. Model IDs — ${parts.join(', ')}. When building AI applications, default to the latest and most capable Claude models.`
+  return `The most recent Claude models are ${MODEL_CATALOG.some(e => e.key !== undefined && /-5$/.test(e.canonical)) ? 'the Claude 5 family' : 'the latest Claude family'}. Model IDs — ${parts.join(', ')}. When building AI applications, default to the latest and most capable Claude models.`
 }
 
 const FRONTIER_MODEL_NAME =

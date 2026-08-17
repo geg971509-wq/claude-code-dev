@@ -644,8 +644,12 @@ export function getDisplayNameForModel(modelId: string): string | undefined {
   if (!entry?.displayName) {
     return undefined
   }
-  return has1m && (entry.context.native1m || entry.context.supports1mBeta)
-    ? `${entry.displayName} (with 1M context)`
+  // 与官方 getPublicModelDisplayName 同构：后缀只看 `supports_1m_suffix`，
+  // 与 native_1m / supports_1m_beta 无关。三者是独立事实 —— sonnet-5 原生
+  // 1M 却没有 suffix，haiku-4-5 有 suffix 却根本到不了 1M，用后两者代判会
+  // 在这两个机型上给出相反结果。
+  return has1m && entry.context.supports1mSuffix
+    ? `${entry.displayName} (1M context)`
     : entry.displayName
 }
 

@@ -25,7 +25,7 @@ import { isClaudeAISubscriber } from './auth.js'
 import { has1mContext } from './context.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
-import { lookupModelCatalog } from './model/configs.js'
+import { lookupModelCatalog, modelHasCapability } from './model/configs.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import {
   getAPIProvider,
@@ -109,7 +109,7 @@ export function modelSupportsISP(model: string): boolean {
   }
   // Non-firstParty: Claude 4+ Opus/Sonnet only (no Haiku).
   const entry = lookupModelCatalog(canonical)
-  if (!entry || entry.generation < 4) {
+  if (!entry || !isClaude4Plus(canonical)) {
     return false
   }
   return (
@@ -119,13 +119,16 @@ export function modelSupportsISP(model: string): boolean {
 }
 
 /**
- * "Claude 4+" 能力门。用 generation 字段而不是 `includes('claude-opus-4')`
- * —— 后者对 `claude-opus-5` / `claude-sonnet-5` 是 false，会把新一代模型
- * 静默降级成 3.x 待遇。
+ * dev 里写作 "Claude 4+" 的那批能力门，官方对应的是模型表 `capabilities`
+ * 里的 `context_management` —— 逐条核对过，两者覆盖面完全一致（3.x 与
+ * mythos-5 没有，4.0 起全部都有）。改查能力而不是自造代次字段：新模型上线
+ * 时能力随官方表自动带对，代次则要人工判断该填几。
+ *
+ * 早先这里写的是 `includes('claude-opus-4')`，对 `claude-opus-5` 为 false，
+ * 会把新一代模型静默降级成 3.x 待遇。
  */
 function isClaude4Plus(model: string): boolean {
-  const entry = lookupModelCatalog(model)
-  return entry !== undefined && entry.generation >= 4
+  return modelHasCapability(model, 'context_management')
 }
 
 function vertexModelSupportsWebSearch(model: string): boolean {

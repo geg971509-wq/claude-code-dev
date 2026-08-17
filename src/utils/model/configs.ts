@@ -17,8 +17,6 @@ export type ModelCatalogEntry = {
   canonical: string
   /** 官方 `display_name`。`undefined` 表示该机型从不在 UI 里按名呈现。 */
   displayName?: string
-  /** dev 自有字段（官方用 `family`）。"Claude 4+" 类能力门测 `generation >= 4`。 */
-  generation: number
   /** 官方 `knowledge_cutoff`，写进 system prompt 的环境段。 */
   knowledgeCutoff?: string
   /** 官方 `provider_ids`。openai/gemini/grok 是 dev 自有映射，等同 firstParty。 */
@@ -29,7 +27,13 @@ export type ModelCatalogEntry = {
     foundry: string
   }
   /** 官方 `context`。window 是不带任何 beta 时的基础窗口。 */
-  context: { window: number; native1m: boolean; supports1mBeta: boolean }
+  context: {
+    window: number
+    native1m: boolean
+    supports1mBeta: boolean
+    /** 官方 `supports_1m_suffix`：只决定显示名是否追加 " (1M context)"。 */
+    supports1mSuffix: boolean
+  }
   /** 官方 `max_output_tokens`。 */
   maxOutputTokens: { default: number; upper: number }
   /** 官方 `pricing` tier 名，如 'tier_5_25'。3.0 机型官方表已不收录。 */
@@ -57,7 +61,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     key: 'opus50',
     canonical: 'claude-opus-5',
     displayName: 'Opus 5',
-    generation: 5,
     knowledgeCutoff: 'May 2026',
     providerIds: {
       firstParty: 'claude-opus-5',
@@ -69,6 +72,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       window: 1_000_000,
       native1m: true,
       supports1mBeta: true,
+      supports1mSuffix: true,
     },
     maxOutputTokens: { default: 64_000, upper: 128_000 },
     pricing: 'tier_5_25',
@@ -90,7 +94,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     key: 'opus48',
     canonical: 'claude-opus-4-8',
     displayName: 'Opus 4.8',
-    generation: 4,
     knowledgeCutoff: 'January 2026',
     providerIds: {
       firstParty: 'claude-opus-4-8',
@@ -102,6 +105,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       window: 1_000_000,
       native1m: true,
       supports1mBeta: true,
+      supports1mSuffix: true,
     },
     maxOutputTokens: { default: 64_000, upper: 128_000 },
     pricing: 'tier_5_25',
@@ -121,7 +125,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     key: 'opus47',
     canonical: 'claude-opus-4-7',
     displayName: 'Opus 4.7',
-    generation: 4,
     knowledgeCutoff: 'January 2026',
     providerIds: {
       firstParty: 'claude-opus-4-7',
@@ -133,6 +136,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       window: 1_000_000,
       native1m: true,
       supports1mBeta: true,
+      supports1mSuffix: true,
     },
     maxOutputTokens: { default: 64_000, upper: 128_000 },
     pricing: 'tier_5_25',
@@ -150,7 +154,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     key: 'opus46',
     canonical: 'claude-opus-4-6',
     displayName: 'Opus 4.6',
-    generation: 4,
     knowledgeCutoff: 'May 2025',
     providerIds: {
       firstParty: 'claude-opus-4-6',
@@ -162,6 +165,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       window: 200_000,
       native1m: false,
       supports1mBeta: true,
+      supports1mSuffix: true,
     },
     maxOutputTokens: { default: 64_000, upper: 128_000 },
     pricing: 'tier_5_25',
@@ -177,7 +181,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     key: 'opus45',
     canonical: 'claude-opus-4-5',
     displayName: 'Opus 4.5',
-    generation: 4,
     knowledgeCutoff: 'May 2025',
     providerIds: {
       firstParty: 'claude-opus-4-5-20251101',
@@ -189,6 +192,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       window: 200_000,
       native1m: false,
       supports1mBeta: false,
+      supports1mSuffix: true,
     },
     maxOutputTokens: { default: 32_000, upper: 64_000 },
     pricing: 'tier_5_25',
@@ -198,7 +202,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     key: 'opus41',
     canonical: 'claude-opus-4-1',
     displayName: 'Opus 4.1',
-    generation: 4,
     knowledgeCutoff: 'January 2025',
     providerIds: {
       firstParty: 'claude-opus-4-1-20250805',
@@ -210,6 +213,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       window: 200_000,
       native1m: false,
       supports1mBeta: false,
+      supports1mSuffix: true,
     },
     maxOutputTokens: { default: 32_000, upper: 32_000 },
     pricing: 'tier_15_75',
@@ -219,7 +223,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     key: 'opus40',
     canonical: 'claude-opus-4',
     displayName: 'Opus 4',
-    generation: 4,
     knowledgeCutoff: 'January 2025',
     providerIds: {
       firstParty: 'claude-opus-4-20250514',
@@ -231,6 +234,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       window: 200_000,
       native1m: false,
       supports1mBeta: false,
+      supports1mSuffix: true,
     },
     maxOutputTokens: { default: 32_000, upper: 32_000 },
     pricing: 'tier_15_75',
@@ -240,7 +244,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     key: 'sonnet50',
     canonical: 'claude-sonnet-5',
     displayName: 'Sonnet 5',
-    generation: 5,
     knowledgeCutoff: 'January 2026',
     providerIds: {
       firstParty: 'claude-sonnet-5',
@@ -252,6 +255,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       window: 1_000_000,
       native1m: true,
       supports1mBeta: false,
+      supports1mSuffix: false,
     },
     maxOutputTokens: { default: 64_000, upper: 128_000 },
     pricing: 'tier_3_15',
@@ -269,7 +273,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     key: 'sonnet46',
     canonical: 'claude-sonnet-4-6',
     displayName: 'Sonnet 4.6',
-    generation: 4,
     knowledgeCutoff: 'August 2025',
     providerIds: {
       firstParty: 'claude-sonnet-4-6',
@@ -281,6 +284,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       window: 200_000,
       native1m: false,
       supports1mBeta: true,
+      supports1mSuffix: true,
     },
     maxOutputTokens: { default: 32_000, upper: 128_000 },
     pricing: 'tier_3_15',
@@ -296,7 +300,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     key: 'sonnet45',
     canonical: 'claude-sonnet-4-5',
     displayName: 'Sonnet 4.5',
-    generation: 4,
     knowledgeCutoff: 'January 2025',
     providerIds: {
       firstParty: 'claude-sonnet-4-5-20250929',
@@ -308,6 +311,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       window: 200_000,
       native1m: false,
       supports1mBeta: true,
+      supports1mSuffix: true,
     },
     maxOutputTokens: { default: 32_000, upper: 64_000 },
     pricing: 'tier_3_15',
@@ -317,7 +321,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     key: 'sonnet40',
     canonical: 'claude-sonnet-4',
     displayName: 'Sonnet 4',
-    generation: 4,
     knowledgeCutoff: 'January 2025',
     providerIds: {
       firstParty: 'claude-sonnet-4-20250514',
@@ -329,6 +332,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       window: 200_000,
       native1m: false,
       supports1mBeta: true,
+      supports1mSuffix: true,
     },
     maxOutputTokens: { default: 32_000, upper: 64_000 },
     pricing: 'tier_3_15',
@@ -338,7 +342,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     key: 'haiku45',
     canonical: 'claude-haiku-4-5',
     displayName: 'Haiku 4.5',
-    generation: 4,
     knowledgeCutoff: 'February 2025',
     providerIds: {
       firstParty: 'claude-haiku-4-5-20251001',
@@ -350,6 +353,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       window: 200_000,
       native1m: false,
       supports1mBeta: false,
+      supports1mSuffix: true,
     },
     maxOutputTokens: { default: 32_000, upper: 64_000 },
     pricing: 'haiku_45',
@@ -359,7 +363,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     key: 'sonnet37',
     canonical: 'claude-3-7-sonnet',
     displayName: 'Claude 3.7 Sonnet',
-    generation: 3,
     knowledgeCutoff: 'January 2025',
     providerIds: {
       firstParty: 'claude-3-7-sonnet-20250219',
@@ -371,6 +374,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       window: 200_000,
       native1m: false,
       supports1mBeta: true,
+      supports1mSuffix: true,
     },
     maxOutputTokens: { default: 32_000, upper: 64_000 },
     pricing: 'tier_3_15',
@@ -380,7 +384,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     key: 'sonnet35',
     canonical: 'claude-3-5-sonnet',
     displayName: 'Claude 3.5 Sonnet',
-    generation: 3,
     knowledgeCutoff: 'January 2025',
     providerIds: {
       firstParty: 'claude-3-5-sonnet-20241022',
@@ -392,6 +395,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       window: 200_000,
       native1m: false,
       supports1mBeta: true,
+      supports1mSuffix: true,
     },
     maxOutputTokens: { default: 8_192, upper: 8_192 },
     pricing: 'tier_3_15',
@@ -401,7 +405,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     key: 'haiku35',
     canonical: 'claude-3-5-haiku',
     displayName: 'Claude 3.5 Haiku',
-    generation: 3,
     knowledgeCutoff: 'February 2025',
     providerIds: {
       firstParty: 'claude-3-5-haiku-20241022',
@@ -413,6 +416,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       window: 200_000,
       native1m: false,
       supports1mBeta: false,
+      supports1mSuffix: true,
     },
     maxOutputTokens: { default: 8_192, upper: 8_192 },
     pricing: 'haiku_35',
@@ -421,22 +425,34 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
   // 3.0 机型：官方表已不再收录，只用于 canonical 归一，UI 从不呈现。
   {
     canonical: 'claude-3-opus',
-    generation: 3,
-    context: { window: 200_000, native1m: false, supports1mBeta: false },
+    context: {
+      window: 200_000,
+      native1m: false,
+      supports1mBeta: false,
+      supports1mSuffix: false,
+    },
     maxOutputTokens: { default: 4_096, upper: 4_096 },
     capabilities: [],
   },
   {
     canonical: 'claude-3-sonnet',
-    generation: 3,
-    context: { window: 200_000, native1m: false, supports1mBeta: false },
+    context: {
+      window: 200_000,
+      native1m: false,
+      supports1mBeta: false,
+      supports1mSuffix: false,
+    },
     maxOutputTokens: { default: 8_192, upper: 8_192 },
     capabilities: [],
   },
   {
     canonical: 'claude-3-haiku',
-    generation: 3,
-    context: { window: 200_000, native1m: false, supports1mBeta: false },
+    context: {
+      window: 200_000,
+      native1m: false,
+      supports1mBeta: false,
+      supports1mSuffix: false,
+    },
     maxOutputTokens: { default: 4_096, upper: 4_096 },
     capabilities: [],
   },

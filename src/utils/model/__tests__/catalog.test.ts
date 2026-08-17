@@ -49,25 +49,49 @@ describe('MODEL_CATALOG', () => {
       window: 1_000_000,
       native1m: true,
       supports1mBeta: true,
+      supports1mSuffix: true,
     })
     expect(lookupModelCatalog('claude-sonnet-4-5')?.context).toEqual({
       window: 200_000,
       native1m: false,
       supports1mBeta: true,
+      supports1mSuffix: true,
     })
     expect(lookupModelCatalog('claude-opus-4-5')?.context).toEqual({
       window: 200_000,
       native1m: false,
       supports1mBeta: false,
+      supports1mSuffix: true,
     })
   })
 
-  test('treats Claude 5 as a 4+ generation model', () => {
+  test('Claude 5 carries the context_management capability', () => {
     // 回归守卫：老写法 `canonical.includes('claude-opus-4')` 对 opus-5 是
     // false，会把新一代静默降级成 3.x 待遇（关掉 interleaved thinking、
-    // context management、vertex web search）。
-    expect(lookupModelCatalog('claude-opus-5')?.generation).toBeGreaterThan(3)
-    expect(lookupModelCatalog('claude-sonnet-5')?.generation).toBeGreaterThan(3)
+    // context management、vertex web search）。现在这批门查的是官方能力。
+    for (const m of ['claude-opus-5', 'claude-sonnet-5', 'claude-opus-4-8']) {
+      expect(lookupModelCatalog(m)?.capabilities).toContain(
+        'context_management',
+      )
+    }
+    // 3.x 一侧必须仍然为假，否则门形同虚设。
+    expect(lookupModelCatalog('claude-3-5-sonnet')?.capabilities).not.toContain(
+      'context_management',
+    )
+  })
+
+  test('supports1mSuffix is recorded independently of the 1M window', () => {
+    // 官方 supports_1m_suffix 只决定显示名后缀，与 native_1m / beta 无关：
+    // sonnet-5 原生 1M 却没有 suffix，haiku-4-5 有 suffix 却没有 1M。
+    expect(lookupModelCatalog('claude-sonnet-5')?.context).toMatchObject({
+      native1m: true,
+      supports1mSuffix: false,
+    })
+    expect(lookupModelCatalog('claude-haiku-4-5')?.context).toMatchObject({
+      native1m: false,
+      supports1mBeta: false,
+      supports1mSuffix: true,
+    })
   })
 
   test('returns undefined for unknown models', () => {
