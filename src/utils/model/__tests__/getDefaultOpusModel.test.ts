@@ -10,10 +10,10 @@ import { getOpus46Option } from '../modelOptions.js'
 import { getModelStrings } from '../modelStrings.js'
 
 /**
- * Verifies getDefaultOpusModel() returns Opus 4.7 across all providers
- * (firstParty + Bedrock/Vertex/Foundry). This is the Gap #2 assertion:
- * as of 2026-04-17 all 3P vendors have published Opus 4.7, so the fork
- * must not fall back to Opus 4.6 on 3P.
+ * getDefaultOpusModel() 逐 provider 的解析结果，取值来自官方 aliases 表。
+ * 官方 opus 的 default 是 claude-opus-5，per_provider 里 bedrock / vertex
+ * 同为 opus-5，foundry 覆盖为 opus-4-6 —— 三方上线节奏不同步正是官方需要
+ * per_provider 的原因。
  *
  * Authoritative sources for 3P availability:
  *   - AWS Bedrock: docs.aws.amazon.com/bedrock/.../model-card-anthropic-claude-opus-4-7.html
@@ -61,23 +61,33 @@ describe('getDefaultOpusModel', () => {
     resetProviderState()
   })
 
-  test('returns Opus 4.7 for firstParty', () => {
-    expect(getDefaultOpusModel()).toBe(ALL_MODEL_CONFIGS.opus47.firstParty)
+  // 取值逐条来自官方 aliases 表：opus 的 default 是 claude-opus-5，
+  // per_provider 里 bedrock / vertex 同为 opus-5，唯独 foundry 覆盖为 4-6。
+  test('firstParty 解析到 Opus 5', () => {
+    expect(getDefaultOpusModel()).toBe(ALL_MODEL_CONFIGS.opus50.firstParty)
   })
 
-  test('returns Opus 4.7 for bedrock (3P no longer lags)', () => {
+  test('bedrock 解析到 Opus 5', () => {
     process.env.CLAUDE_CODE_USE_BEDROCK = '1'
-    expect(getDefaultOpusModel()).toBe(ALL_MODEL_CONFIGS.opus47.bedrock)
+    expect(getDefaultOpusModel()).toBe(ALL_MODEL_CONFIGS.opus50.bedrock)
   })
 
-  test('returns Opus 4.7 for vertex (3P no longer lags)', () => {
+  test('vertex 解析到 Opus 5', () => {
     process.env.CLAUDE_CODE_USE_VERTEX = '1'
-    expect(getDefaultOpusModel()).toBe(ALL_MODEL_CONFIGS.opus47.vertex)
+    expect(getDefaultOpusModel()).toBe(ALL_MODEL_CONFIGS.opus50.vertex)
   })
 
-  test('returns Opus 4.7 for foundry (3P no longer lags)', () => {
+  test('foundry 按官方 per_provider 覆盖回退到 Opus 4.6', () => {
     process.env.CLAUDE_CODE_USE_FOUNDRY = '1'
-    expect(getDefaultOpusModel()).toBe(ALL_MODEL_CONFIGS.opus47.foundry)
+    expect(getDefaultOpusModel()).toBe(ALL_MODEL_CONFIGS.opus46.foundry)
+  })
+
+  test('per_provider 覆盖确实生效（foundry 与一方不同代）', () => {
+    // 守住机制本身：若有人把 per-provider 查表删掉、退回单一默认值，
+    // 上面四条里只有 foundry 会红，这条把意图写明。
+    const firstParty = getDefaultOpusModel()
+    process.env.CLAUDE_CODE_USE_FOUNDRY = '1'
+    expect(getDefaultOpusModel()).not.toBe(firstParty)
   })
 
   test('honors ANTHROPIC_DEFAULT_OPUS_MODEL env override (any provider)', () => {

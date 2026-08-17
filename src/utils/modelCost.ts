@@ -15,7 +15,10 @@ import {
 export type ModelCosts = {
   inputTokens: number
   outputTokens: number
+  /** 官方 `cache_write_5m`。 */
   promptCacheWriteTokens: number
+  /** 官方 `cache_write_1h`。1h TTL 的缓存写单价更高（约 1.6 倍）。 */
+  promptCacheWrite1hTokens: number
   promptCacheReadTokens: number
   webSearchRequests: number
 }
@@ -25,6 +28,7 @@ export const COST_TIER_3_15 = {
   inputTokens: 3,
   outputTokens: 15,
   promptCacheWriteTokens: 3.75,
+  promptCacheWrite1hTokens: 6,
   promptCacheReadTokens: 0.3,
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
@@ -34,6 +38,7 @@ export const COST_TIER_15_75 = {
   inputTokens: 15,
   outputTokens: 75,
   promptCacheWriteTokens: 18.75,
+  promptCacheWrite1hTokens: 30,
   promptCacheReadTokens: 1.5,
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
@@ -43,6 +48,7 @@ export const COST_TIER_5_25 = {
   inputTokens: 5,
   outputTokens: 25,
   promptCacheWriteTokens: 6.25,
+  promptCacheWrite1hTokens: 10,
   promptCacheReadTokens: 0.5,
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
@@ -53,6 +59,7 @@ export const COST_TIER_10_50 = {
   inputTokens: 10,
   outputTokens: 50,
   promptCacheWriteTokens: 12.5,
+  promptCacheWrite1hTokens: 20,
   promptCacheReadTokens: 1,
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
@@ -62,6 +69,9 @@ export const COST_TIER_30_150 = {
   inputTokens: 30,
   outputTokens: 150,
   promptCacheWriteTokens: 37.5,
+  // 官方没有这一档（30/150 是 dev 本地产物），1h 价按官方各档一致的
+  // cache_write_1h = input × 2 关系给出。
+  promptCacheWrite1hTokens: 60,
   promptCacheReadTokens: 3,
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
@@ -71,6 +81,7 @@ export const COST_HAIKU_35 = {
   inputTokens: 0.8,
   outputTokens: 4,
   promptCacheWriteTokens: 1,
+  promptCacheWrite1hTokens: 1.6,
   promptCacheReadTokens: 0.08,
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
@@ -80,6 +91,7 @@ export const COST_HAIKU_45 = {
   inputTokens: 1,
   outputTokens: 5,
   promptCacheWriteTokens: 1.25,
+  promptCacheWrite1hTokens: 2,
   promptCacheReadTokens: 0.1,
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
@@ -122,14 +134,38 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> =
 /**
  * Calculates the USD cost based on token usage and model cost configuration
  */
+/**
+ * 缓存写按 TTL 分档计价。官方每个价格档都有 cache_write_5m 与 cache_write_1h
+ * 两个价（如 tier_5_25：6.25 / 10），dev 此前只有一列且取的是 5m 价 —— 而
+ * dev 确实会请求 1h TTL（Bedrock + ENABLE_PROMPT_CACHING_1H_BEDROCK 这条路径
+ * 不经 GrowthBook），于是 1h 场景下缓存写少算约 1.6 倍。
+ *
+ * 回包里的 `cache_creation` 带 ephemeral_1h / ephemeral_5m 拆分；拿不到拆分时
+ * 退回按 5m 计，与改造前行为一致。
+ */
+function cacheWriteCost(modelCosts: ModelCosts, usage: Usage): number {
+  const breakdown = usage.cache_creation
+  if (breakdown) {
+    return (
+      (breakdown.ephemeral_5m_input_tokens / 1_000_000) *
+        modelCosts.promptCacheWriteTokens +
+      (breakdown.ephemeral_1h_input_tokens / 1_000_000) *
+        modelCosts.promptCacheWrite1hTokens
+    )
+  }
+  return (
+    ((usage.cache_creation_input_tokens ?? 0) / 1_000_000) *
+    modelCosts.promptCacheWriteTokens
+  )
+}
+
 function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
   return (
     (usage.input_tokens / 1_000_000) * modelCosts.inputTokens +
     (usage.output_tokens / 1_000_000) * modelCosts.outputTokens +
     ((usage.cache_read_input_tokens ?? 0) / 1_000_000) *
       modelCosts.promptCacheReadTokens +
-    ((usage.cache_creation_input_tokens ?? 0) / 1_000_000) *
-      modelCosts.promptCacheWriteTokens +
+    cacheWriteCost(modelCosts, usage) +
     (usage.server_tool_use?.web_search_requests ?? 0) *
       modelCosts.webSearchRequests
   )

@@ -20,7 +20,12 @@ import {
   modelSupports1M,
 } from '../context.js'
 import { isEnvTruthy } from '../envUtils.js'
-import { lookupModelCatalog } from './configs.js'
+import { lookupModelCatalog, MODEL_CATALOG } from './configs.js'
+import {
+  aliasTargetCanonical,
+  BEST_ALIAS_FAMILY,
+  type ModelFamily,
+} from './aliasDefaults.js'
 import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
 import { formatModelPricing, getOpus46CostTier } from '../modelCost.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
@@ -148,7 +153,8 @@ export function getMainLoopModel(): ModelName {
 }
 
 export function getBestModel(): ModelName {
-  return getDefaultOpusModel()
+  // 官方配置 `best: "fable"`。
+  return resolveFamilyDefaultModel(BEST_ALIAS_FAMILY)
 }
 
 /**
@@ -164,88 +170,74 @@ function getProviderPrimaryModel(): ModelName | undefined {
   return undefined
 }
 
-// @[MODEL LAUNCH]: Update the default Opus model (3P providers may lag so keep defaults unchanged).
-export function getDefaultOpusModel(): ModelName {
-  const provider = getAPIProvider()
-  const openAIModel = getOpenAIModelForTier(provider, 'opus')
-  if (openAIModel) return openAIModel
-  // For Gemini provider, check GEMINI_DEFAULT_OPUS_MODEL
-  if (provider === 'gemini' && process.env.GEMINI_DEFAULT_OPUS_MODEL) {
-    return process.env.GEMINI_DEFAULT_OPUS_MODEL
-  }
-  // Anthropic-specific override (for first-party and other 3P providers)
-  if (process.env.ANTHROPIC_DEFAULT_OPUS_MODEL) {
-    return process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
-  }
-  // 3P providers: if user set a primary model (e.g. OPENAI_MODEL=glm-5.1),
-  // fall back to it instead of a hardcoded Anthropic model. This prevents
-  // sideQuery / background tasks from sending requests to Anthropic's API
-  // when the user configured a third-party provider.
-  const primaryModel = getProviderPrimaryModel()
-  if (primaryModel) return primaryModel
-  if (provider !== 'firstParty') {
-    return getModelStrings().opus47
-  }
-  return getModelStrings().opus47
-}
-
-// @[MODEL LAUNCH]: Update the default Sonnet model (3P providers may lag so keep defaults unchanged).
-export function getDefaultSonnetModel(): ModelName {
-  const provider = getAPIProvider()
-  const openAIModel = getOpenAIModelForTier(provider, 'sonnet')
-  if (openAIModel) return openAIModel
-  // For Gemini provider, check GEMINI_DEFAULT_SONNET_MODEL
-  if (provider === 'gemini' && process.env.GEMINI_DEFAULT_SONNET_MODEL) {
-    return process.env.GEMINI_DEFAULT_SONNET_MODEL
-  }
-  // Anthropic-specific override (for first-party and other 3P providers)
-  if (process.env.ANTHROPIC_DEFAULT_SONNET_MODEL) {
-    return process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
-  }
-  // 3P providers: fall back to user's primary model instead of a hardcoded
-  // Anthropic model name. Prevents background API calls from being routed to
-  // Anthropic when the user configured a third-party endpoint.
-  const primaryModel = getProviderPrimaryModel()
-  if (primaryModel) return primaryModel
-  if (provider !== 'firstParty') {
-    return getModelStrings().sonnet45
-  }
-  return getModelStrings().sonnet46
-}
-
-// @[MODEL LAUNCH]: Update the default Haiku model (3P providers may lag so keep defaults unchanged).
-export function getDefaultHaikuModel(): ModelName {
-  const provider = getAPIProvider()
-  const openAIModel = getOpenAIModelForTier(provider, 'haiku')
-  if (openAIModel) return openAIModel
-  // For Gemini provider, check GEMINI_DEFAULT_HAIKU_MODEL
-  if (provider === 'gemini' && process.env.GEMINI_DEFAULT_HAIKU_MODEL) {
-    return process.env.GEMINI_DEFAULT_HAIKU_MODEL
-  }
-  // Anthropic-specific override (for first-party and other 3P providers)
-  if (process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL) {
-    return process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL
-  }
-  // 3P providers: fall back to user's primary model instead of a hardcoded
-  // Anthropic model name.
-  const primaryModel = getProviderPrimaryModel()
-  if (primaryModel) return primaryModel
-
-  // Haiku 4.5 is available on all platforms (first-party, Foundry, Bedrock, Vertex)
-  return getModelStrings().haiku45
-}
-
 /**
- * fable 只有一个机型（claude-fable-5），所以"默认"就是它本身。保留与其他
- * 家族一致的 3P 回退：非一方 provider 上没有 fable，退回用户的主模型，而
- * 不是把一个对方不认识的 Anthropic 机型名发出去。
+ * 家族别名 → 具体机型。机型的选择逐条来自官方 `aliases` 表（含 per_provider
+ * 覆盖），见 aliasDefaults.ts；这里只负责 dev 自有的那几层前置覆盖：
+ * ChatGPT/Codex 分档、GEMINI_DEFAULT_*、ANTHROPIC_DEFAULT_*、以及三方 provider
+ * 的主模型回退（避免把 Anthropic 机型名发给对方端点）。
+ *
+ * 此前是四个近乎重复的 getDefault*Model，各写一遍同样的四层回退，机型值散在
+ * 各自的 return 里 —— 官方那边这是一张表加一次查表。
  */
-export function getDefaultFableModel(): ModelName {
-  const primaryModel = getProviderPrimaryModel()
-  if (getAPIProvider() !== 'firstParty' && primaryModel) {
-    return primaryModel
+const ANTHROPIC_DEFAULT_MODEL_ENV: Record<ModelFamily, string | undefined> = {
+  opus: 'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  sonnet: 'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  haiku: 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  // 官方与 dev 都没有 fable 的环境变量覆盖。
+  fable: undefined,
+}
+
+const GEMINI_DEFAULT_MODEL_ENV: Record<ModelFamily, string | undefined> = {
+  opus: 'GEMINI_DEFAULT_OPUS_MODEL',
+  sonnet: 'GEMINI_DEFAULT_SONNET_MODEL',
+  haiku: 'GEMINI_DEFAULT_HAIKU_MODEL',
+  fable: undefined,
+}
+
+export function resolveFamilyDefaultModel(family: ModelFamily): ModelName {
+  const provider = getAPIProvider()
+
+  if (family !== 'fable') {
+    const openAIModel = getOpenAIModelForTier(
+      provider,
+      family as ChatGPTCodexModelTier,
+    )
+    if (openAIModel) return openAIModel
   }
-  return getModelStrings().fable5
+
+  const geminiEnv = GEMINI_DEFAULT_MODEL_ENV[family]
+  if (provider === 'gemini' && geminiEnv && process.env[geminiEnv]) {
+    return process.env[geminiEnv]
+  }
+
+  const anthropicEnv = ANTHROPIC_DEFAULT_MODEL_ENV[family]
+  if (anthropicEnv && process.env[anthropicEnv]) {
+    return process.env[anthropicEnv]
+  }
+
+  // 三方 provider：回退到用户配置的主模型，而不是硬发一个 Anthropic 机型名。
+  const primaryModel = getProviderPrimaryModel()
+  if (primaryModel) return primaryModel
+
+  const canonical = aliasTargetCanonical(family, provider)
+  const key = MODEL_CATALOG.find(e => e.canonical === canonical)?.key
+  return key ? getModelStrings()[key] : canonical
+}
+
+export function getDefaultOpusModel(): ModelName {
+  return resolveFamilyDefaultModel('opus')
+}
+
+export function getDefaultSonnetModel(): ModelName {
+  return resolveFamilyDefaultModel('sonnet')
+}
+
+export function getDefaultHaikuModel(): ModelName {
+  return resolveFamilyDefaultModel('haiku')
+}
+
+export function getDefaultFableModel(): ModelName {
+  return resolveFamilyDefaultModel('fable')
 }
 
 /**
