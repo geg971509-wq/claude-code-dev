@@ -25,6 +25,7 @@ import {
   getCanonicalName,
   getDisplayNameForModel,
 } from '../utils/model/model.js'
+import { lookupModelCatalog, MODEL_CATALOG } from '../utils/model/configs.js'
 import { getSkillToolCommands } from 'src/commands.js'
 import { SKILL_TOOL_NAME } from 'src/tools/SkillTool/constants.js'
 import { EXECUTE_TOOL_NAME } from 'src/tools/ExecuteTool/constants.js'
@@ -110,15 +111,46 @@ export const CLAUDE_CODE_DOCS_MAP_URL =
 export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY =
   '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__'
 
-// @[MODEL LAUNCH]: Update the latest frontier model.
-const FRONTIER_MODEL_NAME = 'Claude Opus 4.7'
-
-// @[MODEL LAUNCH]: Update the model family IDs below to the latest in each tier.
-const CLAUDE_LATEST_MODEL_IDS = {
-  opus: 'claude-opus-4-7',
-  sonnet: 'claude-sonnet-4-6',
-  haiku: 'claude-haiku-4-5-20251001',
+/**
+ * 各档位最新机型由 MODEL_CATALOG 推导 —— 表里第一条即最新（catalog 按代次
+ * 从新到旧书写）。此前这两处是手写常量，加了 opus-5 之后仍停在 4.7，
+ * 会让写进 system prompt 的"最新模型"信息落后一代。
+ */
+function latestCanonicalOf(family: 'opus' | 'sonnet' | 'haiku'): string {
+  const entry = MODEL_CATALOG.find(
+    e => e.key !== undefined && e.canonical.startsWith(`claude-${family}-`),
+  )
+  return entry?.providerIds?.firstParty ?? entry?.canonical ?? ''
 }
+
+const CLAUDE_LATEST_MODEL_IDS = {
+  opus: latestCanonicalOf('opus'),
+  sonnet: latestCanonicalOf('sonnet'),
+  haiku: latestCanonicalOf('haiku'),
+}
+
+/**
+ * 机型标签与 ID 必须同源，否则会生成 "Opus 4.7: 'claude-opus-5'" 这种自相
+ * 矛盾的句子 —— 之前 ID 是常量、标签是写死的散文，加一代模型就会脱节。
+ */
+function getLatestModelsLine(): string {
+  const parts = (['opus', 'sonnet', 'haiku'] as const)
+    .map(family => {
+      const id = CLAUDE_LATEST_MODEL_IDS[family]
+      const entry = MODEL_CATALOG.find(
+        e => e.providerIds?.firstParty === id || e.canonical === id,
+      )
+      return entry?.displayName ? `${entry.displayName}: '${id}'` : null
+    })
+    .filter((part): part is string => part !== null)
+  return `The most recent Claude models are ${MODEL_CATALOG.filter(e => e.key !== undefined && e.generation >= 5).length > 0 ? 'the Claude 5 family' : 'the latest Claude family'}. Model IDs — ${parts.join(', ')}. When building AI applications, default to the latest and most capable Claude models.`
+}
+
+const FRONTIER_MODEL_NAME =
+  MODEL_CATALOG.find(e => e.canonical === CLAUDE_LATEST_MODEL_IDS.opus)
+    ?.displayName ??
+  MODEL_CATALOG.find(e => e.key !== undefined)?.displayName ??
+  'Claude Opus'
 
 function getHooksSection(): string {
   return `Users may configure 'hooks', shell commands that execute in response to events like tool calls, in settings. Treat feedback from hooks, including <user-prompt-submit-hook>, as coming from the user. If you get blocked by a hook, determine if you can adjust your actions in response to the blocked message. If not, ask the user to check their hooks configuration.`
@@ -641,7 +673,7 @@ export async function computeSimpleEnvInfo(
     knowledgeCutoffMessage,
     process.env.USER_TYPE === 'ant' && isUndercover()
       ? null
-      : `The most recent Claude model family is Claude 4.5/4.6/4.7. Model IDs — Opus 4.7: '${CLAUDE_LATEST_MODEL_IDS.opus}', Sonnet 4.6: '${CLAUDE_LATEST_MODEL_IDS.sonnet}', Haiku 4.5: '${CLAUDE_LATEST_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable Claude models.`,
+      : getLatestModelsLine(),
     process.env.USER_TYPE === 'ant' && isUndercover()
       ? null
       : `Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains). Claude is also accessible via Claude in Chrome (a browsing agent), Claude in Excel (a spreadsheet agent), and Cowork (desktop automation for non-developers).`,
@@ -659,24 +691,10 @@ export async function computeSimpleEnvInfo(
 
 // @[MODEL LAUNCH]: Add a knowledge cutoff date for the new model.
 function getKnowledgeCutoff(modelId: string): string | null {
-  const canonical = getCanonicalName(modelId)
-  if (canonical.includes('claude-sonnet-4-6')) {
-    return 'August 2025'
-  } else if (canonical.includes('claude-opus-4-7')) {
-    return 'January 2026'
-  } else if (canonical.includes('claude-opus-4-6')) {
-    return 'May 2025'
-  } else if (canonical.includes('claude-opus-4-5')) {
-    return 'May 2025'
-  } else if (canonical.includes('claude-haiku-4')) {
-    return 'February 2025'
-  } else if (
-    canonical.includes('claude-opus-4') ||
-    canonical.includes('claude-sonnet-4')
-  ) {
-    return 'January 2025'
-  }
-  return null
+  // 官方 `knowledge_cutoff`，来自 MODEL_CATALOG。此前是一条 includes 链，
+  // 而 'claude-opus-4-8'.includes('claude-opus-4') 为真 —— 新模型会静默拿到
+  // opus-4-0 的 'January 2025'，比真实截止早整整一年，并写进 system prompt。
+  return lookupModelCatalog(getCanonicalName(modelId))?.knowledgeCutoff ?? null
 }
 
 function getShellInfoLine(): string {

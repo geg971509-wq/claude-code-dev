@@ -3,212 +3,31 @@ import type { APIProvider } from './providers.js'
 
 export type ModelConfig = Record<APIProvider, ModelName>
 
-// @[MODEL LAUNCH]: Add a new CLAUDE_*_CONFIG constant here. Double check the correct model strings
-// here since the pattern may change.
-
-export const CLAUDE_3_7_SONNET_CONFIG = {
-  firstParty: 'claude-3-7-sonnet-20250219',
-  bedrock: 'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
-  vertex: 'claude-3-7-sonnet@20250219',
-  foundry: 'claude-3-7-sonnet',
-  openai: 'claude-3-7-sonnet-20250219',
-  gemini: 'claude-3-7-sonnet-20250219',
-  grok: 'claude-3-7-sonnet-20250219',
-} as const satisfies ModelConfig
-
-export const CLAUDE_3_5_V2_SONNET_CONFIG = {
-  firstParty: 'claude-3-5-sonnet-20241022',
-  bedrock: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
-  vertex: 'claude-3-5-sonnet-v2@20241022',
-  foundry: 'claude-3-5-sonnet',
-  openai: 'claude-3-5-sonnet-20241022',
-  gemini: 'claude-3-5-sonnet-20241022',
-  grok: 'claude-3-5-sonnet-20241022',
-} as const satisfies ModelConfig
-
-export const CLAUDE_3_5_HAIKU_CONFIG = {
-  firstParty: 'claude-3-5-haiku-20241022',
-  bedrock: 'us.anthropic.claude-3-5-haiku-20241022-v1:0',
-  vertex: 'claude-3-5-haiku@20241022',
-  foundry: 'claude-3-5-haiku',
-  openai: 'claude-3-5-haiku-20241022',
-  gemini: 'claude-3-5-haiku-20241022',
-  grok: 'claude-3-5-haiku-20241022',
-} as const satisfies ModelConfig
-
-export const CLAUDE_HAIKU_4_5_CONFIG = {
-  firstParty: 'claude-haiku-4-5-20251001',
-  bedrock: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
-  vertex: 'claude-haiku-4-5@20251001',
-  foundry: 'claude-haiku-4-5',
-  openai: 'claude-haiku-4-5-20251001',
-  gemini: 'claude-haiku-4-5-20251001',
-  grok: 'claude-haiku-4-5-20251001',
-} as const satisfies ModelConfig
-
-export const CLAUDE_SONNET_4_CONFIG = {
-  firstParty: 'claude-sonnet-4-20250514',
-  bedrock: 'us.anthropic.claude-sonnet-4-20250514-v1:0',
-  vertex: 'claude-sonnet-4@20250514',
-  foundry: 'claude-sonnet-4',
-  openai: 'claude-sonnet-4-20250514',
-  gemini: 'claude-sonnet-4-20250514',
-  grok: 'claude-sonnet-4-20250514',
-} as const satisfies ModelConfig
-
-export const CLAUDE_SONNET_4_5_CONFIG = {
-  firstParty: 'claude-sonnet-4-5-20250929',
-  bedrock: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
-  vertex: 'claude-sonnet-4-5@20250929',
-  foundry: 'claude-sonnet-4-5',
-  openai: 'claude-sonnet-4-5-20250929',
-  gemini: 'claude-sonnet-4-5-20250929',
-  grok: 'claude-sonnet-4-5-20250929',
-} as const satisfies ModelConfig
-
-export const CLAUDE_OPUS_4_CONFIG = {
-  firstParty: 'claude-opus-4-20250514',
-  bedrock: 'us.anthropic.claude-opus-4-20250514-v1:0',
-  vertex: 'claude-opus-4@20250514',
-  foundry: 'claude-opus-4',
-  openai: 'claude-opus-4-20250514',
-  gemini: 'claude-opus-4-20250514',
-  grok: 'claude-opus-4-20250514',
-} as const satisfies ModelConfig
-
-export const CLAUDE_OPUS_4_1_CONFIG = {
-  firstParty: 'claude-opus-4-1-20250805',
-  bedrock: 'us.anthropic.claude-opus-4-1-20250805-v1:0',
-  vertex: 'claude-opus-4-1@20250805',
-  foundry: 'claude-opus-4-1',
-  openai: 'claude-opus-4-1-20250805',
-  gemini: 'claude-opus-4-1-20250805',
-  grok: 'claude-opus-4-1-20250805',
-} as const satisfies ModelConfig
-
-export const CLAUDE_OPUS_4_5_CONFIG = {
-  firstParty: 'claude-opus-4-5-20251101',
-  bedrock: 'us.anthropic.claude-opus-4-5-20251101-v1:0',
-  vertex: 'claude-opus-4-5@20251101',
-  foundry: 'claude-opus-4-5',
-  openai: 'claude-opus-4-5-20251101',
-  gemini: 'claude-opus-4-5-20251101',
-  grok: 'claude-opus-4-5-20251101',
-} as const satisfies ModelConfig
-
-export const CLAUDE_OPUS_4_6_CONFIG = {
-  firstParty: 'claude-opus-4-6',
-  bedrock: 'us.anthropic.claude-opus-4-6-v1',
-  vertex: 'claude-opus-4-6',
-  foundry: 'claude-opus-4-6',
-  openai: 'claude-opus-4-6',
-  gemini: 'claude-opus-4-6',
-  grok: 'claude-opus-4-6',
-} as const satisfies ModelConfig
-
-export const CLAUDE_OPUS_4_7_CONFIG = {
-  firstParty: 'claude-opus-4-7',
-  // No `-v1` suffix — verified against the official bundle, which carries
-  // `us.anthropic.claude-opus-4-7` (4.6 is the last one with `-v1`).
-  bedrock: 'us.anthropic.claude-opus-4-7',
-  vertex: 'claude-opus-4-7',
-  foundry: 'claude-opus-4-7',
-  openai: 'claude-opus-4-7',
-  gemini: 'claude-opus-4-7',
-  grok: 'claude-opus-4-7',
-} as const satisfies ModelConfig
-
-export const CLAUDE_OPUS_4_8_CONFIG = {
-  firstParty: 'claude-opus-4-8',
-  bedrock: 'us.anthropic.claude-opus-4-8',
-  vertex: 'claude-opus-4-8',
-  foundry: 'claude-opus-4-8',
-  openai: 'claude-opus-4-8',
-  gemini: 'claude-opus-4-8',
-  grok: 'claude-opus-4-8',
-} as const satisfies ModelConfig
-
-export const CLAUDE_OPUS_5_CONFIG = {
-  firstParty: 'claude-opus-5',
-  bedrock: 'us.anthropic.claude-opus-5',
-  vertex: 'claude-opus-5',
-  foundry: 'claude-opus-5',
-  openai: 'claude-opus-5',
-  gemini: 'claude-opus-5',
-  grok: 'claude-opus-5',
-} as const satisfies ModelConfig
-
-export const CLAUDE_SONNET_5_CONFIG = {
-  firstParty: 'claude-sonnet-5',
-  bedrock: 'us.anthropic.claude-sonnet-5',
-  vertex: 'claude-sonnet-5',
-  foundry: 'claude-sonnet-5',
-  openai: 'claude-sonnet-5',
-  gemini: 'claude-sonnet-5',
-  grok: 'claude-sonnet-5',
-} as const satisfies ModelConfig
-
-export const CLAUDE_SONNET_4_6_CONFIG = {
-  firstParty: 'claude-sonnet-4-6',
-  bedrock: 'us.anthropic.claude-sonnet-4-6',
-  vertex: 'claude-sonnet-4-6',
-  foundry: 'claude-sonnet-4-6',
-  openai: 'claude-sonnet-4-6',
-  gemini: 'claude-sonnet-4-6',
-  grok: 'claude-sonnet-4-6',
-} as const satisfies ModelConfig
-
-// @[MODEL LAUNCH]: Register the new config here.
-export const ALL_MODEL_CONFIGS = {
-  haiku35: CLAUDE_3_5_HAIKU_CONFIG,
-  haiku45: CLAUDE_HAIKU_4_5_CONFIG,
-  sonnet35: CLAUDE_3_5_V2_SONNET_CONFIG,
-  sonnet37: CLAUDE_3_7_SONNET_CONFIG,
-  sonnet40: CLAUDE_SONNET_4_CONFIG,
-  sonnet45: CLAUDE_SONNET_4_5_CONFIG,
-  sonnet46: CLAUDE_SONNET_4_6_CONFIG,
-  sonnet50: CLAUDE_SONNET_5_CONFIG,
-  opus40: CLAUDE_OPUS_4_CONFIG,
-  opus41: CLAUDE_OPUS_4_1_CONFIG,
-  opus45: CLAUDE_OPUS_4_5_CONFIG,
-  opus46: CLAUDE_OPUS_4_6_CONFIG,
-  opus47: CLAUDE_OPUS_4_7_CONFIG,
-  opus48: CLAUDE_OPUS_4_8_CONFIG,
-  opus50: CLAUDE_OPUS_5_CONFIG,
-} as const satisfies Record<string, ModelConfig>
-
-export type ModelKey = keyof typeof ALL_MODEL_CONFIGS
-
-/** Union of all canonical first-party model IDs, e.g. 'claude-opus-4-6' | 'claude-sonnet-4-5-20250929' | … */
-export type CanonicalModelId =
-  (typeof ALL_MODEL_CONFIGS)[ModelKey]['firstParty']
-
-/** Runtime list of canonical model IDs — used by comprehensiveness tests. */
-export const CANONICAL_MODEL_IDS = Object.values(ALL_MODEL_CONFIGS).map(
-  c => c.firstParty,
-) as [CanonicalModelId, ...CanonicalModelId[]]
-
-/** Map canonical ID → internal short key. Used to apply settings-based modelOverrides. */
-export const CANONICAL_ID_TO_KEY: Record<CanonicalModelId, ModelKey> =
-  Object.fromEntries(
-    (Object.entries(ALL_MODEL_CONFIGS) as [ModelKey, ModelConfig][]).map(
-      ([key, cfg]) => [cfg.firstParty, key],
-    ),
-  ) as Record<CanonicalModelId, ModelKey>
-
 export type ModelCatalogEntry = {
+  /**
+   * 字段名镜像官方模型表的对象键（bundle 里标识符被 minify，对象键没有，是
+   * 可确定的原始命名）：display_name / knowledge_cutoff / provider_ids /
+   * context.{window,native_1m,supports_1m_beta} /
+   * max_output_tokens.{default,upper} / pricing / capabilities /
+   * default_effort。逐字段对账脚本因此可以直接一一比对。
+   */
+  /** dev 内部短键（'opus47'），ALL_MODEL_CONFIGS 的 key。3.0 机型没有。 */
+  key?: string
   /** Canonical (date-stripped) ID, e.g. 'claude-opus-4-7'. */
   canonical: string
-  /**
-   * 字段名镜像官方模型表的对象键（bundle 里标识符被 minify，对象键没有，
-   * 是可确定的原始命名）：display_name / context.{window,native_1m,
-   * supports_1m_beta} / max_output_tokens.{default,upper} / pricing /
-   * capabilities。逐字段对账脚本因此可以直接一一比对。
-   */
   /** 官方 `display_name`。`undefined` 表示该机型从不在 UI 里按名呈现。 */
   displayName?: string
   /** dev 自有字段（官方用 `family`）。"Claude 4+" 类能力门测 `generation >= 4`。 */
   generation: number
+  /** 官方 `knowledge_cutoff`，写进 system prompt 的环境段。 */
+  knowledgeCutoff?: string
+  /** 官方 `provider_ids`。openai/gemini/grok 是 dev 自有映射，等同 firstParty。 */
+  providerIds?: {
+    firstParty: string
+    bedrock: string
+    vertex: string
+    foundry: string
+  }
   /** 官方 `context`。window 是不带任何 beta 时的基础窗口。 */
   context: { window: number; native1m: boolean; supports1mBeta: boolean }
   /** 官方 `max_output_tokens`。 */
@@ -217,6 +36,8 @@ export type ModelCatalogEntry = {
   pricing?: string
   /** 官方 `capabilities` 原样保留：effort / xhigh_effort / fast_mode 等按模型门控。 */
   capabilities: readonly string[]
+  /** 官方 `default_effort`。缺省表示该机型没有默认 effort。 */
+  defaultEffort?: string
 }
 
 /**
@@ -233,9 +54,17 @@ export type ModelCatalogEntry = {
  */
 export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
   {
+    key: 'opus50',
     canonical: 'claude-opus-5',
     displayName: 'Opus 5',
     generation: 5,
+    knowledgeCutoff: 'May 2026',
+    providerIds: {
+      firstParty: 'claude-opus-5',
+      bedrock: 'us.anthropic.claude-opus-5',
+      vertex: 'claude-opus-5',
+      foundry: 'claude-opus-5',
+    },
     context: {
       window: 1_000_000,
       native1m: true,
@@ -255,11 +84,20 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       'refusal_fallback',
       'opus_5_prompt_bundle',
     ],
+    defaultEffort: 'high',
   },
   {
+    key: 'opus48',
     canonical: 'claude-opus-4-8',
     displayName: 'Opus 4.8',
     generation: 4,
+    knowledgeCutoff: 'January 2026',
+    providerIds: {
+      firstParty: 'claude-opus-4-8',
+      bedrock: 'us.anthropic.claude-opus-4-8',
+      vertex: 'claude-opus-4-8',
+      foundry: 'claude-opus-4-8',
+    },
     context: {
       window: 1_000_000,
       native1m: true,
@@ -277,11 +115,20 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       'fast_mode',
       'lean_prompt',
     ],
+    defaultEffort: 'high',
   },
   {
+    key: 'opus47',
     canonical: 'claude-opus-4-7',
     displayName: 'Opus 4.7',
     generation: 4,
+    knowledgeCutoff: 'January 2026',
+    providerIds: {
+      firstParty: 'claude-opus-4-7',
+      bedrock: 'us.anthropic.claude-opus-4-7',
+      vertex: 'claude-opus-4-7',
+      foundry: 'claude-opus-4-7',
+    },
     context: {
       window: 1_000_000,
       native1m: true,
@@ -297,11 +144,20 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       'context_management',
       'fast_mode',
     ],
+    defaultEffort: 'xhigh',
   },
   {
+    key: 'opus46',
     canonical: 'claude-opus-4-6',
     displayName: 'Opus 4.6',
     generation: 4,
+    knowledgeCutoff: 'May 2025',
+    providerIds: {
+      firstParty: 'claude-opus-4-6',
+      bedrock: 'us.anthropic.claude-opus-4-6-v1',
+      vertex: 'claude-opus-4-6',
+      foundry: 'claude-opus-4-6',
+    },
     context: {
       window: 200_000,
       native1m: false,
@@ -315,11 +171,20 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       'adaptive_thinking',
       'context_management',
     ],
+    defaultEffort: 'xhigh',
   },
   {
+    key: 'opus45',
     canonical: 'claude-opus-4-5',
     displayName: 'Opus 4.5',
     generation: 4,
+    knowledgeCutoff: 'May 2025',
+    providerIds: {
+      firstParty: 'claude-opus-4-5-20251101',
+      bedrock: 'us.anthropic.claude-opus-4-5-20251101-v1:0',
+      vertex: 'claude-opus-4-5@20251101',
+      foundry: 'claude-opus-4-5',
+    },
     context: {
       window: 200_000,
       native1m: false,
@@ -330,9 +195,17 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     capabilities: ['context_management'],
   },
   {
+    key: 'opus41',
     canonical: 'claude-opus-4-1',
     displayName: 'Opus 4.1',
     generation: 4,
+    knowledgeCutoff: 'January 2025',
+    providerIds: {
+      firstParty: 'claude-opus-4-1-20250805',
+      bedrock: 'us.anthropic.claude-opus-4-1-20250805-v1:0',
+      vertex: 'claude-opus-4-1@20250805',
+      foundry: 'claude-opus-4-1',
+    },
     context: {
       window: 200_000,
       native1m: false,
@@ -343,9 +216,17 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     capabilities: ['context_management'],
   },
   {
+    key: 'opus40',
     canonical: 'claude-opus-4',
     displayName: 'Opus 4',
     generation: 4,
+    knowledgeCutoff: 'January 2025',
+    providerIds: {
+      firstParty: 'claude-opus-4-20250514',
+      bedrock: 'us.anthropic.claude-opus-4-20250514-v1:0',
+      vertex: 'claude-opus-4@20250514',
+      foundry: 'claude-opus-4',
+    },
     context: {
       window: 200_000,
       native1m: false,
@@ -356,9 +237,17 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     capabilities: ['context_management'],
   },
   {
+    key: 'sonnet50',
     canonical: 'claude-sonnet-5',
     displayName: 'Sonnet 5',
     generation: 5,
+    knowledgeCutoff: 'January 2026',
+    providerIds: {
+      firstParty: 'claude-sonnet-5',
+      bedrock: 'us.anthropic.claude-sonnet-5',
+      vertex: 'claude-sonnet-5',
+      foundry: 'claude-sonnet-5',
+    },
     context: {
       window: 1_000_000,
       native1m: true,
@@ -374,11 +263,20 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       'mid_conv_system',
       'context_management',
     ],
+    defaultEffort: 'high',
   },
   {
+    key: 'sonnet46',
     canonical: 'claude-sonnet-4-6',
     displayName: 'Sonnet 4.6',
     generation: 4,
+    knowledgeCutoff: 'August 2025',
+    providerIds: {
+      firstParty: 'claude-sonnet-4-6',
+      bedrock: 'us.anthropic.claude-sonnet-4-6',
+      vertex: 'claude-sonnet-4-6',
+      foundry: 'claude-sonnet-4-6',
+    },
     context: {
       window: 200_000,
       native1m: false,
@@ -392,11 +290,20 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       'adaptive_thinking',
       'context_management',
     ],
+    defaultEffort: 'high',
   },
   {
+    key: 'sonnet45',
     canonical: 'claude-sonnet-4-5',
     displayName: 'Sonnet 4.5',
     generation: 4,
+    knowledgeCutoff: 'January 2025',
+    providerIds: {
+      firstParty: 'claude-sonnet-4-5-20250929',
+      bedrock: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+      vertex: 'claude-sonnet-4-5@20250929',
+      foundry: 'claude-sonnet-4-5',
+    },
     context: {
       window: 200_000,
       native1m: false,
@@ -407,9 +314,17 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     capabilities: ['context_management'],
   },
   {
+    key: 'sonnet40',
     canonical: 'claude-sonnet-4',
     displayName: 'Sonnet 4',
     generation: 4,
+    knowledgeCutoff: 'January 2025',
+    providerIds: {
+      firstParty: 'claude-sonnet-4-20250514',
+      bedrock: 'us.anthropic.claude-sonnet-4-20250514-v1:0',
+      vertex: 'claude-sonnet-4@20250514',
+      foundry: 'claude-sonnet-4',
+    },
     context: {
       window: 200_000,
       native1m: false,
@@ -420,9 +335,17 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     capabilities: ['context_management'],
   },
   {
+    key: 'haiku45',
     canonical: 'claude-haiku-4-5',
     displayName: 'Haiku 4.5',
     generation: 4,
+    knowledgeCutoff: 'February 2025',
+    providerIds: {
+      firstParty: 'claude-haiku-4-5-20251001',
+      bedrock: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+      vertex: 'claude-haiku-4-5@20251001',
+      foundry: 'claude-haiku-4-5',
+    },
     context: {
       window: 200_000,
       native1m: false,
@@ -433,9 +356,17 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     capabilities: ['context_management'],
   },
   {
+    key: 'sonnet37',
     canonical: 'claude-3-7-sonnet',
     displayName: 'Claude 3.7 Sonnet',
     generation: 3,
+    knowledgeCutoff: 'January 2025',
+    providerIds: {
+      firstParty: 'claude-3-7-sonnet-20250219',
+      bedrock: 'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
+      vertex: 'claude-3-7-sonnet@20250219',
+      foundry: 'claude-3-7-sonnet',
+    },
     context: {
       window: 200_000,
       native1m: false,
@@ -446,9 +377,17 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     capabilities: [],
   },
   {
+    key: 'sonnet35',
     canonical: 'claude-3-5-sonnet',
     displayName: 'Claude 3.5 Sonnet',
     generation: 3,
+    knowledgeCutoff: 'January 2025',
+    providerIds: {
+      firstParty: 'claude-3-5-sonnet-20241022',
+      bedrock: 'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
+      vertex: 'claude-3-5-sonnet-v2@20241022',
+      foundry: 'claude-3-5-sonnet',
+    },
     context: {
       window: 200_000,
       native1m: false,
@@ -459,9 +398,17 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     capabilities: [],
   },
   {
+    key: 'haiku35',
     canonical: 'claude-3-5-haiku',
     displayName: 'Claude 3.5 Haiku',
     generation: 3,
+    knowledgeCutoff: 'February 2025',
+    providerIds: {
+      firstParty: 'claude-3-5-haiku-20241022',
+      bedrock: 'us.anthropic.claude-3-5-haiku-20241022-v1:0',
+      vertex: 'claude-3-5-haiku@20241022',
+      foundry: 'claude-3-5-haiku',
+    },
     context: {
       window: 200_000,
       native1m: false,
@@ -495,6 +442,38 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
   },
 ]
 
+/**
+ * provider 各家的模型 ID 由 MODEL_CATALOG 的 `providerIds` 派生 —— 官方把它
+ * 记在同一行对象的 `provider_ids` 里，dev 此前另立一张表，加模型要改两处，
+ * 而"只改了一处"正是 1M 判定、输出上限、知识截止那几个缺陷的共同成因。
+ *
+ * openai / gemini / grok 是 dev 自有的兼容层，官方没有对应项；它们沿用
+ * firstParty 的 ID，由映射层再做转换。
+ */
+function toModelConfig(entry: ModelCatalogEntry): ModelConfig {
+  const ids = entry.providerIds!
+  return {
+    firstParty: ids.firstParty,
+    bedrock: ids.bedrock,
+    vertex: ids.vertex,
+    foundry: ids.foundry,
+    openai: ids.firstParty,
+    gemini: ids.firstParty,
+    grok: ids.firstParty,
+  }
+}
+
+export const ALL_MODEL_CONFIGS = Object.fromEntries(
+  MODEL_CATALOG.filter(e => e.key !== undefined).map(e => [
+    e.key!,
+    toModelConfig(e),
+  ]),
+) as Record<string, ModelConfig>
+
+/** 少数调用方按名引用单个 config。 */
+export const CLAUDE_OPUS_4_6_CONFIG = ALL_MODEL_CONFIGS.opus46!
+export const CLAUDE_OPUS_4_7_CONFIG = ALL_MODEL_CONFIGS.opus47!
+
 /** Longest canonical first, so 'claude-opus-4-7' wins over 'claude-opus-4'. */
 const CATALOG_BY_SPECIFICITY = [...MODEL_CATALOG].sort(
   (a, b) => b.canonical.length - a.canonical.length,
@@ -515,3 +494,22 @@ export function lookupModelCatalog(
 export function modelHasCapability(model: string, capability: string): boolean {
   return lookupModelCatalog(model)?.capabilities.includes(capability) ?? false
 }
+
+export type ModelKey = keyof typeof ALL_MODEL_CONFIGS
+
+/** Union of all canonical first-party model IDs, e.g. 'claude-opus-4-6' | 'claude-sonnet-4-5-20250929' | … */
+export type CanonicalModelId =
+  (typeof ALL_MODEL_CONFIGS)[ModelKey]['firstParty']
+
+/** Runtime list of canonical model IDs — used by comprehensiveness tests. */
+export const CANONICAL_MODEL_IDS = Object.values(ALL_MODEL_CONFIGS).map(
+  c => c.firstParty,
+) as [CanonicalModelId, ...CanonicalModelId[]]
+
+/** Map canonical ID → internal short key. Used to apply settings-based modelOverrides. */
+export const CANONICAL_ID_TO_KEY: Record<CanonicalModelId, ModelKey> =
+  Object.fromEntries(
+    (Object.entries(ALL_MODEL_CONFIGS) as [ModelKey, ModelConfig][]).map(
+      ([key, cfg]) => [cfg.firstParty, key],
+    ),
+  ) as Record<CanonicalModelId, ModelKey>

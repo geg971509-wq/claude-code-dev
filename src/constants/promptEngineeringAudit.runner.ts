@@ -9,6 +9,7 @@
  */
 
 import { describe, test, expect, mock, beforeEach } from 'bun:test'
+import { MODEL_CATALOG } from '../utils/model/configs.js'
 
 // --- MACRO 全局注入 (编译时 define 在测试中不可用) ---
 ;(globalThis as any).MACRO = {
@@ -553,14 +554,25 @@ describe('Opus 4.7 Prompt Engineering Audit', () => {
 
     test('env info contains model family', async () => {
       const envInfo = await computeSimpleEnvInfo('claude-opus-4-7')
-      expect(envInfo).toContain('Claude 4.5/4.6/4.7')
+      // 机型代次由 MODEL_CATALOG 推导，不再是写死的散文。
+      expect(envInfo).toContain('The most recent Claude models are')
     })
 
-    test('env info contains correct model IDs', async () => {
+    test('env info advertises the latest model of each tier', async () => {
+      // 断言"最新"而不是某个写死的版本号：这三条随 MODEL_CATALOG 走，
+      // 否则每加一代模型这个测试都会变成需要人工同步的死锁。
       const envInfo = await computeSimpleEnvInfo('claude-opus-4-7')
+      for (const family of ['opus', 'sonnet', 'haiku'] as const) {
+        const latest = MODEL_CATALOG.find(
+          e =>
+            e.key !== undefined && e.canonical.startsWith(`claude-${family}-`),
+        )
+        expect(envInfo).toContain(
+          latest?.providerIds?.firstParty ?? latest?.canonical ?? '',
+        )
+      }
+      // 被查询的机型自身也必须出现。
       expect(envInfo).toContain('claude-opus-4-7')
-      expect(envInfo).toContain('claude-sonnet-4-6')
-      expect(envInfo).toContain('claude-haiku-4-5')
     })
 
     test('mentions Chrome/Excel/Cowork products', async () => {

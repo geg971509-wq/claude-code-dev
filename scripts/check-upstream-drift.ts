@@ -124,6 +124,11 @@ type OfficialModel = {
   outUpper: number | undefined
   pricing: string | undefined
   capabilities: string[]
+  knowledgeCutoff: string | undefined
+  defaultEffort: string | undefined
+  firstParty: string | undefined
+  bedrock: string | undefined
+  vertex: string | undefined
 }
 
 /** 官方 id → dev canonical。官方用 `-4-0`，dev 用不带 `-0` 的形式。 */
@@ -151,6 +156,11 @@ export function parseOfficialModelTable(bundle: string): OfficialModel[] {
       outDefault: out2 ? Number(out2[1]) : undefined,
       outUpper: out2 ? Number(out2[2]) : undefined,
       pricing: /pricing: "([^"]+)"/.exec(seg)?.[1],
+      knowledgeCutoff: /knowledge_cutoff: "([^"]+)"/.exec(seg)?.[1],
+      defaultEffort: /default_effort: "([a-z]+)"/.exec(seg)?.[1],
+      firstParty: /first_party: "([^"]+)"/.exec(seg)?.[1],
+      bedrock: /bedrock: "([^"]+)"/.exec(seg)?.[1],
+      vertex: /vertex: "([^"]+)"/.exec(seg)?.[1],
       capabilities: caps
         .split(',')
         .map(c => c.trim().replace(/^"|"$/g, ''))
@@ -187,6 +197,11 @@ function reconcileModelTable(bundle: string): void {
       ['max_output_tokens.default', o.outDefault, dev.maxOutputTokens.default],
       ['max_output_tokens.upper', o.outUpper, dev.maxOutputTokens.upper],
       ['pricing', o.pricing, dev.pricing],
+      ['knowledge_cutoff', o.knowledgeCutoff, dev.knowledgeCutoff],
+      ['default_effort', o.defaultEffort, dev.defaultEffort],
+      ['provider_ids.first_party', o.firstParty, dev.providerIds?.firstParty],
+      ['provider_ids.bedrock', o.bedrock, dev.providerIds?.bedrock],
+      ['provider_ids.vertex', o.vertex, dev.providerIds?.vertex],
       [
         'capabilities',
         [...o.capabilities].sort().join(','),

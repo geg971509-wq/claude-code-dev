@@ -353,11 +353,11 @@ export function getDefaultEffortForModel(
     return 'medium'
   }
 
-  // Default effort on Opus 4.6 to medium for Pro.
-  // Max/Team also get medium when the tengu_grey_step2 config is enabled.
+  // 订阅层的抬升逻辑保持不变，只把"哪些机型有默认 effort"改为查 catalog 的
+  // `defaultEffort`（官方逐模型字段）。此前是 opus-4-7/4-6 的硬编码前缀，
+  // opus-4-8 / opus-5 / sonnet-5 一律漏掉。
   if (
-    model.toLowerCase().includes('opus-4-7') ||
-    model.toLowerCase().includes('opus-4-6')
+    lookupModelCatalog(getCanonicalName(model))?.defaultEffort !== undefined
   ) {
     if (isProSubscriber()) {
       return 'high'
