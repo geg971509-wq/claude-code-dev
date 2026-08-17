@@ -98,12 +98,7 @@
         "pages": [
           {
             "group": "Agent 与协作",
-            "pages": [
-              "docs/features/coordinator-mode",
-              "docs/features/fork-subagent",
-              "docs/features/daemon",
-              "docs/features/teammem"
-            ]
+            "pages": ["docs/features/coordinator-mode", "docs/features/daemon"]
           },
           {
             "group": "运行模式",
@@ -130,7 +125,6 @@
             "group": "上下文与自动化",
             "pages": [
               "docs/features/token-budget",
-              "docs/features/context-collapse",
               "docs/features/workflow-scripts",
               "docs/features/auto-dream"
             ]
