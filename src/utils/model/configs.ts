@@ -108,12 +108,44 @@ export const CLAUDE_OPUS_4_6_CONFIG = {
 
 export const CLAUDE_OPUS_4_7_CONFIG = {
   firstParty: 'claude-opus-4-7',
-  bedrock: 'us.anthropic.claude-opus-4-7-v1',
+  // No `-v1` suffix — verified against the official bundle, which carries
+  // `us.anthropic.claude-opus-4-7` (4.6 is the last one with `-v1`).
+  bedrock: 'us.anthropic.claude-opus-4-7',
   vertex: 'claude-opus-4-7',
   foundry: 'claude-opus-4-7',
   openai: 'claude-opus-4-7',
   gemini: 'claude-opus-4-7',
   grok: 'claude-opus-4-7',
+} as const satisfies ModelConfig
+
+export const CLAUDE_OPUS_4_8_CONFIG = {
+  firstParty: 'claude-opus-4-8',
+  bedrock: 'us.anthropic.claude-opus-4-8',
+  vertex: 'claude-opus-4-8',
+  foundry: 'claude-opus-4-8',
+  openai: 'claude-opus-4-8',
+  gemini: 'claude-opus-4-8',
+  grok: 'claude-opus-4-8',
+} as const satisfies ModelConfig
+
+export const CLAUDE_OPUS_5_CONFIG = {
+  firstParty: 'claude-opus-5',
+  bedrock: 'us.anthropic.claude-opus-5',
+  vertex: 'claude-opus-5',
+  foundry: 'claude-opus-5',
+  openai: 'claude-opus-5',
+  gemini: 'claude-opus-5',
+  grok: 'claude-opus-5',
+} as const satisfies ModelConfig
+
+export const CLAUDE_SONNET_5_CONFIG = {
+  firstParty: 'claude-sonnet-5',
+  bedrock: 'us.anthropic.claude-sonnet-5',
+  vertex: 'claude-sonnet-5',
+  foundry: 'claude-sonnet-5',
+  openai: 'claude-sonnet-5',
+  gemini: 'claude-sonnet-5',
+  grok: 'claude-sonnet-5',
 } as const satisfies ModelConfig
 
 export const CLAUDE_SONNET_4_6_CONFIG = {
@@ -135,11 +167,14 @@ export const ALL_MODEL_CONFIGS = {
   sonnet40: CLAUDE_SONNET_4_CONFIG,
   sonnet45: CLAUDE_SONNET_4_5_CONFIG,
   sonnet46: CLAUDE_SONNET_4_6_CONFIG,
+  sonnet50: CLAUDE_SONNET_5_CONFIG,
   opus40: CLAUDE_OPUS_4_CONFIG,
   opus41: CLAUDE_OPUS_4_1_CONFIG,
   opus45: CLAUDE_OPUS_4_5_CONFIG,
   opus46: CLAUDE_OPUS_4_6_CONFIG,
   opus47: CLAUDE_OPUS_4_7_CONFIG,
+  opus48: CLAUDE_OPUS_4_8_CONFIG,
+  opus50: CLAUDE_OPUS_5_CONFIG,
 } as const satisfies Record<string, ModelConfig>
 
 export type ModelKey = keyof typeof ALL_MODEL_CONFIGS
@@ -160,3 +195,170 @@ export const CANONICAL_ID_TO_KEY: Record<CanonicalModelId, ModelKey> =
       ([key, cfg]) => [cfg.firstParty, key],
     ),
   ) as Record<CanonicalModelId, ModelKey>
+
+export type ModelCatalogEntry = {
+  /** Canonical (date-stripped) ID, e.g. 'claude-opus-4-7'. */
+  canonical: string
+  /** UI label. `undefined` for models we recognize but never surface by name. */
+  marketing?: string
+  /** Model generation. Capability gates spelled "Claude 4+" test `generation >= 4`. */
+  generation: number
+  /** Has a 1M-context variant (drives both the [1m] suffix and the UI label). */
+  supports1m: boolean
+  supportsStructuredOutputs: boolean
+}
+
+/**
+ * 每个模型一行的事实表 —— 加模型只改这里。
+ *
+ * 在此之前，同一份事实散在四条 `canonical.includes('claude-opus-4-7')` 的
+ * if 链里（canonical 归一、UI 名、1M 支持、structured outputs），每条都靠
+ * "长的写在前面"的书写顺序才正确。新模型漏改任何一条都不会报错，只会静默
+ * 落到错误分支 —— `claude-opus-5` 尤其危险：它不含子串 `claude-opus-4`，
+ * 会让所有"Claude 4+"的能力门直接判成 false。这里改用 generation 字段 +
+ * 最长匹配查表，两个坑一起堵掉。
+ *
+ * 顺序不影响正确性（查表按 canonical 长度降序），只影响可读性。
+ */
+export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
+  {
+    canonical: 'claude-opus-5',
+    marketing: 'Opus 5',
+    generation: 5,
+    supports1m: true,
+    supportsStructuredOutputs: true,
+  },
+  {
+    canonical: 'claude-opus-4-8',
+    marketing: 'Opus 4.8',
+    generation: 4,
+    supports1m: true,
+    supportsStructuredOutputs: true,
+  },
+  {
+    canonical: 'claude-opus-4-7',
+    marketing: 'Opus 4.7',
+    generation: 4,
+    supports1m: true,
+    supportsStructuredOutputs: true,
+  },
+  {
+    canonical: 'claude-opus-4-6',
+    marketing: 'Opus 4.6',
+    generation: 4,
+    supports1m: true,
+    supportsStructuredOutputs: true,
+  },
+  {
+    canonical: 'claude-opus-4-5',
+    marketing: 'Opus 4.5',
+    generation: 4,
+    supports1m: false,
+    supportsStructuredOutputs: true,
+  },
+  {
+    canonical: 'claude-opus-4-1',
+    marketing: 'Opus 4.1',
+    generation: 4,
+    supports1m: false,
+    supportsStructuredOutputs: true,
+  },
+  {
+    canonical: 'claude-opus-4',
+    marketing: 'Opus 4',
+    generation: 4,
+    supports1m: false,
+    supportsStructuredOutputs: false,
+  },
+  {
+    canonical: 'claude-sonnet-5',
+    marketing: 'Sonnet 5',
+    generation: 5,
+    supports1m: true,
+    supportsStructuredOutputs: true,
+  },
+  {
+    canonical: 'claude-sonnet-4-6',
+    marketing: 'Sonnet 4.6',
+    generation: 4,
+    supports1m: true,
+    supportsStructuredOutputs: true,
+  },
+  {
+    canonical: 'claude-sonnet-4-5',
+    marketing: 'Sonnet 4.5',
+    generation: 4,
+    supports1m: true,
+    supportsStructuredOutputs: true,
+  },
+  {
+    canonical: 'claude-sonnet-4',
+    marketing: 'Sonnet 4',
+    generation: 4,
+    supports1m: true,
+    supportsStructuredOutputs: false,
+  },
+  {
+    canonical: 'claude-haiku-4-5',
+    marketing: 'Haiku 4.5',
+    generation: 4,
+    supports1m: false,
+    supportsStructuredOutputs: true,
+  },
+  {
+    canonical: 'claude-3-7-sonnet',
+    marketing: 'Claude 3.7 Sonnet',
+    generation: 3,
+    supports1m: false,
+    supportsStructuredOutputs: false,
+  },
+  {
+    canonical: 'claude-3-5-sonnet',
+    marketing: 'Claude 3.5 Sonnet',
+    generation: 3,
+    supports1m: false,
+    supportsStructuredOutputs: false,
+  },
+  {
+    canonical: 'claude-3-5-haiku',
+    marketing: 'Claude 3.5 Haiku',
+    generation: 3,
+    supports1m: false,
+    supportsStructuredOutputs: false,
+  },
+  // 3.0 models: recognized for canonical normalization, never offered in the UI.
+  {
+    canonical: 'claude-3-opus',
+    generation: 3,
+    supports1m: false,
+    supportsStructuredOutputs: false,
+  },
+  {
+    canonical: 'claude-3-sonnet',
+    generation: 3,
+    supports1m: false,
+    supportsStructuredOutputs: false,
+  },
+  {
+    canonical: 'claude-3-haiku',
+    generation: 3,
+    supports1m: false,
+    supportsStructuredOutputs: false,
+  },
+]
+
+/** Longest canonical first, so 'claude-opus-4-7' wins over 'claude-opus-4'. */
+const CATALOG_BY_SPECIFICITY = [...MODEL_CATALOG].sort(
+  (a, b) => b.canonical.length - a.canonical.length,
+)
+
+/**
+ * Find the catalog row for any model string — accepts full provider IDs
+ * ('us.anthropic.claude-opus-4-6-v1:0'), canonical IDs, and `[1m]` suffixes.
+ */
+export function lookupModelCatalog(
+  model: string,
+): ModelCatalogEntry | undefined {
+  const needle = model.toLowerCase()
+  return CATALOG_BY_SPECIFICITY.find(e => needle.includes(e.canonical))
+}

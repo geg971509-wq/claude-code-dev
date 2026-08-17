@@ -3,6 +3,7 @@ import { CONTEXT_1M_BETA_HEADER } from '../constants/betas.js'
 import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
+import { lookupModelCatalog } from './model/configs.js'
 import { resolveAntModel } from './model/antModels.js'
 import {
   CHATGPT_CODEX_MAX_OUTPUT_TOKENS,
@@ -49,12 +50,7 @@ export function modelSupports1M(model: string): boolean {
   if (is1mContextDisabled()) {
     return false
   }
-  const canonical = getCanonicalName(model)
-  return (
-    canonical.includes('claude-sonnet-4') ||
-    canonical.includes('opus-4-6') ||
-    canonical.includes('opus-4-7')
-  )
+  return lookupModelCatalog(getCanonicalName(model))?.supports1m ?? false
 }
 
 export function getContextWindowForModel(

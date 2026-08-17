@@ -25,6 +25,7 @@ import { isClaudeAISubscriber } from './auth.js'
 import { has1mContext } from './context.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
+import { lookupModelCatalog } from './model/configs.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import {
   getAPIProvider,
@@ -106,19 +107,30 @@ export function modelSupportsISP(model: string): boolean {
   if (provider === 'firstParty') {
     return !canonical.includes('claude-3-')
   }
+  // Non-firstParty: Claude 4+ Opus/Sonnet only (no Haiku).
+  const entry = lookupModelCatalog(canonical)
+  if (!entry || entry.generation < 4) {
+    return false
+  }
   return (
-    canonical.includes('claude-opus-4') || canonical.includes('claude-sonnet-4')
+    entry.canonical.startsWith('claude-opus') ||
+    entry.canonical.startsWith('claude-sonnet')
   )
 }
 
+/**
+ * "Claude 4+" 能力门。用 generation 字段而不是 `includes('claude-opus-4')`
+ * —— 后者对 `claude-opus-5` / `claude-sonnet-5` 是 false，会把新一代模型
+ * 静默降级成 3.x 待遇。
+ */
+function isClaude4Plus(model: string): boolean {
+  const entry = lookupModelCatalog(model)
+  return entry !== undefined && entry.generation >= 4
+}
+
 function vertexModelSupportsWebSearch(model: string): boolean {
-  const canonical = getCanonicalName(model)
   // Web search only supported on Claude 4.0+ models on Vertex
-  return (
-    canonical.includes('claude-opus-4') ||
-    canonical.includes('claude-sonnet-4') ||
-    canonical.includes('claude-haiku-4')
-  )
+  return isClaude4Plus(getCanonicalName(model))
 }
 
 // Context management is supported on Claude 4+ models
@@ -131,29 +143,18 @@ export function modelSupportsContextManagement(model: string): boolean {
   if (provider === 'firstParty') {
     return !canonical.includes('claude-3-')
   }
-  return (
-    canonical.includes('claude-opus-4') ||
-    canonical.includes('claude-sonnet-4') ||
-    canonical.includes('claude-haiku-4')
-  )
+  return isClaude4Plus(canonical)
 }
 
-// @[MODEL LAUNCH]: Add the new model ID to this list if it supports structured outputs.
 export function modelSupportsStructuredOutputs(model: string): boolean {
-  const canonical = getCanonicalName(model)
   const provider = getAPIProvider()
   // Structured outputs only supported on firstParty and Foundry (not Bedrock/Vertex yet)
   if (provider !== 'firstParty' && provider !== 'foundry') {
     return false
   }
   return (
-    canonical.includes('claude-sonnet-4-6') ||
-    canonical.includes('claude-sonnet-4-5') ||
-    canonical.includes('claude-opus-4-1') ||
-    canonical.includes('claude-opus-4-5') ||
-    canonical.includes('claude-opus-4-6') ||
-    canonical.includes('claude-opus-4-7') ||
-    canonical.includes('claude-haiku-4-5')
+    lookupModelCatalog(getCanonicalName(model))?.supportsStructuredOutputs ??
+    false
   )
 }
 
