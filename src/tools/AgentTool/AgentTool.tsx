@@ -37,7 +37,7 @@ import {
   registerRemoteAgentTask,
   type BackgroundRemoteSessionPrecondition,
 } from 'src/tasks/RemoteAgentTask/RemoteAgentTask.js';
-import { assembleToolPool } from 'src/tools.js';
+import { assembleToolPool } from 'src/toolRegistry.js';
 import { asAgentId } from '@claude-code-best/core-utils/ids';
 import { runWithAgentContext, type SubagentContext } from 'src/utils/agentContext.js';
 import { isAgentSwarmsEnabled } from 'src/utils/agentSwarmsEnabled.js';

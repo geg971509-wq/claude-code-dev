@@ -640,7 +640,7 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   if (!entry?.marketing) {
     return undefined
   }
-  return has1m && entry.supports1m
+  return has1m && (entry.native1m || entry.supports1mBeta)
     ? `${entry.marketing} (with 1M context)`
     : entry.marketing
 }

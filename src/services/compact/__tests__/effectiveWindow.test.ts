@@ -38,11 +38,17 @@ import {
   MAX_OUTPUT_TOKENS_FOR_SUMMARY,
 } from '../effectiveWindow'
 
+// Both tests below need a model whose base window is 200k and whose 1M is
+// beta-gated — the official model table records those as two separate facts
+// (`context.window` vs `context.supports_1m_beta`). sonnet-4-5 is that shape;
+// opus-4-7 is not (it is `native_1m`, so the beta has nothing left to raise
+// and the reserve gap disappears behind a 5x window difference).
+//
 // Not sonnet-4-6: that name reaches getSonnet1mExpTreatmentEnabled, which
-// reads the user's global config, so its window differs per machine. opus-4-7
-// skips that branch and its raw max output is 64000 — comfortably above
-// MAX_OUTPUT_TOKENS_FOR_SUMMARY, which the reserve test below depends on.
-const MODEL = 'claude-opus-4-7'
+// reads the user's global config, so its window differs per machine.
+// sonnet-4-5's raw max output is 32000 — above MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+// which the reserve test below depends on.
+const MODEL = 'claude-sonnet-4-5'
 const ENV_VAR = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW'
 
 const CONFIG_DIR_VAR = 'CLAUDE_CONFIG_DIR'

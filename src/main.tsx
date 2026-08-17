@@ -57,7 +57,7 @@ import {
   createSyntheticOutputTool,
   isSyntheticOutputToolEnabled,
 } from 'src/tools/SyntheticOutputTool/SyntheticOutputTool.js';
-import { getTools } from './tools.js';
+import { getTools } from './toolRegistry.js';
 import {
   canUserConfigureAdvisor,
   getInitialAdvisorSetting,

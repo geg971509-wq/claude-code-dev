@@ -50,7 +50,10 @@ import {
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import { BASH_TOOL_NAME } from 'src/tools/BashTool/toolName.js'
 import { POWERSHELL_TOOL_NAME } from 'src/tools/PowerShellTool/toolName.js'
-import { getToolsForDefaultPreset, parseToolPreset } from '../../tools.js'
+import {
+  getToolsForDefaultPreset,
+  parseToolPreset,
+} from '../../toolRegistry.js'
 import {
   getFsImplementation,
   safeResolvePath,

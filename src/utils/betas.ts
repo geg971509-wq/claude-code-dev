@@ -152,10 +152,15 @@ export function modelSupportsStructuredOutputs(model: string): boolean {
   if (provider !== 'firstParty' && provider !== 'foundry') {
     return false
   }
-  return (
-    lookupModelCatalog(getCanonicalName(model))?.supportsStructuredOutputs ??
-    false
-  )
+  // Blocklist, mirroring the official client: every model supports
+  // structured outputs except the 3.x line and the two `-4-0` releases. An
+  // allowlist would silently exclude each newly launched model until someone
+  // remembered to add it.
+  const canonical = getCanonicalName(model)
+  if (canonical.includes('claude-3-')) {
+    return false
+  }
+  return canonical !== 'claude-opus-4' && canonical !== 'claude-sonnet-4'
 }
 
 export function modelSupportsAutoMode(_model: string): boolean {

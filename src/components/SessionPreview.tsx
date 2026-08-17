@@ -2,7 +2,7 @@ import type { UUID } from 'crypto';
 import React, { useCallback } from 'react';
 import { Box, Text, Byline, KeyboardShortcutHint, LoadingState } from '@anthropic/ink';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
-import { getAllBaseTools } from '../tools.js';
+import { getAllBaseTools } from '../toolRegistry.js';
 import type { LogOption } from '../types/logs.js';
 import { formatRelativeTimeAgo } from '../utils/format.js';
 import { getSessionIdFromLog, isLiteLog, loadFullLog } from '../utils/sessionStorage.js';

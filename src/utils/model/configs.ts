@@ -203,9 +203,18 @@ export type ModelCatalogEntry = {
   marketing?: string
   /** Model generation. Capability gates spelled "Claude 4+" test `generation >= 4`. */
   generation: number
-  /** Has a 1M-context variant (drives both the [1m] suffix and the UI label). */
-  supports1m: boolean
-  supportsStructuredOutputs: boolean
+  /**
+   * 官方 `context` 三元组的逐条映射（`window` / `native_1m` /
+   * `supports_1m_beta`）。dev 之前只有一个 `supports1m` 布尔，把"窗口本来
+   * 就是 1M"和"带 context-1m beta 才到 1M"混成了一件事 —— sonnet-4-5 因此
+   * 在不带 beta 时也被按 1M 计算，autocompact 迟迟不触发直到吃真实 413。
+   */
+  /** 不带任何 beta 时的基础窗口。 */
+  contextWindow: number
+  /** 窗口原生就是 1M，不需要 beta。 */
+  native1m: boolean
+  /** 带 `context-1m` beta 可以升到 1M。 */
+  supports1mBeta: boolean
 }
 
 /**
@@ -225,125 +234,143 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     canonical: 'claude-opus-5',
     marketing: 'Opus 5',
     generation: 5,
-    supports1m: true,
-    supportsStructuredOutputs: true,
+    contextWindow: 1_000_000,
+    native1m: true,
+    supports1mBeta: true,
   },
   {
     canonical: 'claude-opus-4-8',
     marketing: 'Opus 4.8',
     generation: 4,
-    supports1m: true,
-    supportsStructuredOutputs: true,
+    contextWindow: 1_000_000,
+    native1m: true,
+    supports1mBeta: true,
   },
   {
     canonical: 'claude-opus-4-7',
     marketing: 'Opus 4.7',
     generation: 4,
-    supports1m: true,
-    supportsStructuredOutputs: true,
+    contextWindow: 1_000_000,
+    native1m: true,
+    supports1mBeta: true,
   },
   {
     canonical: 'claude-opus-4-6',
     marketing: 'Opus 4.6',
     generation: 4,
-    supports1m: true,
-    supportsStructuredOutputs: true,
+    contextWindow: 200_000,
+    native1m: false,
+    supports1mBeta: true,
   },
   {
     canonical: 'claude-opus-4-5',
     marketing: 'Opus 4.5',
     generation: 4,
-    supports1m: false,
-    supportsStructuredOutputs: true,
+    contextWindow: 200_000,
+    native1m: false,
+    supports1mBeta: false,
   },
   {
     canonical: 'claude-opus-4-1',
     marketing: 'Opus 4.1',
     generation: 4,
-    supports1m: false,
-    supportsStructuredOutputs: true,
+    contextWindow: 200_000,
+    native1m: false,
+    supports1mBeta: false,
   },
   {
     canonical: 'claude-opus-4',
     marketing: 'Opus 4',
     generation: 4,
-    supports1m: false,
-    supportsStructuredOutputs: false,
+    contextWindow: 200_000,
+    native1m: false,
+    supports1mBeta: false,
   },
   {
     canonical: 'claude-sonnet-5',
     marketing: 'Sonnet 5',
     generation: 5,
-    supports1m: true,
-    supportsStructuredOutputs: true,
+    contextWindow: 1_000_000,
+    native1m: true,
+    supports1mBeta: false,
   },
   {
     canonical: 'claude-sonnet-4-6',
     marketing: 'Sonnet 4.6',
     generation: 4,
-    supports1m: true,
-    supportsStructuredOutputs: true,
+    contextWindow: 200_000,
+    native1m: false,
+    supports1mBeta: true,
   },
   {
     canonical: 'claude-sonnet-4-5',
     marketing: 'Sonnet 4.5',
     generation: 4,
-    supports1m: true,
-    supportsStructuredOutputs: true,
+    contextWindow: 200_000,
+    native1m: false,
+    supports1mBeta: true,
   },
   {
     canonical: 'claude-sonnet-4',
     marketing: 'Sonnet 4',
     generation: 4,
-    supports1m: true,
-    supportsStructuredOutputs: false,
+    contextWindow: 200_000,
+    native1m: false,
+    supports1mBeta: true,
   },
   {
     canonical: 'claude-haiku-4-5',
     marketing: 'Haiku 4.5',
     generation: 4,
-    supports1m: false,
-    supportsStructuredOutputs: true,
+    contextWindow: 200_000,
+    native1m: false,
+    supports1mBeta: false,
   },
   {
     canonical: 'claude-3-7-sonnet',
     marketing: 'Claude 3.7 Sonnet',
     generation: 3,
-    supports1m: false,
-    supportsStructuredOutputs: false,
+    contextWindow: 200_000,
+    native1m: false,
+    supports1mBeta: true,
   },
   {
     canonical: 'claude-3-5-sonnet',
     marketing: 'Claude 3.5 Sonnet',
     generation: 3,
-    supports1m: false,
-    supportsStructuredOutputs: false,
+    contextWindow: 200_000,
+    native1m: false,
+    supports1mBeta: true,
   },
   {
     canonical: 'claude-3-5-haiku',
     marketing: 'Claude 3.5 Haiku',
     generation: 3,
-    supports1m: false,
-    supportsStructuredOutputs: false,
+    contextWindow: 200_000,
+    native1m: false,
+    supports1mBeta: false,
   },
   // 3.0 models: recognized for canonical normalization, never offered in the UI.
   {
     canonical: 'claude-3-opus',
     generation: 3,
-    supports1m: false,
-    supportsStructuredOutputs: false,
+    contextWindow: 200_000,
+    native1m: false,
+    supports1mBeta: false,
   },
   {
     canonical: 'claude-3-sonnet',
     generation: 3,
-    supports1m: false,
-    supportsStructuredOutputs: false,
+    contextWindow: 200_000,
+    native1m: false,
+    supports1mBeta: false,
   },
   {
     canonical: 'claude-3-haiku',
     generation: 3,
-    supports1m: false,
-    supportsStructuredOutputs: false,
+    contextWindow: 200_000,
+    native1m: false,
+    supports1mBeta: false,
   },
 ]
 

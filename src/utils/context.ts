@@ -45,12 +45,21 @@ export function has1mContext(model: string): boolean {
   return /\[1m\]/i.test(model)
 }
 
-// @[MODEL LAUNCH]: Update this pattern if the new model supports 1M context
+/**
+ * "This model can reach a 1M window" — either natively or via the
+ * `context-1m` beta. Drives the `[1m]` suffix eligibility and the UI label,
+ * NOT the window resolution itself (see getContextWindowForModel, which
+ * distinguishes the two cases the way the official client does).
+ */
 export function modelSupports1M(model: string): boolean {
   if (is1mContextDisabled()) {
     return false
   }
-  return lookupModelCatalog(getCanonicalName(model))?.supports1m ?? false
+  const entry = lookupModelCatalog(getCanonicalName(model))
+  if (!entry) {
+    return false
+  }
+  return entry.native1m || entry.supports1mBeta
 }
 
 export function getContextWindowForModel(
@@ -71,8 +80,25 @@ export function getContextWindowForModel(
     }
   }
 
-  // [1m] suffix — explicit client-side opt-in, respected over all detection
+  // Branch order mirrors the official client's window resolver:
+  //   [1m] suffix → context-1m beta (if the model takes it) → native 1M
+  // Everything derived from a server response (ChatGPT window, capability
+  // cache) is consulted only after those, so a cached `max_input_tokens`
+  // reporting the model's *maximum attainable* window can no longer preempt
+  // the beta check and hand a 1M budget to a session that never asked for it.
   if (has1mContext(model)) {
+    return 1_000_000
+  }
+
+  const catalogEntry = lookupModelCatalog(getCanonicalName(model))
+  if (
+    betas?.includes(CONTEXT_1M_BETA_HEADER) &&
+    catalogEntry?.supports1mBeta &&
+    !is1mContextDisabled()
+  ) {
+    return 1_000_000
+  }
+  if (catalogEntry?.native1m && !is1mContextDisabled()) {
     return 1_000_000
   }
 
@@ -90,7 +116,14 @@ export function getContextWindowForModel(
     return chatgptContextWindow
   }
 
-  const cap = getModelCapability(model)
+  // Capability cache is a dev-only addition (the official client resolves the
+  // window purely from its static model table). Keep it as the discovery path
+  // for models the catalog has never heard of — a newly shipped model gets a
+  // real window instead of the 200k default — but never let it speak for a
+  // model the catalog already describes: `/v1/models` reports the *maximum
+  // attainable* `max_input_tokens`, so for a beta-gated model like sonnet-4-5
+  // it reads 1000000 and would reinstate exactly the over-report above.
+  const cap = catalogEntry ? undefined : getModelCapability(model)
   if (cap?.max_input_tokens && cap.max_input_tokens >= 100_000) {
     if (
       cap.max_input_tokens > MODEL_CONTEXT_WINDOW_DEFAULT &&
@@ -101,9 +134,6 @@ export function getContextWindowForModel(
     return cap.max_input_tokens
   }
 
-  if (betas?.includes(CONTEXT_1M_BETA_HEADER) && modelSupports1M(model)) {
-    return 1_000_000
-  }
   if (getSonnet1mExpTreatmentEnabled(model)) {
     return 1_000_000
   }
@@ -113,7 +143,7 @@ export function getContextWindowForModel(
       return antModel.contextWindow
     }
   }
-  return MODEL_CONTEXT_WINDOW_DEFAULT
+  return catalogEntry?.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT
 }
 
 export function getSonnet1mExpTreatmentEnabled(model: string): boolean {

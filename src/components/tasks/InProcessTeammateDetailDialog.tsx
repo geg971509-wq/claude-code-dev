@@ -5,7 +5,7 @@ import { type KeyboardEvent, Box, Text, useTheme } from '@anthropic/ink';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import { getEmptyToolPermissionContext } from '../../Tool.js';
 import type { InProcessTeammateTaskState } from '../../tasks/InProcessTeammateTask/types.js';
-import { getTools } from '../../tools.js';
+import { getTools } from '../../toolRegistry.js';
 import { formatNumber, truncateToWidth } from '../../utils/format.js';
 
 import { Byline, Dialog, KeyboardShortcutHint } from '@anthropic/ink';

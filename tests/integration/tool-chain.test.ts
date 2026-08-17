@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { getAllBaseTools, parseToolPreset, getTools } from '../../src/tools.ts'
+import {
+  getAllBaseTools,
+  parseToolPreset,
+  getTools,
+} from '../../src/toolRegistry.ts'
 import {
   findToolByName,
   getEmptyToolPermissionContext,

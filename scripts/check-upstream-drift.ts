@@ -6,11 +6,15 @@
  * 产物里仍然稳定可读"的常量各抽成一张清单，与 dev 树里的同类常量做集合差。
  *
  * 覆盖范围与已知盲区：
- *   - model ID / beta header / gate 名 —— 双向 diff，信号干净。
+ *   - model ID / beta header —— 双向 diff，信号干净。
  *   - 工具 wire name —— 只做单向（dev 有、官方没有）。官方 bundle 里工具名
  *     经过模板插值（`${"ScheduleWakeup"}`）且 name getter 被 minify，无法可靠
  *     枚举出"官方有而 dev 没有"的工具。实践中新工具几乎总是伴随一个新的 beta
- *     header 或 gate 名，由上面两类间接兜住。
+ *     header，由上面那类间接兜住。
+ *
+ * 不覆盖 gate 名（`tengu_*`）：官方有 1700+ 个，其中绝大多数是与本 fork 无关
+ * 的内部代号（tengu_amber_lark 之类），而且本地 gate 已硬关，列出来只会把
+ * 真正有信号的两栏淹掉。需要时直接 grep bundle。
  *
  * 用法：
  *   bun run check:drift
@@ -39,7 +43,6 @@ const CATEGORIES = [
     name: 'beta header',
     pattern: /[a-z][a-z0-9]*(?:-[a-z0-9]+)*-20\d\d-\d\d-\d\d/g,
   },
-  { name: 'gate 名', pattern: /tengu_[a-z0-9_]+/g },
 ] as const
 
 /** dev 侧工具 wire name 的声明形式：`export const X_TOOL_NAME = 'Wire'`。 */

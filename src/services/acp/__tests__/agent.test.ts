@@ -54,7 +54,7 @@ mockModulePreservingExports('../../../QueryEngine.ts', {
   },
 })
 
-mockModulePreservingExports('../../../tools.ts', {
+mockModulePreservingExports('../../../toolRegistry.ts', {
   getTools: mock(() => []),
 })
 

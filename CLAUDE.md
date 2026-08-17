@@ -62,6 +62,9 @@ bun run check:unused
 # Dependency boundary ratchet（packages → src 反向依赖只减不增）
 bun run check:boundaries
 
+# 与官方产物比对漂移（官方发新版后跑一次，非 precheck 的一部分）
+bun run check:drift
+
 # Full check (typecheck + lint fix + boundaries + test) — 任务完成后必须运行
 bun run precheck
 
@@ -123,9 +126,9 @@ bun run docs:dev
 ### Tool System
 
 - **`src/Tool.ts`** — Tool interface definition (`Tool` type) and utilities (`findToolByName`, `toolMatchesName`).
-- **`src/tools.ts`** — Tool registry. Assembles the tool list; tools live under `src/tools/`. Some tools are conditionally loaded via `feature()` flags or `process.env.USER_TYPE`.
+- **`src/toolRegistry.ts`** — Tool registry。组装工具清单；工具实现在 `src/tools/`。命名刻意区分：`src/tools.ts` 与 `src/tools/` 只差一个斜杠、含义完全不同，拿错模块不会报错。 Some tools are conditionally loaded via `feature()` flags or `process.env.USER_TYPE`.
 - **`src/constants/tools.ts`** — `CORE_TOOLS` 白名单常量（29 个核心工具名），用于 `isDeferredTool` 白名单制判定。
-- **`src/tools/`** — 工具实现目录（含 shared/testing 等辅助目录），由 `src/tools/index.ts` 汇总导出。主要分类：
+- **`src/tools/`** — 工具实现目录（含 shared/testing 等辅助目录）。无 barrel，一律深链到具体工具文件。主要分类：
   - **文件操作**: FileEditTool, FileReadTool, FileWriteTool, GlobTool, GrepTool
   - **Shell/执行**: BashTool, PowerShellTool, REPLTool
   - **Agent 系统**: AgentTool, TaskCreateTool, TaskUpdateTool, TaskListTool, TaskGetTool

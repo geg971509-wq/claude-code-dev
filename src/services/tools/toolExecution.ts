@@ -53,7 +53,7 @@ import {
   isDeferredTool,
   SEARCH_EXTRA_TOOLS_TOOL_NAME,
 } from 'src/tools/SearchExtraToolsTool/prompt.js'
-import { getAllBaseTools } from '../../tools.js'
+import { getAllBaseTools } from '../../toolRegistry.js'
 import type { HookProgress } from '../../types/hooks.js'
 import { recordToolObservation } from '../langfuse/index.js'
 import type {

@@ -7,7 +7,7 @@ import {
   type AgentRunResult,
   WorkflowAbortedError,
 } from '@claude-code-best/workflow-engine'
-import { assembleToolPool } from '../../tools.js'
+import { assembleToolPool } from '../../toolRegistry.js'
 import { finalizeAgentTool } from 'src/tools/AgentTool/agentToolUtils.js'
 import { runAgent } from 'src/tools/AgentTool/runAgent.js'
 import {

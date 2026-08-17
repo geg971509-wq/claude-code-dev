@@ -13,7 +13,7 @@ import {
 } from '../state/AppState.js'
 import { findToolByName } from '../Tool.js'
 import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js'
-import { getAllBaseTools } from '../tools.js'
+import { getAllBaseTools } from '../toolRegistry.js'
 import type { PermissionUpdate } from '../types/permissions.js'
 import { logForDebugging } from '../utils/debug.js'
 import {
