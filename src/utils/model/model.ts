@@ -236,6 +236,19 @@ export function getDefaultHaikuModel(): ModelName {
 }
 
 /**
+ * fable 只有一个机型（claude-fable-5），所以"默认"就是它本身。保留与其他
+ * 家族一致的 3P 回退：非一方 provider 上没有 fable，退回用户的主模型，而
+ * 不是把一个对方不认识的 Anthropic 机型名发出去。
+ */
+export function getDefaultFableModel(): ModelName {
+  const primaryModel = getProviderPrimaryModel()
+  if (getAPIProvider() !== 'firstParty' && primaryModel) {
+    return primaryModel
+  }
+  return getModelStrings().fable5
+}
+
+/**
  * Get the model to use for runtime, depending on the runtime context.
  * @param params Subset of the runtime context to determine the model to use.
  * @returns The model to use
@@ -523,6 +536,8 @@ export function parseUserSpecifiedModel(
         return getDefaultSonnetModel() + (has1mTag ? '[1m]' : '')
       case 'haiku':
         return getDefaultHaikuModel() + (has1mTag ? '[1m]' : '')
+      case 'fable':
+        return getDefaultFableModel() + (has1mTag ? '[1m]' : '')
       case 'opus':
         return getDefaultOpusModel() + (has1mTag ? '[1m]' : '')
       case 'best':

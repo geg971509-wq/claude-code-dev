@@ -240,6 +240,47 @@ function reconcileModelTable(bundle: string): void {
   report('字段不一致', problems)
 }
 
+/**
+ * 命名对照：官方 bundle 里约 2500 个函数名逃过了 minify（例如
+ * `getPublicModelDisplayName`、`parseUserSpecifiedModel`）。dev 是 decompile
+ * 产物，不少函数是当初重起的名字。
+ *
+ * 这里**不做**自动配对。试过按 camelCase 词元做近似匹配，实测信噪比不可用：
+ * 共享 ≥2 词元出 1777 条、≥3 出 72 条、≥4 出 8 条而其中仍多为误配
+ * （`getPlanModeV2ExploreAgentCount` ?→ `getPlanModeAttachmentTurnCount` 是
+ * 两回事）。真正找到的那对 —— dev 的 `getMarketingNameForModel` 对应官方的
+ * `getPublicModelDisplayName` —— 是靠读官方函数体认出来的，名字相似度帮不上。
+ *
+ * 所以只保留两件有信号的事：同名数量（对齐度的粗略体温计），以及按概念
+ * 检索官方函数名（`--names <片段>`），后者正是人工认名时真正在做的动作。
+ */
+function reconcileNames(bundle: string, dev: string, query?: string): void {
+  const official = extractSet(bundle, /function ([a-z][A-Za-z0-9_]{7,})\(/g)
+  const devNames = extractSet(
+    dev,
+    /export (?:async )?function ([a-zA-Z][A-Za-z0-9_]{7,})\(/g,
+  )
+  const shared = [...devNames].filter(n => official.has(n))
+
+  console.log('## 命名对照')
+  console.log(
+    `  官方可读函数名 ${official.size} · dev 导出函数名 ${devNames.size} · 同名 ${shared.length}`,
+  )
+  if (!query) {
+    console.log('  用 --names <片段> 按概念检索官方函数名。')
+    return
+  }
+  const needle = query.toLowerCase()
+  const hits = [...official]
+    .filter(n => n.toLowerCase().includes(needle))
+    .sort()
+  report(`官方含 "${query}" 的函数名`, hits)
+  const devHits = [...devNames]
+    .filter(n => n.toLowerCase().includes(needle))
+    .sort()
+  report(`dev 含 "${query}" 的导出函数名`, devHits)
+}
+
 async function main(): Promise<void> {
   const fromArg = process.argv
     .find(a => a.startsWith('--bundle='))
@@ -275,6 +316,13 @@ async function main(): Promise<void> {
   }
 
   reconcileModelTable(official)
+  console.log('')
+
+  reconcileNames(
+    official,
+    dev,
+    process.argv.find(a => a.startsWith('--names='))?.slice('--names='.length),
+  )
   console.log('')
 
   const devTools = extractSet(dev, TOOL_NAME_PATTERN)

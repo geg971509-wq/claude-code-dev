@@ -116,14 +116,18 @@ export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY =
  * 从新到旧书写）。此前这两处是手写常量，加了 opus-5 之后仍停在 4.7，
  * 会让写进 system prompt 的"最新模型"信息落后一代。
  */
-function latestCanonicalOf(family: 'opus' | 'sonnet' | 'haiku'): string {
+function latestCanonicalOf(
+  family: 'fable' | 'opus' | 'sonnet' | 'haiku',
+): string {
   const entry = MODEL_CATALOG.find(
     e => e.key !== undefined && e.canonical.startsWith(`claude-${family}-`),
   )
   return entry?.providerIds?.firstParty ?? entry?.canonical ?? ''
 }
 
+// 家族与顺序取自官方 `latest_per_family`：{ fable, opus, sonnet, haiku }。
 const CLAUDE_LATEST_MODEL_IDS = {
+  fable: latestCanonicalOf('fable'),
   opus: latestCanonicalOf('opus'),
   sonnet: latestCanonicalOf('sonnet'),
   haiku: latestCanonicalOf('haiku'),
@@ -134,7 +138,7 @@ const CLAUDE_LATEST_MODEL_IDS = {
  * 矛盾的句子 —— 之前 ID 是常量、标签是写死的散文，加一代模型就会脱节。
  */
 function getLatestModelsLine(): string {
-  const parts = (['opus', 'sonnet', 'haiku'] as const)
+  const parts = (['fable', 'opus', 'sonnet', 'haiku'] as const)
     .map(family => {
       const id = CLAUDE_LATEST_MODEL_IDS[family]
       const entry = MODEL_CATALOG.find(
