@@ -54,7 +54,7 @@ mock.module('src/utils/envUtils.js', () => ({
 }))
 mock.module('src/utils/model/model.js', () => ({
   getCanonicalName: (id: string) => id,
-  getMarketingNameForModel: (id: string) => {
+  getDisplayNameForModel: (id: string) => {
     if (id.includes('opus-4-7')) return 'Claude Opus 4.7'
     if (id.includes('opus-4-6')) return 'Claude Opus 4.6'
     if (id.includes('sonnet-4-6')) return 'Claude Sonnet 4.6'

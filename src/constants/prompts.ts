@@ -23,7 +23,7 @@ import { BASH_TOOL_NAME } from 'src/tools/BashTool/toolName.js'
 import { POWERSHELL_TOOL_NAME } from 'src/tools/PowerShellTool/toolName.js'
 import {
   getCanonicalName,
-  getMarketingNameForModel,
+  getDisplayNameForModel,
 } from '../utils/model/model.js'
 import { getSkillToolCommands } from 'src/commands.js'
 import { SKILL_TOOL_NAME } from 'src/tools/SkillTool/constants.js'
@@ -569,7 +569,7 @@ export async function computeEnvInfo(
   if (process.env.USER_TYPE === 'ant' && isUndercover()) {
     // suppress
   } else {
-    const marketingName = getMarketingNameForModel(modelId)
+    const marketingName = getDisplayNameForModel(modelId)
     modelDescription = marketingName
       ? `You are powered by the model named ${marketingName}. The exact model ID is ${modelId}.`
       : `You are powered by the model ${modelId}.`
@@ -608,7 +608,7 @@ export async function computeSimpleEnvInfo(
   if (process.env.USER_TYPE === 'ant' && isUndercover()) {
     // suppress
   } else {
-    const marketingName = getMarketingNameForModel(modelId)
+    const marketingName = getDisplayNameForModel(modelId)
     modelDescription = marketingName
       ? `You are powered by the model named ${marketingName}. The exact model ID is ${modelId}.`
       : `You are powered by the model ${modelId}.`

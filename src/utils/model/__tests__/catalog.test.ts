@@ -45,18 +45,18 @@ describe('MODEL_CATALOG', () => {
   test('separates native 1M from beta-gated 1M, per the official table', () => {
     // 官方 `context` 三元组：opus-4-7 是 native_1m，sonnet-4-5 只有
     // supports_1m_beta。合成一个布尔就是 sonnet-4-5 窗口被高估的根因。
-    expect(lookupModelCatalog('claude-opus-4-7')).toMatchObject({
-      contextWindow: 1_000_000,
+    expect(lookupModelCatalog('claude-opus-4-7')?.context).toEqual({
+      window: 1_000_000,
       native1m: true,
       supports1mBeta: true,
     })
-    expect(lookupModelCatalog('claude-sonnet-4-5')).toMatchObject({
-      contextWindow: 200_000,
+    expect(lookupModelCatalog('claude-sonnet-4-5')?.context).toEqual({
+      window: 200_000,
       native1m: false,
       supports1mBeta: true,
     })
-    expect(lookupModelCatalog('claude-opus-4-5')).toMatchObject({
-      contextWindow: 200_000,
+    expect(lookupModelCatalog('claude-opus-4-5')?.context).toEqual({
+      window: 200_000,
       native1m: false,
       supports1mBeta: false,
     })

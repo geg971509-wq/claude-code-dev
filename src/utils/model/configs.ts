@@ -199,22 +199,24 @@ export const CANONICAL_ID_TO_KEY: Record<CanonicalModelId, ModelKey> =
 export type ModelCatalogEntry = {
   /** Canonical (date-stripped) ID, e.g. 'claude-opus-4-7'. */
   canonical: string
-  /** UI label. `undefined` for models we recognize but never surface by name. */
-  marketing?: string
-  /** Model generation. Capability gates spelled "Claude 4+" test `generation >= 4`. */
-  generation: number
   /**
-   * 官方 `context` 三元组的逐条映射（`window` / `native_1m` /
-   * `supports_1m_beta`）。dev 之前只有一个 `supports1m` 布尔，把"窗口本来
-   * 就是 1M"和"带 context-1m beta 才到 1M"混成了一件事 —— sonnet-4-5 因此
-   * 在不带 beta 时也被按 1M 计算，autocompact 迟迟不触发直到吃真实 413。
+   * 字段名镜像官方模型表的对象键（bundle 里标识符被 minify，对象键没有，
+   * 是可确定的原始命名）：display_name / context.{window,native_1m,
+   * supports_1m_beta} / max_output_tokens.{default,upper} / pricing /
+   * capabilities。逐字段对账脚本因此可以直接一一比对。
    */
-  /** 不带任何 beta 时的基础窗口。 */
-  contextWindow: number
-  /** 窗口原生就是 1M，不需要 beta。 */
-  native1m: boolean
-  /** 带 `context-1m` beta 可以升到 1M。 */
-  supports1mBeta: boolean
+  /** 官方 `display_name`。`undefined` 表示该机型从不在 UI 里按名呈现。 */
+  displayName?: string
+  /** dev 自有字段（官方用 `family`）。"Claude 4+" 类能力门测 `generation >= 4`。 */
+  generation: number
+  /** 官方 `context`。window 是不带任何 beta 时的基础窗口。 */
+  context: { window: number; native1m: boolean; supports1mBeta: boolean }
+  /** 官方 `max_output_tokens`。 */
+  maxOutputTokens: { default: number; upper: number }
+  /** 官方 `pricing` tier 名，如 'tier_5_25'。3.0 机型官方表已不收录。 */
+  pricing?: string
+  /** 官方 `capabilities` 原样保留：effort / xhigh_effort / fast_mode 等按模型门控。 */
+  capabilities: readonly string[]
 }
 
 /**
@@ -232,145 +234,264 @@ export type ModelCatalogEntry = {
 export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
   {
     canonical: 'claude-opus-5',
-    marketing: 'Opus 5',
+    displayName: 'Opus 5',
     generation: 5,
-    contextWindow: 1_000_000,
-    native1m: true,
-    supports1mBeta: true,
+    context: {
+      window: 1_000_000,
+      native1m: true,
+      supports1mBeta: true,
+    },
+    maxOutputTokens: { default: 64_000, upper: 128_000 },
+    pricing: 'tier_5_25',
+    capabilities: [
+      'effort',
+      'max_effort',
+      'xhigh_effort',
+      'adaptive_thinking',
+      'mid_conv_system',
+      'context_management',
+      'fast_mode',
+      'lean_prompt',
+      'refusal_fallback',
+      'opus_5_prompt_bundle',
+    ],
   },
   {
     canonical: 'claude-opus-4-8',
-    marketing: 'Opus 4.8',
+    displayName: 'Opus 4.8',
     generation: 4,
-    contextWindow: 1_000_000,
-    native1m: true,
-    supports1mBeta: true,
+    context: {
+      window: 1_000_000,
+      native1m: true,
+      supports1mBeta: true,
+    },
+    maxOutputTokens: { default: 64_000, upper: 128_000 },
+    pricing: 'tier_5_25',
+    capabilities: [
+      'effort',
+      'max_effort',
+      'xhigh_effort',
+      'adaptive_thinking',
+      'mid_conv_system',
+      'context_management',
+      'fast_mode',
+      'lean_prompt',
+    ],
   },
   {
     canonical: 'claude-opus-4-7',
-    marketing: 'Opus 4.7',
+    displayName: 'Opus 4.7',
     generation: 4,
-    contextWindow: 1_000_000,
-    native1m: true,
-    supports1mBeta: true,
+    context: {
+      window: 1_000_000,
+      native1m: true,
+      supports1mBeta: true,
+    },
+    maxOutputTokens: { default: 64_000, upper: 128_000 },
+    pricing: 'tier_5_25',
+    capabilities: [
+      'effort',
+      'max_effort',
+      'xhigh_effort',
+      'adaptive_thinking',
+      'context_management',
+      'fast_mode',
+    ],
   },
   {
     canonical: 'claude-opus-4-6',
-    marketing: 'Opus 4.6',
+    displayName: 'Opus 4.6',
     generation: 4,
-    contextWindow: 200_000,
-    native1m: false,
-    supports1mBeta: true,
+    context: {
+      window: 200_000,
+      native1m: false,
+      supports1mBeta: true,
+    },
+    maxOutputTokens: { default: 64_000, upper: 128_000 },
+    pricing: 'tier_5_25',
+    capabilities: [
+      'effort',
+      'max_effort',
+      'adaptive_thinking',
+      'context_management',
+    ],
   },
   {
     canonical: 'claude-opus-4-5',
-    marketing: 'Opus 4.5',
+    displayName: 'Opus 4.5',
     generation: 4,
-    contextWindow: 200_000,
-    native1m: false,
-    supports1mBeta: false,
+    context: {
+      window: 200_000,
+      native1m: false,
+      supports1mBeta: false,
+    },
+    maxOutputTokens: { default: 32_000, upper: 64_000 },
+    pricing: 'tier_5_25',
+    capabilities: ['context_management'],
   },
   {
     canonical: 'claude-opus-4-1',
-    marketing: 'Opus 4.1',
+    displayName: 'Opus 4.1',
     generation: 4,
-    contextWindow: 200_000,
-    native1m: false,
-    supports1mBeta: false,
+    context: {
+      window: 200_000,
+      native1m: false,
+      supports1mBeta: false,
+    },
+    maxOutputTokens: { default: 32_000, upper: 32_000 },
+    pricing: 'tier_15_75',
+    capabilities: ['context_management'],
   },
   {
     canonical: 'claude-opus-4',
-    marketing: 'Opus 4',
+    displayName: 'Opus 4',
     generation: 4,
-    contextWindow: 200_000,
-    native1m: false,
-    supports1mBeta: false,
+    context: {
+      window: 200_000,
+      native1m: false,
+      supports1mBeta: false,
+    },
+    maxOutputTokens: { default: 32_000, upper: 32_000 },
+    pricing: 'tier_15_75',
+    capabilities: ['context_management'],
   },
   {
     canonical: 'claude-sonnet-5',
-    marketing: 'Sonnet 5',
+    displayName: 'Sonnet 5',
     generation: 5,
-    contextWindow: 1_000_000,
-    native1m: true,
-    supports1mBeta: false,
+    context: {
+      window: 1_000_000,
+      native1m: true,
+      supports1mBeta: false,
+    },
+    maxOutputTokens: { default: 64_000, upper: 128_000 },
+    pricing: 'tier_3_15',
+    capabilities: [
+      'effort',
+      'max_effort',
+      'xhigh_effort',
+      'adaptive_thinking',
+      'mid_conv_system',
+      'context_management',
+    ],
   },
   {
     canonical: 'claude-sonnet-4-6',
-    marketing: 'Sonnet 4.6',
+    displayName: 'Sonnet 4.6',
     generation: 4,
-    contextWindow: 200_000,
-    native1m: false,
-    supports1mBeta: true,
+    context: {
+      window: 200_000,
+      native1m: false,
+      supports1mBeta: true,
+    },
+    maxOutputTokens: { default: 32_000, upper: 128_000 },
+    pricing: 'tier_3_15',
+    capabilities: [
+      'effort',
+      'max_effort',
+      'adaptive_thinking',
+      'context_management',
+    ],
   },
   {
     canonical: 'claude-sonnet-4-5',
-    marketing: 'Sonnet 4.5',
+    displayName: 'Sonnet 4.5',
     generation: 4,
-    contextWindow: 200_000,
-    native1m: false,
-    supports1mBeta: true,
+    context: {
+      window: 200_000,
+      native1m: false,
+      supports1mBeta: true,
+    },
+    maxOutputTokens: { default: 32_000, upper: 64_000 },
+    pricing: 'tier_3_15',
+    capabilities: ['context_management'],
   },
   {
     canonical: 'claude-sonnet-4',
-    marketing: 'Sonnet 4',
+    displayName: 'Sonnet 4',
     generation: 4,
-    contextWindow: 200_000,
-    native1m: false,
-    supports1mBeta: true,
+    context: {
+      window: 200_000,
+      native1m: false,
+      supports1mBeta: true,
+    },
+    maxOutputTokens: { default: 32_000, upper: 64_000 },
+    pricing: 'tier_3_15',
+    capabilities: ['context_management'],
   },
   {
     canonical: 'claude-haiku-4-5',
-    marketing: 'Haiku 4.5',
+    displayName: 'Haiku 4.5',
     generation: 4,
-    contextWindow: 200_000,
-    native1m: false,
-    supports1mBeta: false,
+    context: {
+      window: 200_000,
+      native1m: false,
+      supports1mBeta: false,
+    },
+    maxOutputTokens: { default: 32_000, upper: 64_000 },
+    pricing: 'haiku_45',
+    capabilities: ['context_management'],
   },
   {
     canonical: 'claude-3-7-sonnet',
-    marketing: 'Claude 3.7 Sonnet',
+    displayName: 'Claude 3.7 Sonnet',
     generation: 3,
-    contextWindow: 200_000,
-    native1m: false,
-    supports1mBeta: true,
+    context: {
+      window: 200_000,
+      native1m: false,
+      supports1mBeta: true,
+    },
+    maxOutputTokens: { default: 32_000, upper: 64_000 },
+    pricing: 'tier_3_15',
+    capabilities: [],
   },
   {
     canonical: 'claude-3-5-sonnet',
-    marketing: 'Claude 3.5 Sonnet',
+    displayName: 'Claude 3.5 Sonnet',
     generation: 3,
-    contextWindow: 200_000,
-    native1m: false,
-    supports1mBeta: true,
+    context: {
+      window: 200_000,
+      native1m: false,
+      supports1mBeta: true,
+    },
+    maxOutputTokens: { default: 8_192, upper: 8_192 },
+    pricing: 'tier_3_15',
+    capabilities: [],
   },
   {
     canonical: 'claude-3-5-haiku',
-    marketing: 'Claude 3.5 Haiku',
+    displayName: 'Claude 3.5 Haiku',
     generation: 3,
-    contextWindow: 200_000,
-    native1m: false,
-    supports1mBeta: false,
+    context: {
+      window: 200_000,
+      native1m: false,
+      supports1mBeta: false,
+    },
+    maxOutputTokens: { default: 8_192, upper: 8_192 },
+    pricing: 'haiku_35',
+    capabilities: [],
   },
-  // 3.0 models: recognized for canonical normalization, never offered in the UI.
+  // 3.0 机型：官方表已不再收录，只用于 canonical 归一，UI 从不呈现。
   {
     canonical: 'claude-3-opus',
     generation: 3,
-    contextWindow: 200_000,
-    native1m: false,
-    supports1mBeta: false,
+    context: { window: 200_000, native1m: false, supports1mBeta: false },
+    maxOutputTokens: { default: 4_096, upper: 4_096 },
+    capabilities: [],
   },
   {
     canonical: 'claude-3-sonnet',
     generation: 3,
-    contextWindow: 200_000,
-    native1m: false,
-    supports1mBeta: false,
+    context: { window: 200_000, native1m: false, supports1mBeta: false },
+    maxOutputTokens: { default: 8_192, upper: 8_192 },
+    capabilities: [],
   },
   {
     canonical: 'claude-3-haiku',
     generation: 3,
-    contextWindow: 200_000,
-    native1m: false,
-    supports1mBeta: false,
+    context: { window: 200_000, native1m: false, supports1mBeta: false },
+    maxOutputTokens: { default: 4_096, upper: 4_096 },
+    capabilities: [],
   },
 ]
 
@@ -388,4 +509,9 @@ export function lookupModelCatalog(
 ): ModelCatalogEntry | undefined {
   const needle = model.toLowerCase()
   return CATALOG_BY_SPECIFICITY.find(e => needle.includes(e.canonical))
+}
+
+/** 官方 `capabilities` 数组的按模型查询。 */
+export function modelHasCapability(model: string, capability: string): boolean {
+  return lookupModelCatalog(model)?.capabilities.includes(capability) ?? false
 }

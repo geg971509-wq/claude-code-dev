@@ -24,7 +24,7 @@ import {
   getDefaultOpusModel,
   getDefaultHaikuModel,
   getDefaultMainLoopModelSetting,
-  getMarketingNameForModel,
+  getDisplayNameForModel,
   getUserSpecifiedModelSetting,
   isOpus1mMergeEnabled,
   getOpusPricingSuffix,
@@ -489,7 +489,7 @@ function getModelFamilyInfo(
     canonical.includes('claude-3-7-sonnet') ||
     canonical.includes('claude-3-5-sonnet')
   ) {
-    const currentName = getMarketingNameForModel(getDefaultSonnetModel())
+    const currentName = getDisplayNameForModel(getDefaultSonnetModel())
     if (currentName) {
       return { alias: 'Sonnet', currentVersionName: currentName }
     }
@@ -497,7 +497,7 @@ function getModelFamilyInfo(
 
   // Opus family
   if (canonical.includes('claude-opus-4')) {
-    const currentName = getMarketingNameForModel(getDefaultOpusModel())
+    const currentName = getDisplayNameForModel(getDefaultOpusModel())
     if (currentName) {
       return { alias: 'Opus', currentVersionName: currentName }
     }
@@ -508,7 +508,7 @@ function getModelFamilyInfo(
     canonical.includes('claude-haiku') ||
     canonical.includes('claude-3-5-haiku')
   ) {
-    const currentName = getMarketingNameForModel(getDefaultHaikuModel())
+    const currentName = getDisplayNameForModel(getDefaultHaikuModel())
     if (currentName) {
       return { alias: 'Haiku', currentVersionName: currentName }
     }
@@ -523,7 +523,7 @@ function getModelFamilyInfo(
  * Returns null if the model is not recognized.
  */
 function getKnownModelOption(model: string): ModelOption | null {
-  const marketingName = getMarketingNameForModel(model)
+  const marketingName = getDisplayNameForModel(model)
   if (!marketingName) return null
 
   const familyInfo = getModelFamilyInfo(model)

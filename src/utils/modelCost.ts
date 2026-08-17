@@ -3,23 +3,7 @@ import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 
 import { logEvent } from 'src/services/analytics/index.js'
 import { setHasUnknownModelCost } from '../bootstrap/state.js'
 import { isFastModeEnabled } from './fastMode.js'
-import {
-  CLAUDE_3_5_HAIKU_CONFIG,
-  CLAUDE_3_5_V2_SONNET_CONFIG,
-  CLAUDE_3_7_SONNET_CONFIG,
-  CLAUDE_HAIKU_4_5_CONFIG,
-  CLAUDE_OPUS_4_1_CONFIG,
-  CLAUDE_OPUS_4_5_CONFIG,
-  CLAUDE_OPUS_4_6_CONFIG,
-  CLAUDE_OPUS_4_7_CONFIG,
-  CLAUDE_OPUS_4_8_CONFIG,
-  CLAUDE_OPUS_4_CONFIG,
-  CLAUDE_OPUS_5_CONFIG,
-  CLAUDE_SONNET_4_5_CONFIG,
-  CLAUDE_SONNET_4_6_CONFIG,
-  CLAUDE_SONNET_4_CONFIG,
-  CLAUDE_SONNET_5_CONFIG,
-} from './model/configs.js'
+import { MODEL_CATALOG } from './model/configs.js'
 import {
   firstPartyNameToCanonical,
   getCanonicalName,
@@ -102,39 +86,27 @@ export function getOpus46CostTier(fastMode: boolean): ModelCosts {
   return COST_TIER_5_25
 }
 
-// @[MODEL LAUNCH]: Add a pricing entry for the new model below.
 // Costs from https://platform.claude.com/docs/en/about-claude/pricing
 // Web search cost: $10 per 1000 requests = $0.01 per request
-export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
-  [firstPartyNameToCanonical(CLAUDE_3_5_HAIKU_CONFIG.firstParty)]:
-    COST_HAIKU_35,
-  [firstPartyNameToCanonical(CLAUDE_HAIKU_4_5_CONFIG.firstParty)]:
-    COST_HAIKU_45,
-  [firstPartyNameToCanonical(CLAUDE_3_5_V2_SONNET_CONFIG.firstParty)]:
-    COST_TIER_3_15,
-  [firstPartyNameToCanonical(CLAUDE_3_7_SONNET_CONFIG.firstParty)]:
-    COST_TIER_3_15,
-  [firstPartyNameToCanonical(CLAUDE_SONNET_4_CONFIG.firstParty)]:
-    COST_TIER_3_15,
-  [firstPartyNameToCanonical(CLAUDE_SONNET_4_5_CONFIG.firstParty)]:
-    COST_TIER_3_15,
-  [firstPartyNameToCanonical(CLAUDE_SONNET_4_6_CONFIG.firstParty)]:
-    COST_TIER_3_15,
-  [firstPartyNameToCanonical(CLAUDE_SONNET_5_CONFIG.firstParty)]:
-    COST_TIER_3_15,
-  [firstPartyNameToCanonical(CLAUDE_OPUS_4_CONFIG.firstParty)]: COST_TIER_15_75,
-  [firstPartyNameToCanonical(CLAUDE_OPUS_4_1_CONFIG.firstParty)]:
-    COST_TIER_15_75,
-  [firstPartyNameToCanonical(CLAUDE_OPUS_4_5_CONFIG.firstParty)]:
-    COST_TIER_5_25,
-  [firstPartyNameToCanonical(CLAUDE_OPUS_4_6_CONFIG.firstParty)]:
-    COST_TIER_5_25,
-  [firstPartyNameToCanonical(CLAUDE_OPUS_4_7_CONFIG.firstParty)]:
-    COST_TIER_5_25,
-  [firstPartyNameToCanonical(CLAUDE_OPUS_4_8_CONFIG.firstParty)]:
-    COST_TIER_5_25,
-  [firstPartyNameToCanonical(CLAUDE_OPUS_5_CONFIG.firstParty)]: COST_TIER_5_25,
+//
+// 官方 `pricing` tier 名 → 本文件的常量。加模型只需在 MODEL_CATALOG 里写下
+// 官方那个 tier 名，这里不必再动。
+const COSTS_BY_PRICING_TIER: Record<string, ModelCosts> = {
+  tier_3_15: COST_TIER_3_15,
+  tier_5_25: COST_TIER_5_25,
+  tier_15_75: COST_TIER_15_75,
+  haiku_35: COST_HAIKU_35,
+  haiku_45: COST_HAIKU_45,
 }
+
+/** 由 MODEL_CATALOG 的 `pricing` 派生，不再逐个模型手写一行。 */
+export const MODEL_COSTS: Record<ModelShortName, ModelCosts> =
+  Object.fromEntries(
+    MODEL_CATALOG.flatMap(entry => {
+      const costs = entry.pricing && COSTS_BY_PRICING_TIER[entry.pricing]
+      return costs ? [[entry.canonical, costs] as const] : []
+    }),
+  )
 
 /**
  * Calculates the USD cost based on token usage and model cost configuration
@@ -155,10 +127,11 @@ function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
 export function getModelCosts(model: string, usage: Usage): ModelCosts {
   const shortName = getCanonicalName(model)
 
-  // Check if this is an Opus 4.6 model with fast mode active.
-  if (
-    shortName === firstPartyNameToCanonical(CLAUDE_OPUS_4_6_CONFIG.firstParty)
-  ) {
+  // Fast-mode pricing. 与官方的分歧，刻意保留原状：官方模型表把 `fast_mode`
+  // 记在 opus-4-7 / 4-8 / opus-5 上（4-6 没有），且全表只有一个
+  // `pricing: "tier_5_25"`，不存在 30/150 这一档 —— 30/150 是 dev 本地的
+  // 产物。没有官方依据可以据以扩展到别的机型，因此不动。
+  if (shortName === 'claude-opus-4-6') {
     const isFastMode = usage.speed === 'fast'
     return getOpus46CostTier(isFastMode)
   }

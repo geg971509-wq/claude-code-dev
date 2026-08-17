@@ -629,7 +629,11 @@ export function modelDisplayString(model: ModelSetting): string {
   return model === resolvedModel ? resolvedModel : `${model} (${resolvedModel})`
 }
 
-export function getMarketingNameForModel(modelId: string): string | undefined {
+/**
+ * 官方模型表把这个字段叫 `display_name`（对象键未被 minify，是可确定的原始
+ * 命名），dev 原先叫 "marketing name"。统一到官方叫法。
+ */
+export function getDisplayNameForModel(modelId: string): string | undefined {
   if (getAPIProvider() === 'foundry') {
     // deployment ID is user-defined in Foundry, so it may have no relation to the actual model
     return undefined
@@ -637,12 +641,12 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
 
   const has1m = modelId.toLowerCase().includes('[1m]')
   const entry = lookupModelCatalog(getCanonicalName(modelId))
-  if (!entry?.marketing) {
+  if (!entry?.displayName) {
     return undefined
   }
-  return has1m && (entry.native1m || entry.supports1mBeta)
-    ? `${entry.marketing} (with 1M context)`
-    : entry.marketing
+  return has1m && (entry.context.native1m || entry.context.supports1mBeta)
+    ? `${entry.displayName} (with 1M context)`
+    : entry.displayName
 }
 
 export function normalizeModelStringForAPI(model: string): string {

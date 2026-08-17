@@ -330,9 +330,10 @@ describe('modelSupportsMaxEffort', () => {
     expect(modelSupportsMaxEffort('claude-sonnet-4-6-20250514')).toBe(true)
   })
 
-  test('returns true for haiku models', async () => {
+  test('returns false for haiku — official caps list has no max_effort', async () => {
+    // 官方 capabilities: claude-haiku-4-5 只有 context_management。
     const { modelSupportsMaxEffort } = await import('src/utils/effort.js')
-    expect(modelSupportsMaxEffort('claude-haiku-4-5-20251001')).toBe(true)
+    expect(modelSupportsMaxEffort('claude-haiku-4-5-20251001')).toBe(false)
   })
 
   test('returns true for deepseek models', async () => {
@@ -354,14 +355,21 @@ describe('modelSupportsXhighEffort', () => {
     expect(modelSupportsXhighEffort('claude-opus-4-7-20250918')).toBe(true)
   })
 
-  test('returns true for sonnet models', async () => {
+  test('returns false for sonnet-4-6 — has max_effort but not xhigh', async () => {
+    // 官方 capabilities: sonnet-4-6 = effort, max_effort, adaptive_thinking,
+    // context_management —— 没有 xhigh_effort。opus-4-7 起才两者都有。
     const { modelSupportsXhighEffort } = await import('src/utils/effort.js')
-    expect(modelSupportsXhighEffort('claude-sonnet-4-6-20250514')).toBe(true)
+    expect(modelSupportsXhighEffort('claude-sonnet-4-6-20250514')).toBe(false)
   })
 
-  test('returns true for haiku models', async () => {
+  test('returns true for sonnet-5 — official caps include xhigh_effort', async () => {
     const { modelSupportsXhighEffort } = await import('src/utils/effort.js')
-    expect(modelSupportsXhighEffort('claude-haiku-4-5-20251001')).toBe(true)
+    expect(modelSupportsXhighEffort('claude-sonnet-5')).toBe(true)
+  })
+
+  test('returns false for haiku models', async () => {
+    const { modelSupportsXhighEffort } = await import('src/utils/effort.js')
+    expect(modelSupportsXhighEffort('claude-haiku-4-5-20251001')).toBe(false)
   })
 
   test('returns true for unknown models', async () => {

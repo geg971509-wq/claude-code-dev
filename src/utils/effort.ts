@@ -5,6 +5,8 @@ import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { getAPIProvider } from './model/providers.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
+import { lookupModelCatalog, modelHasCapability } from './model/configs.js'
+import { getCanonicalName } from './model/model.js'
 import { isEnvTruthy } from './envUtils.js'
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
 import { resolveAntModel } from './model/antModels.js'
@@ -30,7 +32,7 @@ export const EFFORT_LEVELS = [
 
 export type EffortValue = EffortLevel | number
 
-// @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
+// 能力来自 MODEL_CATALOG 的 `capabilities`（官方原样），加模型不必改这里。
 export function modelSupportsEffort(model: string): boolean {
   const m = model.toLowerCase()
   if (isEnvTruthy(process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT)) {
@@ -47,13 +49,12 @@ export function modelSupportsEffort(model: string): boolean {
   ) {
     return true
   }
-  // Supported by a subset of Claude 4 models
-  if (
-    m.includes('opus-4-7') ||
-    m.includes('opus-4-6') ||
-    m.includes('sonnet-4-6') ||
-    m.includes('deepseek-v4-pro')
-  ) {
+  // 官方按模型的 `capabilities` 数组门控，不是家族前缀白名单 —— 后者每次
+  // 发新模型都会漏（opus-4-8 / opus-5 / sonnet-5 就是这么漏掉的）。
+  if (modelHasCapability(getCanonicalName(model), 'effort')) {
+    return true
+  }
+  if (m.includes('deepseek-v4-pro')) {
     return true
   }
   // Exclude known legacy models: Claude 3.x, plus the Claude 4.x variants not
@@ -75,22 +76,32 @@ export function modelSupportsEffort(model: string): boolean {
   return getAPIProvider() === 'firstParty'
 }
 
-// Effort max/xhigh restrictions removed — all models that support effort
-// can now use these levels. API errors are the user's responsibility.
-export function modelSupportsMaxEffort(_model: string): boolean {
-  const supported3P = get3PModelCapabilityOverride(_model, 'max_effort')
+// 官方 `capabilities` 里 max_effort / xhigh_effort 是两个独立的按模型能力：
+// opus-4-6 与 sonnet-4-6 有 max_effort 但没有 xhigh_effort，opus-4-7 起才
+// 两者都有。dev 之前忽略 model 参数一律放行，把服务端注定拒绝的组合也发出去。
+export function modelSupportsMaxEffort(model: string): boolean {
+  const supported3P = get3PModelCapabilityOverride(model, 'max_effort')
   if (supported3P !== undefined) {
     return supported3P
   }
-  return true
+  if (!modelSupportsEffort(model)) {
+    return false
+  }
+  // catalog 不认识的模型（3P、自定义端点）保持放行，沿用原先的宽松取向。
+  const entry = lookupModelCatalog(getCanonicalName(model))
+  return entry ? entry.capabilities.includes('max_effort') : true
 }
 
-export function modelSupportsXhighEffort(_model: string): boolean {
-  const supported3P = get3PModelCapabilityOverride(_model, 'xhigh_effort')
+export function modelSupportsXhighEffort(model: string): boolean {
+  const supported3P = get3PModelCapabilityOverride(model, 'xhigh_effort')
   if (supported3P !== undefined) {
     return supported3P
   }
-  return true
+  if (!modelSupportsEffort(model)) {
+    return false
+  }
+  const entry = lookupModelCatalog(getCanonicalName(model))
+  return entry ? entry.capabilities.includes('xhigh_effort') : true
 }
 
 export function isEffortLevel(value: string): value is EffortLevel {

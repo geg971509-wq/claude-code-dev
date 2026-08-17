@@ -59,7 +59,7 @@ export function modelSupports1M(model: string): boolean {
   if (!entry) {
     return false
   }
-  return entry.native1m || entry.supports1mBeta
+  return entry.context.native1m || entry.context.supports1mBeta
 }
 
 export function getContextWindowForModel(
@@ -93,12 +93,12 @@ export function getContextWindowForModel(
   const catalogEntry = lookupModelCatalog(getCanonicalName(model))
   if (
     betas?.includes(CONTEXT_1M_BETA_HEADER) &&
-    catalogEntry?.supports1mBeta &&
+    catalogEntry?.context.supports1mBeta &&
     !is1mContextDisabled()
   ) {
     return 1_000_000
   }
-  if (catalogEntry?.native1m && !is1mContextDisabled()) {
+  if (catalogEntry?.context.native1m && !is1mContextDisabled()) {
     return 1_000_000
   }
 
@@ -143,7 +143,7 @@ export function getContextWindowForModel(
       return antModel.contextWindow
     }
   }
-  return catalogEntry?.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT
+  return catalogEntry?.context.window ?? MODEL_CONTEXT_WINDOW_DEFAULT
 }
 
 export function getSonnet1mExpTreatmentEnabled(model: string): boolean {
@@ -217,49 +217,17 @@ export function getModelMaxOutputTokens(model: string): {
     }
   }
 
-  const m = getCanonicalName(model)
-
   // GPT-5.6 family: official 128k max output (OpenAI model card).
   if (getChatGPTModelContextWindow(model) !== undefined) {
     defaultTokens = 32_000
     upperLimit = CHATGPT_CODEX_MAX_OUTPUT_TOKENS
-  } else if (m.includes('opus-4-7')) {
-    defaultTokens = 64_000
-    upperLimit = 128_000
-  } else if (m.includes('opus-4-6')) {
-    defaultTokens = 64_000
-    upperLimit = 128_000
-  } else if (m.includes('sonnet-4-6')) {
-    defaultTokens = 32_000
-    upperLimit = 128_000
-  } else if (
-    m.includes('opus-4-5') ||
-    m.includes('sonnet-4') ||
-    m.includes('haiku-4')
-  ) {
-    defaultTokens = 32_000
-    upperLimit = 64_000
-  } else if (m.includes('opus-4-1') || m.includes('opus-4')) {
-    defaultTokens = 32_000
-    upperLimit = 32_000
-  } else if (m.includes('claude-3-opus')) {
-    defaultTokens = 4_096
-    upperLimit = 4_096
-  } else if (m.includes('claude-3-sonnet')) {
-    defaultTokens = 8_192
-    upperLimit = 8_192
-  } else if (m.includes('claude-3-haiku')) {
-    defaultTokens = 4_096
-    upperLimit = 4_096
-  } else if (m.includes('3-5-sonnet') || m.includes('3-5-haiku')) {
-    defaultTokens = 8_192
-    upperLimit = 8_192
-  } else if (m.includes('3-7-sonnet')) {
-    defaultTokens = 32_000
-    upperLimit = 64_000
   } else {
-    defaultTokens = MAX_OUTPUT_TOKENS_DEFAULT
-    upperLimit = MAX_OUTPUT_TOKENS_UPPER_LIMIT
+    // 逐条来自官方模型表的 `max_output_tokens`。此前是一条 includes 链，
+    // 而 'claude-opus-4-8'.includes('opus-4') 为真 —— 新模型会静默掉进
+    // opus-4-0 的 32k 分支，长回答被提前截断。
+    const entry = lookupModelCatalog(getCanonicalName(model))
+    defaultTokens = entry?.maxOutputTokens.default ?? MAX_OUTPUT_TOKENS_DEFAULT
+    upperLimit = entry?.maxOutputTokens.upper ?? MAX_OUTPUT_TOKENS_UPPER_LIMIT
   }
 
   const cap = getModelCapability(model)

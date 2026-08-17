@@ -24,6 +24,7 @@
  * 这是报告工具，不是棘轮 —— 漂移是常态，不进 precheck。
  */
 import { Glob } from 'bun'
+import { MODEL_CATALOG } from '../src/utils/model/configs.js'
 import { existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -105,6 +106,104 @@ function report(label: string, values: string[]): void {
   }
 }
 
+/**
+ * 官方 bundle 里的模型注册表是一个**未被 minify 的对象字面量数组**（标识符
+ * 被压缩了，对象键没有），所以可以逐字段解析出来与 MODEL_CATALOG 对账。
+ *
+ * 这一栏存在的理由：字符串集合差只能发现"官方有某个 ID 而 dev 没有"，发现
+ * 不了"两边都有这个模型、但窗口/输出上限/定价/能力写错了"。连续两轮的真实
+ * 缺陷全属于后者（sonnet-4-5 的 1M 被当成原生、opus-4-8 的输出 default 掉进
+ * 32k 分支），字符串栏一条都没报出来。
+ */
+type OfficialModel = {
+  id: string
+  window: number | undefined
+  native1m: boolean
+  supports1mBeta: boolean
+  outDefault: number | undefined
+  outUpper: number | undefined
+  pricing: string | undefined
+  capabilities: string[]
+}
+
+/** 官方 id → dev canonical。官方用 `-4-0`，dev 用不带 `-0` 的形式。 */
+const OFFICIAL_ID_TO_CANONICAL: Record<string, string> = {
+  'claude-opus-4-0': 'claude-opus-4',
+  'claude-sonnet-4-0': 'claude-sonnet-4',
+}
+
+export function parseOfficialModelTable(bundle: string): OfficialModel[] {
+  const out: OfficialModel[] = []
+  for (const m of bundle.matchAll(
+    /id: "(claude-[a-z0-9-]+)",\s*\n?\s*family:/g,
+  )) {
+    const seg = bundle.slice(m.index, m.index + 3000).replace(/\s+/g, ' ')
+    const ctx = /context: \{ ([^}]*) \}/.exec(seg)?.[1] ?? ''
+    const out2 = /max_output_tokens: \{ default: (\d+), upper: (\d+) \}/.exec(
+      seg,
+    )
+    const caps = /capabilities: \[([^\]]*)\]/.exec(seg)?.[1] ?? ''
+    out.push({
+      id: m[1]!,
+      window: Number(/window: (\d+)/.exec(ctx)?.[1]) || undefined,
+      native1m: ctx.includes('native_1m: true'),
+      supports1mBeta: ctx.includes('supports_1m_beta: true'),
+      outDefault: out2 ? Number(out2[1]) : undefined,
+      outUpper: out2 ? Number(out2[2]) : undefined,
+      pricing: /pricing: "([^"]+)"/.exec(seg)?.[1],
+      capabilities: caps
+        .split(',')
+        .map(c => c.trim().replace(/^"|"$/g, ''))
+        .filter(Boolean),
+    })
+  }
+  return out
+}
+
+function reconcileModelTable(bundle: string): void {
+  const official = parseOfficialModelTable(bundle)
+  console.log('## 模型表逐字段对账')
+  if (official.length === 0) {
+    console.log('  官方表未能解析 —— bundle 结构可能已变，需要更新解析规则。')
+    return
+  }
+  const byCanonical = new Map(MODEL_CATALOG.map(e => [e.canonical, e]))
+  const problems: string[] = []
+  for (const o of official) {
+    const canonical = OFFICIAL_ID_TO_CANONICAL[o.id] ?? o.id
+    const dev = byCanonical.get(canonical)
+    if (!dev) {
+      problems.push(`${o.id}: catalog 里没有这个模型`)
+      continue
+    }
+    const cmp: [string, unknown, unknown][] = [
+      ['context.window', o.window, dev.context.window],
+      ['context.native_1m', o.native1m, dev.context.native1m],
+      [
+        'context.supports_1m_beta',
+        o.supports1mBeta,
+        dev.context.supports1mBeta,
+      ],
+      ['max_output_tokens.default', o.outDefault, dev.maxOutputTokens.default],
+      ['max_output_tokens.upper', o.outUpper, dev.maxOutputTokens.upper],
+      ['pricing', o.pricing, dev.pricing],
+      [
+        'capabilities',
+        [...o.capabilities].sort().join(','),
+        [...dev.capabilities].sort().join(','),
+      ],
+    ]
+    for (const [field, want, got] of cmp) {
+      if (want !== undefined && want !== got) {
+        problems.push(
+          `${canonical}.${field}: 官方 ${String(want)} / dev ${String(got)}`,
+        )
+      }
+    }
+  }
+  report('字段不一致', problems)
+}
+
 async function main(): Promise<void> {
   const fromArg = process.argv
     .find(a => a.startsWith('--bundle='))
@@ -138,6 +237,9 @@ async function main(): Promise<void> {
     report('dev 有 / 官方没有', onlyDev)
     console.log('')
   }
+
+  reconcileModelTable(official)
+  console.log('')
 
   const devTools = extractSet(dev, TOOL_NAME_PATTERN)
   const devOnlyTools = [...devTools]

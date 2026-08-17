@@ -116,7 +116,7 @@ mock.module('src/utils/model/model.js', () => ({
   resolveSkillModelOverride: mock(() => undefined),
   isLegacyModelRemapEnabled: mock(() => false),
   modelDisplayString: mock(() => ''),
-  getMarketingNameForModel: mock(() => undefined),
+  getDisplayNameForModel: mock(() => undefined),
   normalizeModelStringForAPI: mock((m: string) => m),
   isNonCustomOpusModel: mock(() => false),
 }))
