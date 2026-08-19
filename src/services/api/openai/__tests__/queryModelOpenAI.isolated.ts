@@ -794,7 +794,9 @@ describe('queryModelOpenAI — retry boundaries', () => {
     expect(otherOutputs[0]).toMatchObject({
       type: 'system',
       subtype: 'api_error',
-      retryInMs: 0,
+      // Retry-After: 0 is treated as "no useful delay hint" and falls through
+      // to the 500ms exponential base — same as if no header were present.
+      retryInMs: 500,
       retryAttempt: 1,
     })
   })
