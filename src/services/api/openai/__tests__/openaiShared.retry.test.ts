@@ -426,6 +426,43 @@ describe('withOpenAIStreamIdleTimeout', () => {
     expect(returned).toBe(true)
   })
 
+  test('uses the shorter stall window after the first chunk', async () => {
+    const stream: AsyncIterable<string> = {
+      [Symbol.asyncIterator]() {
+        let sent = false
+        return {
+          next: () =>
+            sent
+              ? new Promise<IteratorResult<string>>(() => {})
+              : ((sent = true),
+                Promise.resolve({ done: false, value: 'chunk' })),
+          return: async () => ({ done: true, value: undefined }),
+        }
+      },
+    }
+
+    const started = Date.now()
+    let rejection: unknown
+    const received: string[] = []
+    try {
+      for await (const chunk of withOpenAIStreamIdleTimeout(stream, {
+        timeoutMs: 60_000,
+        stallTimeoutMs: 5,
+        abortAttempt: () => {},
+        userSignal: new AbortController().signal,
+      })) {
+        received.push(chunk)
+      }
+    } catch (error) {
+      rejection = error
+    }
+
+    expect(received).toEqual(['chunk'])
+    expect(rejection).toMatchObject({ kind: 'idle_timeout' })
+    expect((rejection as Error).message).toContain('after 5ms')
+    expect(Date.now() - started).toBeLessThan(60_000)
+  })
+
   test('propagates user cancellation without reclassifying it', async () => {
     const userController = new AbortController()
     const abortError = Object.assign(new Error('request was aborted'), {

@@ -628,6 +628,7 @@ const DEFAULT_TRANSIENT_MAX_RETRIES = 5
 const DEFAULT_OPENAI_REQUEST_MAX_RETRIES = 4
 const DEFAULT_OPENAI_STREAM_MAX_RETRIES = 5
 const DEFAULT_OPENAI_STREAM_IDLE_TIMEOUT_MS = 300_000
+const DEFAULT_OPENAI_STREAM_STALL_TIMEOUT_MS = 120_000
 
 function parseBoundedRetryCount(
   value: string | undefined,
@@ -672,6 +673,25 @@ export function getOpenAIStreamIdleTimeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0
     ? parsed
     : DEFAULT_OPENAI_STREAM_IDLE_TIMEOUT_MS
+}
+
+/**
+ * Gap allowed *between* chunks once the stream has started producing them. The
+ * idle budget above is sized for time-to-first-chunk (queueing plus a long
+ * reasoning phase before any output); after the first chunk a provider that
+ * goes quiet has already dropped the stream. Measured over 913 completed
+ * streams in the raw logs, the largest inter-chunk gap ever observed was 56s,
+ * so 120s is a wide margin — tune with OPENAI_STREAM_STALL_TIMEOUT_MS if a
+ * provider legitimately pauses longer mid-stream.
+ */
+export function getOpenAIStreamStallTimeoutMs(): number {
+  const parsed = Number.parseInt(
+    process.env.OPENAI_STREAM_STALL_TIMEOUT_MS || '',
+    10,
+  )
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_OPENAI_STREAM_STALL_TIMEOUT_MS
 }
 
 /**
@@ -803,6 +823,7 @@ export async function* withOpenAIStreamIdleTimeout<T>(
   stream: AsyncIterable<T>,
   opts: {
     timeoutMs?: number
+    stallTimeoutMs?: number
     abortAttempt: () => void
     userSignal: AbortSignal
     requestId?: string | null
@@ -810,17 +831,24 @@ export async function* withOpenAIStreamIdleTimeout<T>(
 ): AsyncGenerator<T, void> {
   const iterator = stream[Symbol.asyncIterator]()
   const timeoutMs = opts.timeoutMs ?? getOpenAIStreamIdleTimeoutMs()
+  // Never wait longer between chunks than for the first one.
+  const stallTimeoutMs = Math.min(
+    opts.stallTimeoutMs ?? getOpenAIStreamStallTimeoutMs(),
+    timeoutMs,
+  )
   let failed = false
+  let chunks = 0
 
   try {
     for (;;) {
+      const waitMs = chunks === 0 ? timeoutMs : stallTimeoutMs
       let timer: ReturnType<typeof setTimeout> | undefined
       try {
         const timeout = new Promise<IteratorResult<T>>((_, reject) => {
           timer = setTimeout(() => {
             reject(
               new ProviderStreamError(
-                `OpenAI stream idle timeout after ${timeoutMs}ms`,
+                `OpenAI stream idle timeout after ${waitMs}ms`,
                 {
                   kind: 'idle_timeout',
                   retryable: true,
@@ -830,11 +858,12 @@ export async function* withOpenAIStreamIdleTimeout<T>(
               ),
             )
             opts.abortAttempt()
-          }, timeoutMs)
+          }, waitMs)
           timer.unref?.()
         })
         const result = await Promise.race([iterator.next(), timeout])
         if (result.done) return
+        chunks++
         yield result.value
       } finally {
         if (timer !== undefined) clearTimeout(timer)

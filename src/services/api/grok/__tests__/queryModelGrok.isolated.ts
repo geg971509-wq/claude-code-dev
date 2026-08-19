@@ -423,7 +423,7 @@ describe('queryModelGrok terminal assembly', () => {
     expect(result.streamEvents).toHaveLength(completedEvents().length)
   })
 
-  test('does not retry once semantic content has been yielded', async () => {
+  test('retries once semantic content has been yielded', async () => {
     process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS = '5'
     process.env.OPENAI_STREAM_MAX_RETRIES = '3'
     const result = await runQuery([
@@ -432,12 +432,15 @@ describe('queryModelGrok terminal assembly', () => {
         hangAfterEvents: true,
         requestId: 'req_committed',
       },
-      { events: completedEvents(), requestId: 'req_never_used' },
+      { events: completedEvents(), requestId: 'req_committed_recovered' },
     ])
 
-    expect(createCalls).toBe(1)
-    expect(normalMessages(result.assistantMessages)).toHaveLength(0)
-    expect(errorMessages(result.assistantMessages)).toHaveLength(1)
+    expect(createCalls).toBe(2)
+    expect(normalMessages(result.assistantMessages)).toHaveLength(1)
+    expect(errorMessages(result.assistantMessages)).toHaveLength(0)
+    expect(normalMessages(result.assistantMessages)[0]!.requestId).toBe(
+      'req_committed_recovered',
+    )
   })
 
   test('cuts a thinking loop without retrying the same prompt', async () => {

@@ -683,10 +683,15 @@ export async function* queryModelOpenAI(
       }
 
       if (streamError !== undefined) {
+        // A committed attempt is still retryable: nothing durable escapes
+        // before message_stop (the assistant message is assembled there, and
+        // the REPL's streamed text is transient state the retry's first
+        // content_block_start clears). Refusing to retry here made every
+        // mid-stream drop fatal — 91 of 92 stream failures in the raw logs
+        // died without a second attempt.
         if (
           signal.aborted ||
           isOpenAIUserAbortError(streamError) ||
-          committed ||
           !isTransientOpenAIError(streamError) ||
           streamRetries >= streamMaxRetries
         ) {

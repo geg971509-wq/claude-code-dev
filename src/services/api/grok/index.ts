@@ -141,12 +141,13 @@ export async function* queryModelGrok(
       `[Grok] Calling model=${grokModel}, messages=${openaiMessages.length}, tools=${openaiTools.length}`,
     )
 
-    // Codex: keep the 300s idle watchdog; retry the sampling request when the
-    // stream dies before any user-visible output escapes. Handshake 5xx still
-    // goes through withTransientOpenAIRetry. Scaffolding and thinking-only
-    // events stay in `prelude` so a long think that then goes silent is still
-    // retryable; once text/tool content is committed we never retry, since the
-    // REPL would replay those tokens.
+    // Codex: keep the idle watchdog; retry the sampling request whenever the
+    // stream dies before message_stop, committed or not — the assistant
+    // message is assembled at message_stop, so a dead attempt leaves nothing
+    // behind but transient REPL text that the retry overwrites. Handshake 5xx
+    // still goes through withTransientOpenAIRetry. Scaffolding and
+    // thinking-only events stay in `prelude` so the retry replays them in
+    // order.
     const streamMaxRetries = getOpenAIStreamMaxRetries()
     let streamRetries = 0
     const collectedMessages: AssistantMessage[] = []
@@ -394,11 +395,7 @@ export async function* queryModelGrok(
         ) {
           throw error
         }
-        if (
-          !committed &&
-          isTransientOpenAIError(error) &&
-          streamRetries < streamMaxRetries
-        ) {
+        if (isTransientOpenAIError(error) && streamRetries < streamMaxRetries) {
           streamRetries++
           const delayMs = getOpenAIRetryDelayMs(error, streamRetries)
           logForDebugging(

@@ -513,7 +513,10 @@ describe('queryModelOpenAI — stop_reason propagation', () => {
       makeContentBlockStop(0),
     ]
 
-    const { assistantMessages } = await runQueryModel(_nextEvents)
+    // Retries off: this asserts the terminal shape, not the retry budget.
+    const { assistantMessages } = await runQueryModel(_nextEvents, {
+      OPENAI_STREAM_MAX_RETRIES: '0',
+    })
 
     expect(assistantMessages).toHaveLength(1)
     expect(assistantMessages[0]!.isApiErrorMessage).toBe(true)
@@ -627,7 +630,10 @@ describe('queryModelOpenAI — terminal message assembly', () => {
       makeTextDelta(0, 'abrupt end'),
     ]
 
-    const { assistantMessages } = await runQueryModel(_nextEvents)
+    // Retries off: this asserts the terminal shape, not the retry budget.
+    const { assistantMessages } = await runQueryModel(_nextEvents, {
+      OPENAI_STREAM_MAX_RETRIES: '0',
+    })
 
     expect(assistantMessages).toHaveLength(1)
     expect(assistantMessages[0]!.isApiErrorMessage).toBe(true)
@@ -866,7 +872,7 @@ describe('queryModelOpenAI — retry boundaries', () => {
   ]
 
   for (const scenario of committedFailures) {
-    test(`does not retry after ${scenario.name} becomes visible`, async () => {
+    test(`retries after ${scenario.name} became visible`, async () => {
       const { assistantMessages, otherOutputs } = await runQueryModel(
         [],
         { OPENAI_STREAM_MAX_RETRIES: '1' },
@@ -875,16 +881,39 @@ describe('queryModelOpenAI — retry boundaries', () => {
             events: scenario.events,
             streamError: transientStreamError(),
           },
-          { events: completedEvents('must not replay') },
+          { events: completedEvents('recovered'), requestId: 'req_recovered' },
         ],
       )
 
-      expect(_createCalls).toBe(1)
-      expect(otherOutputs).toHaveLength(0)
+      expect(_createCalls).toBe(2)
+      expect(otherOutputs).toHaveLength(1)
       expect(assistantMessages).toHaveLength(1)
-      expect(assistantMessages[0]!.isApiErrorMessage).toBe(true)
+      expect(assistantMessages[0]!.isApiErrorMessage).toBeUndefined()
+      expect(assistantMessages[0]!.requestId).toBe('req_recovered')
     })
   }
+
+  test('gives up on a committed stream once the retry budget is spent', async () => {
+    const { assistantMessages, otherOutputs } = await runQueryModel(
+      [],
+      { OPENAI_STREAM_MAX_RETRIES: '1' },
+      [
+        {
+          events: committedFailures[0]!.events,
+          streamError: transientStreamError(),
+        },
+        {
+          events: committedFailures[0]!.events,
+          streamError: transientStreamError(),
+        },
+      ],
+    )
+
+    expect(_createCalls).toBe(2)
+    expect(otherOutputs).toHaveLength(1)
+    expect(assistantMessages).toHaveLength(1)
+    expect(assistantMessages[0]!.isApiErrorMessage).toBe(true)
+  })
 
   test('propagates the successful request ID to the final assistant message', async () => {
     const { assistantMessages } = await runQueryModel(
