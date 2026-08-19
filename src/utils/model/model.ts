@@ -27,7 +27,12 @@ import {
   type ModelFamily,
 } from './aliasDefaults.js'
 import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
-import { formatModelPricing, getOpus46CostTier } from '../modelCost.js'
+import {
+  COST_TIER_5_25,
+  formatModelPricing,
+  getActiveFastModeCosts,
+  MODEL_COSTS,
+} from '../modelCost.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './providers.js'
@@ -368,7 +373,12 @@ export function renderDefaultModelSetting(
 
 export function getOpusPricingSuffix(fastMode: boolean): string {
   if (getAPIProvider() !== 'firstParty') return ''
-  const pricing = formatModelPricing(getOpus46CostTier(fastMode))
+  // 按 `opus` 别名实际解析到的机型报价，而不是写死某一代。
+  const target = aliasTargetCanonical('opus', 'firstParty')
+  const costs = fastMode
+    ? getActiveFastModeCosts()
+    : (MODEL_COSTS[getCanonicalName(target)] ?? COST_TIER_5_25)
+  const pricing = formatModelPricing(costs)
   const fastModeIndicator = fastMode ? ` (${LIGHTNING_BOLT})` : ''
   return ` ·${fastModeIndicator} ${pricing}`
 }

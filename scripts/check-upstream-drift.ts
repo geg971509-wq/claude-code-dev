@@ -122,18 +122,26 @@ function report(label: string, values: string[]): void {
  */
 type OfficialModel = {
   id: string
+  displayName: string | undefined
   window: number | undefined
   native1m: boolean
   supports1mBeta: boolean
+  supports1mSuffix: boolean
+  native1m3p: string | undefined
   outDefault: number | undefined
   outUpper: number | undefined
   pricing: string | undefined
   capabilities: string[]
   knowledgeCutoff: string | undefined
   defaultEffort: string | undefined
+  effortCostIndex: string | undefined
+  imageLimits: string | undefined
+  deprecation: string | undefined
+  minCliVersion: string | undefined
   firstParty: string | undefined
   bedrock: string | undefined
   vertex: string | undefined
+  foundry: string | undefined
 }
 
 /** 官方 id → dev canonical。官方用 `-4-0`，dev 用不带 `-0` 的形式。 */
@@ -174,6 +182,7 @@ function parseProviderIds(seg: string): {
   firstParty: string | undefined
   bedrock: string | undefined
   vertex: string | undefined
+  foundry: string | undefined
 } {
   const block = extractBlock(seg, 'provider_ids')
   const pick = (field: string): string | undefined =>
@@ -182,7 +191,50 @@ function parseProviderIds(seg: string): {
     firstParty: pick('first_party'),
     bedrock: pick('bedrock'),
     vertex: pick('vertex'),
+    foundry: pick('foundry'),
   }
+}
+
+/**
+ * 一个机型对象的作用域 —— 从它的 `id:` 一直到**它自己**的闭合大括号。
+ *
+ * 早先是 `bundle.slice(at, at + 3000)`：一个固定长度的窗口，不认对象边界。
+ * 机型自身缺某个字段时（3.x 机型没有 `context` / `knowledge_cutoff`，
+ * opus-4-1 / 4-5 / sonnet-4-5 没有 `default_effort`），正则就顺着窗口读到
+ * **下一个机型**的同名字段，把邻居的值当成它的值报出来。后果不是误报而是
+ * 漏报：dev 给 claude-3-5-sonnet 编的 `supports_1m_beta: true` 之所以能一直
+ * 躲过对账，正是因为解析器把 sonnet-4-0 的 context 块算在了它头上。
+ *
+ * 这是同一个文件第三次栽在「正则跨结构取值」上，前两次分别是 provider_ids
+ * 的 null 和 context 里的嵌套对象。这次按对象边界切，把这条路彻底堵死。
+ */
+function modelSegment(bundle: string, start: number): string {
+  // start 落在对象内部（`{ id: ...` 的 id 处），所以第一个未配对的 `}`
+  // 就是这个机型对象的结尾。机型条目里的字符串不含大括号。
+  let depth = 0
+  for (let i = start; i < bundle.length; i++) {
+    const ch = bundle[i]
+    if (ch === '{') depth++
+    else if (ch === '}') {
+      if (depth === 0) return bundle.slice(start, i)
+      depth--
+    }
+  }
+  return bundle.slice(start)
+}
+
+/** 官方把 1M 写成 `1e6`，`(\d+)` 只会取到 `1`。 */
+function pickNumber(seg: string, field: string): number | undefined {
+  const raw = new RegExp(`\\b${field}: ([\\d._e+]+)`).exec(seg)?.[1]
+  if (raw === undefined) return undefined
+  const n = Number(raw.replace(/_/g, ''))
+  return Number.isFinite(n) ? n : undefined
+}
+
+/** 结构化字段按块取出后压成单行，用于与 dev 侧的 JSON 形态逐字比对。 */
+function pickBlock(seg: string, key: string): string | undefined {
+  const block = extractBlock(seg, key)
+  return block === '' ? undefined : block.replace(/\s+/g, ' ')
 }
 
 export function parseOfficialModelTable(bundle: string): OfficialModel[] {
@@ -190,22 +242,26 @@ export function parseOfficialModelTable(bundle: string): OfficialModel[] {
   for (const m of bundle.matchAll(
     /id: "(claude-[a-z0-9-]+)",\s*\n?\s*family:/g,
   )) {
-    const seg = bundle.slice(m.index, m.index + 3000).replace(/\s+/g, ' ')
+    const seg = modelSegment(bundle, m.index).replace(/\s+/g, ' ')
     const ctx = extractBlock(seg, 'context')
-    const out2 = /max_output_tokens: \{ default: (\d+), upper: (\d+) \}/.exec(
-      seg,
-    )
     const caps = /capabilities: \[([^\]]*)\]/.exec(seg)?.[1] ?? ''
     out.push({
       id: m[1]!,
-      window: Number(/window: (\d+)/.exec(ctx)?.[1]) || undefined,
+      displayName: /display_name: "([^"]+)"/.exec(seg)?.[1],
+      window: pickNumber(ctx, 'window'),
       native1m: ctx.includes('native_1m: true'),
       supports1mBeta: ctx.includes('supports_1m_beta: true'),
-      outDefault: out2 ? Number(out2[1]) : undefined,
-      outUpper: out2 ? Number(out2[2]) : undefined,
+      supports1mSuffix: ctx.includes('supports_1m_suffix: true'),
+      native1m3p: pickBlock(ctx, 'native_1m_3p'),
+      outDefault: pickNumber(extractBlock(seg, 'max_output_tokens'), 'default'),
+      outUpper: pickNumber(extractBlock(seg, 'max_output_tokens'), 'upper'),
       pricing: /pricing: "([^"]+)"/.exec(seg)?.[1],
       knowledgeCutoff: /knowledge_cutoff: "([^"]+)"/.exec(seg)?.[1],
       defaultEffort: /default_effort: "([a-z]+)"/.exec(seg)?.[1],
+      effortCostIndex: pickBlock(seg, 'effort_cost_index'),
+      imageLimits: pickBlock(seg, 'image_limits'),
+      deprecation: pickBlock(seg, 'deprecation'),
+      minCliVersion: /min_cli_version: "([^"]+)"/.exec(seg)?.[1],
       ...parseProviderIds(seg),
       capabilities: caps
         .split(',')
@@ -214,6 +270,25 @@ export function parseOfficialModelTable(bundle: string): OfficialModel[] {
     })
   }
   return out
+}
+
+/**
+ * 结构化字段两侧归一成 `key=value` 的有序串再比对 —— 官方是 JS 对象字面量
+ * （`{ low: 0.67 }`），dev 是 JSON（`{"low":0.67}`），去掉引号后同一套正则
+ * 就能读，不必为每个字段各写一个解析。
+ */
+function normalizePairs(text: string | undefined): string | undefined {
+  if (text === undefined) return undefined
+  return [
+    ...text.replace(/"/g, '').matchAll(/([A-Za-z_0-9]+)\s*:\s*([^,}\s]+)/g),
+  ]
+    .map(m => `${m[1]}=${m[2]}`)
+    .sort()
+    .join(',')
+}
+
+function devPairs(value: unknown): string | undefined {
+  return value === undefined ? undefined : normalizePairs(JSON.stringify(value))
 }
 
 function reconcileModelTable(bundle: string): void {
@@ -233,6 +308,7 @@ function reconcileModelTable(bundle: string): void {
       continue
     }
     const cmp: [string, unknown, unknown][] = [
+      ['display_name', o.displayName, dev.displayName],
       ['context.window', o.window, dev.context.window],
       ['context.native_1m', o.native1m, dev.context.native1m],
       [
@@ -240,22 +316,49 @@ function reconcileModelTable(bundle: string): void {
         o.supports1mBeta,
         dev.context.supports1mBeta,
       ],
+      [
+        'context.supports_1m_suffix',
+        o.supports1mSuffix,
+        dev.context.supports1mSuffix,
+      ],
+      [
+        'context.native_1m_3p',
+        normalizePairs(o.native1m3p),
+        devPairs(dev.context.native1m3p),
+      ],
       ['max_output_tokens.default', o.outDefault, dev.maxOutputTokens.default],
       ['max_output_tokens.upper', o.outUpper, dev.maxOutputTokens.upper],
       ['pricing', o.pricing, dev.pricing],
       ['knowledge_cutoff', o.knowledgeCutoff, dev.knowledgeCutoff],
       ['default_effort', o.defaultEffort, dev.defaultEffort],
+      [
+        'effort_cost_index',
+        normalizePairs(o.effortCostIndex),
+        devPairs(dev.effortCostIndex),
+      ],
+      [
+        'image_limits',
+        normalizePairs(o.imageLimits),
+        devPairs(dev.imageLimits),
+      ],
+      ['deprecation', normalizePairs(o.deprecation), devPairs(dev.deprecation)],
+      ['min_cli_version', o.minCliVersion, dev.minCliVersion],
       ['provider_ids.first_party', o.firstParty, dev.providerIds?.firstParty],
       ['provider_ids.bedrock', o.bedrock, dev.providerIds?.bedrock],
       ['provider_ids.vertex', o.vertex, dev.providerIds?.vertex],
+      ['provider_ids.foundry', o.foundry, dev.providerIds?.foundry],
       [
         'capabilities',
         [...o.capabilities].sort().join(','),
         [...dev.capabilities].sort().join(','),
       ],
     ]
+    // 不放过 `want === undefined`：解析器现在按对象边界切，读不到就是官方
+    // **确实没有这个字段**，此时 dev 若有值就是凭空编的（3.x 机型的
+    // knowledge_cutoff / context 就是这么混进来的）。老版本在这里跳过，于是
+    // 「dev 多编了一格」这一整类漂移从来没被报出来过。
     for (const [field, want, got] of cmp) {
-      if (want !== undefined && want !== got) {
+      if (want !== got) {
         problems.push(
           `${canonical}.${field}: 官方 ${String(want)} / dev ${String(got)}`,
         )

@@ -94,6 +94,35 @@ describe('MODEL_CATALOG', () => {
     })
   })
 
+  test('fast_mode is recorded only where the API actually serves it', () => {
+    // 官方全表只有 opus-4-8 与 opus-5 带 fast_mode。dev 曾多给 opus-4-7 记了
+    // 一条 —— 而官方 bundle 明确写着 4.7 上的 `speed="fast"` 直接 API error。
+    for (const m of ['claude-opus-4-8', 'claude-opus-5']) {
+      expect(lookupModelCatalog(m)?.capabilities).toContain('fast_mode')
+    }
+    for (const m of ['claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-5']) {
+      expect(lookupModelCatalog(m)?.capabilities).not.toContain('fast_mode')
+    }
+  })
+
+  test('3.x rows carry no fabricated context or cutoff', () => {
+    // 官方对 3.x 机型整块 `context` 和 `knowledge_cutoff` 都没写。dev 自己
+    // 填过一套，其中 supports1mBeta=true 让 modelSupports1M() 对 Sonnet 3.5
+    // 返回真 —— 给一个吃不下 1M 的机型挂上 1M 开关。对账器当时因为按固定
+    // 窗口取值、读到了隔壁机型的 context 而报了平安。
+    for (const m of ['claude-3-5-sonnet', 'claude-3-7-sonnet']) {
+      expect(lookupModelCatalog(m)?.context).toEqual({
+        native1m: false,
+        supports1mBeta: false,
+        supports1mSuffix: false,
+      })
+      expect(lookupModelCatalog(m)?.knowledgeCutoff).toBeUndefined()
+    }
+    expect(lookupModelCatalog('claude-3-5-sonnet')?.displayName).toBe(
+      'Sonnet 3.5',
+    )
+  })
+
   test('returns undefined for unknown models', () => {
     expect(lookupModelCatalog('gpt-4o')).toBeUndefined()
   })

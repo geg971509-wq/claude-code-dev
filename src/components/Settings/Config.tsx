@@ -71,7 +71,7 @@ import { useSearchInput } from '../../hooks/useSearchInput.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import {
   clearFastModeCooldown,
-  FAST_MODE_MODEL_DISPLAY,
+  getFastModeModelDisplay,
   isFastModeAvailable,
   isFastModeEnabled,
   getFastModeModel,
@@ -388,7 +388,7 @@ export function Config({
       ? [
           {
             id: 'fastMode',
-            label: `Fast mode (${FAST_MODE_MODEL_DISPLAY} only)`,
+            label: `Fast mode (${getFastModeModelDisplay()} only)`,
             value: !!isFastMode,
             type: 'boolean' as const,
             onChange(enabled: boolean) {

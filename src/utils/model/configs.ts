@@ -30,9 +30,14 @@ export type ModelCatalogEntry = {
     vertex?: string
     foundry?: string
   }
-  /** 官方 `context`。window 是不带任何 beta 时的基础窗口。 */
+  /** 官方 `context`。整块可缺省 —— 3.x 机型官方就没有这一段。 */
   context: {
-    window: number
+    /**
+     * 官方 `context.window`：该机型的标称窗口。**没有运行时消费点** ——
+     * `getContextWindowForModel` 的兜底是官方同款的 200k 常量，不是这里。
+     * 留着是为了让对账器能在官方改窗口时报出来，缺省即官方没写。
+     */
+    window?: number
     native1m: boolean
     supports1mBeta: boolean
     /** 官方 `supports_1m_suffix`：只决定显示名是否追加 " (1M context)"。 */
@@ -50,10 +55,40 @@ export type ModelCatalogEntry = {
   maxOutputTokens: { default: number; upper: number }
   /** 官方 `pricing` tier 名，如 'tier_5_25'。3.0 机型官方表已不收录。 */
   pricing?: string
-  /** 官方 `capabilities` 原样保留：effort / xhigh_effort / fast_mode 等按模型门控。 */
+  /**
+   * 官方 `capabilities`，原样保留。
+   *
+   * dev 真正**消费**的是（一律经 `modelHasCapability`，不要再写家族前缀
+   * 白名单 —— 那种写法每次发新机型都会漏，effort / fast_mode /
+   * adaptive_thinking 三处都是这么栽的）：
+   *   effort · max_effort · xhigh_effort  → effort.ts
+   *   context_management                  → betas.ts
+   *   fast_mode                           → fastMode.ts
+   *   adaptive_thinking                   → thinking.ts
+   *   rejects_disabled_thinking           → yoloClassifier.ts
+   *
+   * 其余几项（mid_conv_system / lean_prompt / refusal_fallback /
+   * opus_5_prompt_bundle / fable_5_mitigations）对应的是 dev 尚未实现的官方
+   * 功能，只作为事实录在这里：对账器按整个数组逐字比对，漏录一项就会报出
+   * 来，而实现它们的那天不必再回头翻官方 bundle。
+   */
   capabilities: readonly string[]
   /** 官方 `default_effort`。缺省表示该机型没有默认 effort。 */
   defaultEffort?: string
+  /**
+   * 官方 `effort_cost_index`：各 effort 档相对 high(=1) 的成本倍数。
+   * 只有带 `effort` 能力的机型有。
+   */
+  effortCostIndex?: Record<string, number>
+  /** 官方 `image_limits`。 */
+  imageLimits?: { maxWidth: number; maxHeight: number }
+  /** 官方 `deprecation`。`remapped_to` 指向退役后应改指的机型。 */
+  deprecation?: {
+    retirement_dates?: Record<string, string>
+    remapped_to?: string
+  }
+  /** 官方 `min_cli_version`。 */
+  minCliVersion?: string
 }
 
 /**
@@ -101,6 +136,8 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       'opus_5_prompt_bundle',
     ],
     defaultEffort: 'high',
+    effortCostIndex: { low: 0.67, medium: 0.76, high: 1, xhigh: 1.6, max: 1.7 },
+    imageLimits: { maxWidth: 2000, maxHeight: 2000 },
   },
   {
     key: 'opus48',
@@ -132,6 +169,14 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       'lean_prompt',
     ],
     defaultEffort: 'high',
+    effortCostIndex: {
+      low: 0.72,
+      medium: 0.9,
+      high: 1,
+      xhigh: 1.65,
+      max: 1.88,
+    },
+    imageLimits: { maxWidth: 2000, maxHeight: 2000 },
   },
   {
     key: 'opus47',
@@ -158,9 +203,9 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       'xhigh_effort',
       'adaptive_thinking',
       'context_management',
-      'fast_mode',
     ],
     defaultEffort: 'xhigh',
+    imageLimits: { maxWidth: 2000, maxHeight: 2000 },
   },
   {
     key: 'opus46',
@@ -187,7 +232,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       'adaptive_thinking',
       'context_management',
     ],
-    defaultEffort: 'xhigh',
   },
   {
     key: 'opus45',
@@ -281,6 +325,14 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       'context_management',
     ],
     defaultEffort: 'high',
+    effortCostIndex: {
+      low: 0.47,
+      medium: 0.74,
+      high: 1,
+      xhigh: 2.41,
+      max: 5.59,
+    },
+    imageLimits: { maxWidth: 2000, maxHeight: 2000 },
   },
   {
     key: 'sonnet46',
@@ -307,7 +359,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       'adaptive_thinking',
       'context_management',
     ],
-    defaultEffort: 'high',
   },
   {
     key: 'sonnet45',
@@ -375,19 +426,20 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
   {
     key: 'sonnet37',
     canonical: 'claude-3-7-sonnet',
-    displayName: 'Claude 3.7 Sonnet',
-    knowledgeCutoff: 'January 2025',
+    displayName: 'Sonnet 3.7',
     providerIds: {
       firstParty: 'claude-3-7-sonnet-20250219',
       bedrock: 'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
       vertex: 'claude-3-7-sonnet@20250219',
       foundry: 'claude-3-7-sonnet',
     },
+    // 官方对 3.x 机型整块 `context` 都没写。dev 此前自己填了一套，其中
+    // `supports_1m_beta: true` 让 modelSupports1M() 对 Sonnet 3.7 返回 true，
+    // 于是 /model 会给一个根本吃不下 1M 的机型挂上 1M 开关。
     context: {
-      window: 200_000,
       native1m: false,
-      supports1mBeta: true,
-      supports1mSuffix: true,
+      supports1mBeta: false,
+      supports1mSuffix: false,
     },
     maxOutputTokens: { default: 32_000, upper: 64_000 },
     pricing: 'tier_3_15',
@@ -396,8 +448,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
   {
     key: 'sonnet35',
     canonical: 'claude-3-5-sonnet',
-    displayName: 'Claude 3.5 Sonnet',
-    knowledgeCutoff: 'January 2025',
+    displayName: 'Sonnet 3.5',
     providerIds: {
       firstParty: 'claude-3-5-sonnet-20241022',
       bedrock: 'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
@@ -405,10 +456,9 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       foundry: 'claude-3-5-sonnet',
     },
     context: {
-      window: 200_000,
       native1m: false,
-      supports1mBeta: true,
-      supports1mSuffix: true,
+      supports1mBeta: false,
+      supports1mSuffix: false,
     },
     maxOutputTokens: { default: 8_192, upper: 8_192 },
     pricing: 'tier_3_15',
@@ -417,8 +467,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
   {
     key: 'haiku35',
     canonical: 'claude-3-5-haiku',
-    displayName: 'Claude 3.5 Haiku',
-    knowledgeCutoff: 'February 2025',
+    displayName: 'Haiku 3.5',
     providerIds: {
       firstParty: 'claude-3-5-haiku-20241022',
       bedrock: 'us.anthropic.claude-3-5-haiku-20241022-v1:0',
@@ -426,10 +475,9 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       foundry: 'claude-3-5-haiku',
     },
     context: {
-      window: 200_000,
       native1m: false,
       supports1mBeta: false,
-      supports1mSuffix: true,
+      supports1mSuffix: false,
     },
     maxOutputTokens: { default: 8_192, upper: 8_192 },
     pricing: 'haiku_35',
@@ -467,6 +515,14 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
       'refusal_fallback',
     ],
     defaultEffort: 'high',
+    effortCostIndex: {
+      low: 0.6,
+      medium: 0.77,
+      high: 1,
+      xhigh: 1.74,
+      max: 1.91,
+    },
+    imageLimits: { maxWidth: 2000, maxHeight: 2000 },
   },
   // mythos-5：官方 provider_ids 里除 first_party 外全是 null（仅一方直连），
   // 因此不进 ALL_MODEL_CONFIGS —— 那张表要求七家 provider ID 齐全。
@@ -484,6 +540,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     maxOutputTokens: { default: 64_000, upper: 128_000 },
     pricing: 'tier_10_50',
     capabilities: [],
+    imageLimits: { maxWidth: 2000, maxHeight: 2000 },
   },
   // 3.0 机型：官方表已不再收录，只用于 canonical 归一，UI 从不呈现。
   {

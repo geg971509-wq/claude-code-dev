@@ -8,7 +8,7 @@ import {
   logEvent,
 } from 'src/services/analytics/index.js';
 import {
-  FAST_MODE_MODEL_DISPLAY,
+  getFastModeModelDisplay,
   isFastModeAvailable,
   isFastModeCooldown,
   isFastModeEnabled,
@@ -319,14 +319,14 @@ export function ModelPicker({
           showFastModeNotice ? (
             <Box marginBottom={1}>
               <Text dimColor>
-                Fast mode is <Text bold>ON</Text> and available with {FAST_MODE_MODEL_DISPLAY} only (/fast). Switching
+                Fast mode is <Text bold>ON</Text> and available with {getFastModeModelDisplay()} only (/fast). Switching
                 to other models turn off fast mode.
               </Text>
             </Box>
           ) : isFastModeAvailable() && !isFastModeCooldown() ? (
             <Box marginBottom={1}>
               <Text dimColor>
-                Use <Text bold>/fast</Text> to turn on Fast mode ({FAST_MODE_MODEL_DISPLAY} only).
+                Use <Text bold>/fast</Text> to turn on Fast mode ({getFastModeModelDisplay()} only).
               </Text>
             </Box>
           ) : null

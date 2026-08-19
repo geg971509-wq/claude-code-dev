@@ -68,4 +68,39 @@ describe('parseOfficialModelTable', () => {
     // bedrock 是 null，必须是缺省而不是隔壁的值。
     expect(model?.bedrock).toBeUndefined()
   })
+
+  // 第三次：固定长度窗口（`slice(at, at+3000)`）不认对象边界，机型自身缺某个
+  // 字段时正则会读到**下一个机型**的同名字段。它的失效方式同样是静默报平安：
+  // dev 给 3.x 机型编的 context / knowledge_cutoff 就是这么一直躲过对账的。
+  const TWO_MODELS = `
+    { id: "claude-fake-old", family: "fake", display_name: "Fake Old",
+      provider_ids: { first_party: "claude-fake-old" },
+      max_output_tokens: { default: 8192, upper: 8192 },
+      pricing: "tier_3_15", capabilities: [] },
+    { id: "claude-fake-new", family: "fake", display_name: "Fake New",
+      knowledge_cutoff: "January 2026",
+      provider_ids: { first_party: "claude-fake-new" },
+      context: { window: 1e6, native_1m: true, supports_1m_beta: true },
+      max_output_tokens: { default: 64000, upper: 128000 },
+      pricing: "tier_10_50", capabilities: ["effort"], default_effort: "high" }
+  `
+
+  test('缺字段的机型不会读到下一个机型的值', () => {
+    const [old, next] = parseOfficialModelTable(TWO_MODELS)
+    expect(old?.id).toBe('claude-fake-old')
+    expect(old?.knowledgeCutoff).toBeUndefined()
+    expect(old?.defaultEffort).toBeUndefined()
+    expect(old?.window).toBeUndefined()
+    expect(old?.native1m).toBe(false)
+    expect(old?.outDefault).toBe(8192)
+    // 邻居本身仍要读对，否则"不串"是靠整体读不到实现的。
+    expect(next?.knowledgeCutoff).toBe('January 2026')
+    expect(next?.defaultEffort).toBe('high')
+  })
+
+  test('window 的 1e6 写法要解析成 1000000', () => {
+    // `window: (\\d+)` 只会取到 `1`，于是所有 native-1M 机型都报"官方 1"。
+    const [, next] = parseOfficialModelTable(TWO_MODELS)
+    expect(next?.window).toBe(1_000_000)
+  })
 })

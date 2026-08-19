@@ -20,8 +20,12 @@ import { isInBundledMode } from './bundledMode.js'
 import { getGlobalConfig, saveGlobalConfig } from './config.js'
 import { logForDebugging } from './debug.js'
 import { isEnvTruthy } from './envUtils.js'
+import { aliasTargetCanonical } from './model/aliasDefaults.js'
+import { modelHasCapability } from './model/configs.js'
 import {
+  getCanonicalName,
   getDefaultMainLoopModelSetting,
+  getDisplayNameForModel,
   isOpus1mMergeEnabled,
   type ModelSetting,
   parseUserSpecifiedModel,
@@ -139,11 +143,18 @@ export function getFastModeUnavailableReason(): string | null {
   return null
 }
 
-// @[MODEL LAUNCH]: Update supported Fast Mode models.
-export const FAST_MODE_MODEL_DISPLAY = 'Opus 4.7'
-
 export function getFastModeModel(): string {
   return 'opus' + (isOpus1mMergeEnabled() ? '[1m]' : '')
+}
+
+/**
+ * `getFastModeModel()` 返回的是 `opus` 别名，UI 要显示的是它在当前 provider
+ * 下实际解析到的机型名。此前这里是个硬编码常量 `'Opus 4.7'`，与门控各写各的
+ * ——门控修到 4.8/opus-5 之后它还会继续说"model set to Opus 4.7"。
+ */
+export function getFastModeModelDisplay(): string {
+  const canonical = aliasTargetCanonical('opus', getAPIProvider())
+  return getDisplayNameForModel(canonical) ?? canonical
 }
 
 export function getInitialFastModeSetting(model: ModelSetting): boolean {
@@ -164,6 +175,17 @@ export function getInitialFastModeSetting(model: ModelSetting): boolean {
   return settings.fastMode === true
 }
 
+/**
+ * 与官方同构：先查模型表的 `fast_mode` 能力，查不到再退回机型名前缀。
+ *
+ * 此前是写死的 `opus-4-7 || opus-4-6`，恰好押在坏掉的两个机型上：官方
+ * bundle 明确记着 `claude-opus-4-6-fast` 已退役、API **静默回落**到普通
+ * 4.6（用户白丢 fast 速度且无感），而 `claude-opus-4-7-fast` 与 4.7 上的
+ * `speed="fast"` **直接返回 API error**。真正支持 fast mode 的是官方
+ * capabilities 里带 `fast_mode` 的 opus-4-8 与 opus-5，这两个反而被挡住。
+ *
+ * 前缀兜底保留，作用是模型表还没收录的新机型（官方自己也留了同一条）。
+ */
 export function isFastModeSupportedByModel(
   modelSetting: ModelSetting,
 ): boolean {
@@ -172,10 +194,11 @@ export function isFastModeSupportedByModel(
   }
   const model = modelSetting ?? getDefaultMainLoopModelSetting()
   const parsedModel = parseUserSpecifiedModel(model)
-  return (
-    parsedModel.toLowerCase().includes('opus-4-7') ||
-    parsedModel.toLowerCase().includes('opus-4-6')
-  )
+  if (modelHasCapability(getCanonicalName(parsedModel), 'fast_mode')) {
+    return true
+  }
+  const lower = parsedModel.toLowerCase()
+  return lower.includes('opus-4-8') || lower.includes('opus-5')
 }
 
 // --- Fast mode runtime state ---

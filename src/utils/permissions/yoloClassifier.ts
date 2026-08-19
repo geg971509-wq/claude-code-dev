@@ -28,6 +28,8 @@ import { errorMessage } from '../errors.js'
 import { lazySchema } from '../lazySchema.js'
 import { extractTextContent } from '../messages.js'
 import { resolveAntModel } from '../model/antModels.js'
+import { modelHasCapability } from '../model/configs.js'
+import { getCanonicalName } from '../model/model.js'
 import { getDefaultSonnetModel, getMainLoopModel } from '../model/model.js'
 import { isPoorModeActive } from '../../commands/poor/poorMode.js'
 import { getAutoModeConfig } from '../settings/settings.js'
@@ -689,6 +691,14 @@ function getClassifierThinkingConfig(
   if (
     process.env.USER_TYPE === 'ant' &&
     resolveAntModel(model)?.alwaysOnThinking
+  ) {
+    return [undefined, 2048]
+  }
+  // 同一条性质，只是来源是官方模型表而不是 ant-only 的远端覆盖：带
+  // `rejects_disabled_thinking` 的机型（fable-5）同样会对 `disabled` 报 400。
+  // 此前只认 alwaysOnThinking，公开机型走到这里必然吃 400。
+  if (
+    modelHasCapability(getCanonicalName(model), 'rejects_disabled_thinking')
   ) {
     return [undefined, 2048]
   }

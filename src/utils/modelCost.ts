@@ -2,8 +2,9 @@ import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messag
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 'src/services/analytics/index.js'
 import { logEvent } from 'src/services/analytics/index.js'
 import { setHasUnknownModelCost } from '../bootstrap/state.js'
-import { isFastModeEnabled } from './fastMode.js'
+import { aliasTargetCanonical } from './model/aliasDefaults.js'
 import { MODEL_CATALOG } from './model/configs.js'
+import { getAPIProvider } from './model/providers.js'
 import {
   firstPartyNameToCanonical,
   getCanonicalName,
@@ -99,13 +100,33 @@ export const COST_HAIKU_45 = {
 const DEFAULT_UNKNOWN_MODEL_COST = COST_TIER_5_25
 
 /**
- * Get the cost tier for Opus 4.6 based on fast mode.
+ * Fast 档价格 —— 官方分两级，与 fast mode 的机型门控一一对应。
+ *
+ * 这两档都不是 dev 本地编的（此前的注释这么写，是错的）：官方 bundle 里
+ * `speed === "fast"` 时 opus-4-8 / opus-5 走 10/50、opus-4-6 / opus-4-7 走
+ * 30/150。dev 之前只把 30/150 接在 opus-4-6 上，于是 fast mode 门控修到
+ * 4-8/opus-5 之后，这两个机型会按普通 5/25 记账，少算一半。
+ *
+ * 不加 `isFastModeEnabled()` 前置判断：API 回报本轮是 fast 就该按 fast 计价，
+ * 与本地开关是否打开无关。
  */
-export function getOpus46CostTier(fastMode: boolean): ModelCosts {
-  if (isFastModeEnabled() && fastMode) {
+export function getFastModeCostTier(model: string): ModelCosts | undefined {
+  const shortName = getCanonicalName(model)
+  if (shortName === 'claude-opus-4-8' || shortName === 'claude-opus-5') {
+    return COST_TIER_10_50
+  }
+  if (shortName === 'claude-opus-4-6' || shortName === 'claude-opus-4-7') {
     return COST_TIER_30_150
   }
-  return COST_TIER_5_25
+  return undefined
+}
+
+/** fast mode 实际会用到的机型（`opus` 别名的解析结果）的 fast 档价格。UI 用。 */
+export function getActiveFastModeCosts(): ModelCosts {
+  return (
+    getFastModeCostTier(aliasTargetCanonical('opus', getAPIProvider())) ??
+    COST_TIER_10_50
+  )
 }
 
 // Costs from https://platform.claude.com/docs/en/about-claude/pricing
@@ -174,13 +195,11 @@ function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
 export function getModelCosts(model: string, usage: Usage): ModelCosts {
   const shortName = getCanonicalName(model)
 
-  // Fast-mode pricing. 与官方的分歧，刻意保留原状：官方模型表把 `fast_mode`
-  // 记在 opus-4-7 / 4-8 / opus-5 上（4-6 没有），且全表只有一个
-  // `pricing: "tier_5_25"`，不存在 30/150 这一档 —— 30/150 是 dev 本地的
-  // 产物。没有官方依据可以据以扩展到别的机型，因此不动。
-  if (shortName === 'claude-opus-4-6') {
-    const isFastMode = usage.speed === 'fast'
-    return getOpus46CostTier(isFastMode)
+  if (usage.speed === 'fast') {
+    const fastCosts = getFastModeCostTier(shortName)
+    if (fastCosts) {
+      return fastCosts
+    }
   }
 
   const costs = MODEL_COSTS[shortName]

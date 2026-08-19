@@ -34,7 +34,12 @@ import {
 import { isNonCustomOpusModel } from '../../utils/model/model.js'
 import { disableKeepAlive } from '../../utils/proxy.js'
 import { sleep } from '../../utils/sleep.js'
-import type { ThinkingConfig } from '../../utils/thinking.js'
+import {
+  getThinkingTypeOverride,
+  setThinkingTypeOverride,
+  type ThinkingConfig,
+  type ThinkingType,
+} from '../../utils/thinking.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -50,6 +55,13 @@ import {
 } from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
 import { noteRateLimited } from './agentLaunchController.js'
+import { AFK_MODE_BETA_HEADER } from '../../constants/betas.js'
+import { findRejectedBetas, markBetaRejected } from './betaLedger.js'
+import {
+  type MediaBlockCoords,
+  parseUnprocessableMedia,
+  sameCoords,
+} from './mediaBlockStrip.js'
 
 const abortError = () => new APIUserAbortError()
 
@@ -126,6 +138,11 @@ export interface RetryContext {
   model: string
   thinkingConfig: ThinkingConfig
   fastMode?: boolean
+  /**
+   * 服务端点名处理不了的媒体块坐标，累积。paramsFromContext 每次重试重新
+   * 组装请求体时按这份清单把对应块换成占位文本（见 mediaBlockStrip.ts）。
+   */
+  strippedMedia?: MediaBlockCoords[]
 }
 
 interface RetryOptions {
@@ -393,9 +410,61 @@ export async function* withRetry<T>(
         handleAwsCredentialError(error) || handleGcpCredentialError(error)
       if (
         !handledCloudAuthError &&
-        (!(error instanceof APIError) || !shouldRetry(error))
+        (!(error instanceof APIError) || !shouldRetry(error, retryContext))
       ) {
         throw new CannotRetryError(error, retryContext)
+      }
+
+      // 服务端拒绝了某个 beta header：摘掉它立刻重发，不走退避延迟 —— 这不是
+      // 容量问题，等待没有意义。摘除在本进程内 latch，后续请求不再带它。
+      const rejectedBetas = findRejectedBetasFromError(error)
+      if (rejectedBetas.length > 0) {
+        for (const header of rejectedBetas) {
+          markBetaRejected(header)
+        }
+        logForDebugging(
+          `[beta] server rejected ${rejectedBetas.join(', ')} — dropping for this session and retrying`,
+          { level: 'warn' },
+        )
+        logEvent('tengu_beta_header_dropped_retry', {
+          count: rejectedBetas.length,
+          attempt,
+        })
+        continue
+      }
+
+      // 服务端拒绝了当前 thinking.type：翻到另一种立刻重发，同样不退避。
+      if (canFlipThinkingType(error, retryContext.model)) {
+        const rejectedType = parseRejectedThinkingType(error)!
+        const flipped: ThinkingType =
+          rejectedType === 'enabled' ? 'adaptive' : 'enabled'
+        setThinkingTypeOverride(retryContext.model, flipped)
+        logForDebugging(
+          `[thinking] model rejected thinking.type=${rejectedType}; retrying with ${flipped}`,
+          { level: 'warn' },
+        )
+        logEvent('tengu_thinking_type_flip_retry', { attempt })
+        continue
+      }
+
+      // 服务端点名了一块处理不了的媒体：把那一块换成占位文本立刻重发。
+      // 不走 reactive compact —— 后者要压掉整段历史才能把坏块挤出窗口，而且
+      // 坏块落在保留的尾部时根本压不掉。
+      const badMedia = findUnstrippedMedia(error, retryContext.strippedMedia)
+      if (badMedia) {
+        retryContext.strippedMedia = [
+          ...(retryContext.strippedMedia ?? []),
+          badMedia,
+        ]
+        logForDebugging(
+          `[media] API rejected ${badMedia.kind} at messages.${badMedia.messageIdx}.content.${badMedia.contentIdx} — replacing with a placeholder and retrying`,
+          { level: 'warn' },
+        )
+        logEvent('tengu_media_block_strip_retry', {
+          attempt,
+          stripped: retryContext.strippedMedia.length,
+        })
+        continue
       }
 
       // Handle max tokens context overflow errors by adjusting max_tokens for the next attempt
@@ -613,6 +682,67 @@ function parseMaxTokensContextOverflowError(error: APIError):
 // TODO: Replace with a response header check once the API adds a dedicated
 // header for fast-mode rejection (e.g., x-fast-mode-rejected). String-matching
 // the error message is fragile and will break if the API wording changes.
+/**
+ * AFK 的 beta 被拒有一条**刻意**的用户提示（"Auto mode is unavailable for
+ * your plan"，见 errors.ts）。走通用的"摘掉重发"会把那条提示吞掉，用户会在
+ * 完全无感的情况下失去 auto mode，所以把它排除在自愈之外。
+ */
+const NEVER_AUTO_DROP = [AFK_MODE_BETA_HEADER].filter(Boolean)
+
+function findRejectedBetasFromError(error: unknown): string[] {
+  if (!(error instanceof APIError)) {
+    return []
+  }
+  return findRejectedBetas(error.status, error.message, NEVER_AUTO_DROP)
+}
+
+/**
+ * 服务端拒绝的是哪个 `thinking.type`。正则与官方同形 —— 报文措辞由服务端
+ * 决定，这里没有自由发挥的余地。
+ */
+function parseRejectedThinkingType(error: unknown): ThinkingType | undefined {
+  if (!(error instanceof APIError) || error.status !== 400) {
+    return undefined
+  }
+  const message = error.message ?? ''
+  const matched =
+    /thinking\.type[^a-z]{1,8}(enabled|adaptive)[\s\S]*?not supported/i.exec(
+      message,
+    ) ?? /\b(adaptive) thinking is not supported/i.exec(message)
+  if (matched?.[1]) {
+    return matched[1].toLowerCase() as ThinkingType
+  }
+  if (message.includes('thinking_type:enabled')) return 'enabled'
+  if (message.includes('thinking_type:adaptive')) return 'adaptive'
+  return undefined
+}
+
+/**
+ * 只在该机型**还没有**覆盖时才翻转。否则翻过去也被拒就会来回摆，把重试预算
+ * 耗光还多打几次注定失败的请求。
+ */
+function canFlipThinkingType(error: unknown, model: string): boolean {
+  return (
+    parseRejectedThinkingType(error) !== undefined &&
+    getThinkingTypeOverride(model) === undefined
+  )
+}
+
+/** 已经换过的坐标不再重复触发 —— 否则同一块坏媒体会把重试预算打空。 */
+function findUnstrippedMedia(
+  error: unknown,
+  stripped: readonly MediaBlockCoords[] | undefined,
+): MediaBlockCoords | undefined {
+  if (!(error instanceof APIError) || error.status !== 400) {
+    return undefined
+  }
+  const coords = parseUnprocessableMedia(error.message)
+  if (!coords || stripped?.some(done => sameCoords(done, coords))) {
+    return undefined
+  }
+  return coords
+}
+
 function isFastModeNotEnabledError(error: unknown): boolean {
   if (!(error instanceof APIError)) {
     return false
@@ -709,7 +839,7 @@ function handleGcpCredentialError(error: unknown): boolean {
   return false
 }
 
-function shouldRetry(error: APIError): boolean {
+function shouldRetry(error: APIError, retryContext: RetryContext): boolean {
   // Never retry mock errors - they're from /mock-limits command for testing
   if (isMockRateLimitError(error)) {
     return false
@@ -741,6 +871,21 @@ function shouldRetry(error: APIError): boolean {
 
   // Check for max tokens context overflow errors that we can handle
   if (parseMaxTokensContextOverflowError(error)) {
+    return true
+  }
+
+  // 服务端点名了某个 beta header —— 摘掉它就能重发（见下方修复分支）。
+  if (findRejectedBetasFromError(error).length > 0) {
+    return true
+  }
+
+  // 服务端拒绝了当前 thinking.type —— 翻到另一种就能重发。
+  if (canFlipThinkingType(error, retryContext.model)) {
+    return true
+  }
+
+  // 服务端点名了一块处理不了的媒体 —— 换掉那一块就能重发。
+  if (findUnstrippedMedia(error, retryContext.strippedMedia)) {
     return true
   }
 

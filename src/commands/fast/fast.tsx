@@ -13,7 +13,7 @@ import { type AppState, useAppState, useSetAppState } from '../../state/AppState
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import {
   clearFastModeCooldown,
-  FAST_MODE_MODEL_DISPLAY,
+  getFastModeModelDisplay,
   getFastModeModel,
   getFastModeRuntimeState,
   getFastModeUnavailableReason,
@@ -22,7 +22,7 @@ import {
   prefetchFastModeStatus,
 } from '../../utils/fastMode.js';
 import { formatDuration } from '../../utils/format.js';
-import { formatModelPricing, getOpus46CostTier } from '../../utils/modelCost.js';
+import { formatModelPricing, getActiveFastModeCosts } from '../../utils/modelCost.js';
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
 
 function applyFastMode(enable: boolean, setAppState: (f: (prev: AppState) => AppState) => void): void {
@@ -59,7 +59,7 @@ export function FastModePicker({
   const runtimeState = getFastModeRuntimeState();
   const isCooldown = runtimeState.status === 'cooldown';
   const isUnavailable = unavailableReason !== null;
-  const pricing = formatModelPricing(getOpus46CostTier(true));
+  const pricing = formatModelPricing(getActiveFastModeCosts());
 
   function handleConfirm(): void {
     if (isUnavailable) return;
@@ -70,7 +70,7 @@ export function FastModePicker({
     });
     if (enableFastMode) {
       const fastIcon = getFastIconString(enableFastMode);
-      const modelUpdated = !isFastModeSupportedByModel(model) ? ` · model set to ${FAST_MODE_MODEL_DISPLAY}` : '';
+      const modelUpdated = !isFastModeSupportedByModel(model) ? ` · model set to ${getFastModeModelDisplay()}` : '';
       onDone(`${fastIcon} Fast mode ON${modelUpdated} · ${pricing}`);
     } else {
       setAppState(prev => ({ ...prev, fastMode: false }));
@@ -117,7 +117,7 @@ export function FastModePicker({
   return (
     <Dialog
       title={title}
-      subtitle={`High-speed mode for ${FAST_MODE_MODEL_DISPLAY}. Billed as extra usage at a premium rate. Separate rate limits apply.`}
+      subtitle={`High-speed mode for ${getFastModeModelDisplay()}. Billed as extra usage at a premium rate. Separate rate limits apply.`}
       onCancel={handleCancel}
       color="fastMode"
       inputGuide={exitState =>
@@ -188,8 +188,10 @@ async function handleFastModeShortcut(
 
   if (enable) {
     const fastIcon = getFastIconString(true);
-    const modelUpdated = !isFastModeSupportedByModel(mainLoopModel) ? ` · model set to ${FAST_MODE_MODEL_DISPLAY}` : '';
-    const pricing = formatModelPricing(getOpus46CostTier(true));
+    const modelUpdated = !isFastModeSupportedByModel(mainLoopModel)
+      ? ` · model set to ${getFastModeModelDisplay()}`
+      : '';
+    const pricing = formatModelPricing(getActiveFastModeCosts());
     return `${fastIcon} Fast mode ON${modelUpdated} · ${pricing}`;
   } else {
     return `Fast mode OFF`;

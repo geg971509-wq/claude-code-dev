@@ -262,6 +262,8 @@ import {
   type RetryContext,
   withRetry,
 } from './withRetry.js'
+import { isBetaRejected } from './betaLedger.js'
+import { stripMediaBlockAt } from './mediaBlockStrip.js'
 
 // Define a type that represents valid JSON values
 type JsonValue = string | number | boolean | null | JsonObject | JsonArray
@@ -1803,13 +1805,25 @@ async function* queryModel(
     // Constants like CACHE_EDITING_BETA_HEADER or AFK_MODE_BETA_HEADER
     // can be '' when their feature gate is off; an empty string in the
     // betas array produces an invalid anthropic-beta header (400 error).
-    const filteredBetas = betasParams.filter(Boolean)
+    //
+    // 同一处摘掉本会话已被服务端拒绝过的 header（见 betaLedger.ts）。
+    // paramsFromContext 每次重试都会重新调用，所以摘除对下一次尝试即刻生效。
+    const filteredBetas = betasParams.filter(b => b && !isBetaRejected(b))
     lastRequestBetas = filteredBetas
+
+    // 服务端拒过的媒体块换成占位文本再发（坐标由 withRetry 分类后累积在
+    // retryContext 上）。坐标越界说明请求体形状变了，跳过该条即可 ——
+    // 老的 reactive compact 路径仍在后面兜着。
+    let messagesToSend = messagesForAPI
+    for (const coords of retryContext.strippedMedia ?? []) {
+      messagesToSend =
+        stripMediaBlockAt(messagesToSend, coords) ?? messagesToSend
+    }
 
     return {
       model: normalizeModelStringForAPI(options.model),
       messages: addCacheBreakpoints(
-        messagesForAPI,
+        messagesToSend,
         enablePromptCaching,
         options.querySource,
         useCachedMC,

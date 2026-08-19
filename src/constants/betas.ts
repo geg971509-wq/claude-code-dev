@@ -18,8 +18,11 @@ export const PROMPT_CACHING_SCOPE_BETA_HEADER =
   'prompt-caching-scope-2026-01-05'
 export const FAST_MODE_BETA_HEADER = 'fast-mode-2026-02-01'
 export const REDACT_THINKING_BETA_HEADER = 'redact-thinking-2026-02-12'
+// 官方 bundle 里只有 2025-02-19 这一个日期。dev 早前写的 2026-03-28（注释
+// 说是 FC v3 的 A/B 分流版本）在官方产物里查无此串，发出去只会被当成未知
+// beta 拒掉。
 export const TOKEN_EFFICIENT_TOOLS_BETA_HEADER =
-  'token-efficient-tools-2026-03-28'
+  'token-efficient-tools-2025-02-19'
 export const AFK_MODE_BETA_HEADER = feature('TRANSCRIPT_CLASSIFIER')
   ? 'afk-mode-2026-01-31'
   : ''

@@ -2,6 +2,7 @@
 import type { Theme } from './theme.js'
 import { feature } from 'bun:bundle'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
+import { modelHasCapability } from './model/configs.js'
 import { getCanonicalName } from './model/model.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { getAPIProvider } from './model/providers.js'
@@ -110,19 +111,55 @@ export function modelSupportsThinking(model: string): boolean {
   return canonical.includes('sonnet-4') || canonical.includes('opus-4')
 }
 
-// @[MODEL LAUNCH]: Add the new model to the allowlist if it supports adaptive thinking.
+export type ThinkingType = 'enabled' | 'adaptive'
+
+/**
+ * 服务端拒绝某个 `thinking.type` 之后，对该机型改判的结果。
+ *
+ * 触发场景是模型表判断不了的部署差异 —— 最典型的是 Bedrock 的
+ * application-inference-profile：机型本身支持 adaptive，那个部署却只认
+ * `enabled`。此前这类 400 直接终止回合，用户没有任何可操作的出路（模型表
+ * 说支持，服务端说不支持，两边都不肯让步）。现在由 withRetry 分类后写进
+ * 这里并重发一次。进程级，与 betaLedger 同一取向。
+ */
+const thinkingTypeOverrides = new Map<string, ThinkingType>()
+
+export function setThinkingTypeOverride(
+  model: string,
+  type: ThinkingType,
+): void {
+  thinkingTypeOverrides.set(getCanonicalName(model), type)
+}
+
+export function getThinkingTypeOverride(
+  model: string,
+): ThinkingType | undefined {
+  return thinkingTypeOverrides.get(getCanonicalName(model))
+}
+
+/** 测试用 —— 覆盖表是模块级的。 */
+export function resetThinkingTypeOverrides(): void {
+  thinkingTypeOverrides.clear()
+}
+
 export function modelSupportsAdaptiveThinking(model: string): boolean {
+  // 服务端的实测结论优先于模型表的静态判断。
+  const override = getThinkingTypeOverride(model)
+  if (override !== undefined) {
+    return override === 'adaptive'
+  }
   const supported3P = get3PModelCapabilityOverride(model, 'adaptive_thinking')
   if (supported3P !== undefined) {
     return supported3P
   }
   const canonical = getCanonicalName(model)
-  // Supported by a subset of Claude 4 models
-  if (
-    canonical.includes('opus-4-7') ||
-    canonical.includes('opus-4-6') ||
-    canonical.includes('sonnet-4-6')
-  ) {
+  // 按模型表的 `adaptive_thinking` 能力门控，不是家族前缀白名单。
+  //
+  // 前缀白名单曾是 `opus-4-7 || opus-4-6 || sonnet-4-6`，而下面那道 legacy
+  // 排除又是裸的 `includes('opus')` —— 于是 opus-4-8 / opus-5 / sonnet-5 三个
+  // 明明带 adaptive_thinking 的机型全部落进 `return false`，被静默降级。
+  // effort.ts 已经因为同一个原因改过一次（见那里的注释），这里当时漏了。
+  if (modelHasCapability(canonical, 'adaptive_thinking')) {
     return true
   }
   // Exclude any other known legacy models (allowlist above catches 4-6+ variants first)
