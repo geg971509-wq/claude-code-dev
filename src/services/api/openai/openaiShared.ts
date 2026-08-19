@@ -758,7 +758,7 @@ export function getOpenAIRetryDelayMs(
   if (fromHeader !== null) {
     return Math.min(fromHeader, TRANSIENT_RETRY_MAX_DELAY_MS)
   }
-  if (responseRetryAfterMs != null && responseRetryAfterMs >= 0) {
+  if (responseRetryAfterMs != null && responseRetryAfterMs > 0) {
     return Math.min(responseRetryAfterMs, TRANSIENT_RETRY_MAX_DELAY_MS)
   }
   const fallbackMaxDelay = getOpenAIFallbackRetryMaxDelayMs(error)
