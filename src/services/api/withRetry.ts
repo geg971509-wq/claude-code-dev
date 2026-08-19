@@ -143,6 +143,15 @@ export interface RetryContext {
    * 组装请求体时按这份清单把对应块换成占位文本（见 mediaBlockStrip.ts）。
    */
   strippedMedia?: MediaBlockCoords[]
+  /**
+   * stripMediaBlockAt 实际成功替换过的坐标子集。
+   *
+   * 与 strippedMedia（检测到即加入）不同，这里只在 claude.ts 里 strip 返回
+   * 非 undefined 时才追加。findUnstrippedMedia 用这个集合做排除，而不是
+   * strippedMedia —— 这样一次 strip 失败不会把坐标永远锁出排除集，下次
+   * API 再拒同一块时仍能被检测到。
+   */
+  confirmedStrippedMedia?: MediaBlockCoords[]
 }
 
 interface RetryOptions {
@@ -450,7 +459,10 @@ export async function* withRetry<T>(
       // 服务端点名了一块处理不了的媒体：把那一块换成占位文本立刻重发。
       // 不走 reactive compact —— 后者要压掉整段历史才能把坏块挤出窗口，而且
       // 坏块落在保留的尾部时根本压不掉。
-      const badMedia = findUnstrippedMedia(error, retryContext.strippedMedia)
+      const badMedia = findUnstrippedMedia(
+        error,
+        retryContext.confirmedStrippedMedia,
+      )
       if (badMedia) {
         retryContext.strippedMedia = [
           ...(retryContext.strippedMedia ?? []),
@@ -728,16 +740,26 @@ function canFlipThinkingType(error: unknown, model: string): boolean {
   )
 }
 
-/** 已经换过的坐标不再重复触发 —— 否则同一块坏媒体会把重试预算打空。 */
+/**
+ * 排除集用 confirmedStrippedMedia，不用 strippedMedia。
+ *
+ * strippedMedia 在检测到坏块时立即追加（withRetry 侧），但 strip 是否真正
+ * 成功要到下一次循环 claude.ts 才知道。如果 strip 返回 undefined（块类型不符
+ * 或坐标偏移），用 strippedMedia 做排除会把那个坐标永远锁住，API 再拒同一块
+ * 时无法重触发，最终耗尽重试后失败而不是降级到 reactive compact。
+ *
+ * confirmedStrippedMedia 只在 claude.ts 里 stripMediaBlockAt 返回非 null 时
+ * 追加，语义是"已确认替换过"，用它排除才是正确的闭环。
+ */
 function findUnstrippedMedia(
   error: unknown,
-  stripped: readonly MediaBlockCoords[] | undefined,
+  confirmed: readonly MediaBlockCoords[] | undefined,
 ): MediaBlockCoords | undefined {
   if (!(error instanceof APIError) || error.status !== 400) {
     return undefined
   }
   const coords = parseUnprocessableMedia(error.message)
-  if (!coords || stripped?.some(done => sameCoords(done, coords))) {
+  if (!coords || confirmed?.some(done => sameCoords(done, coords))) {
     return undefined
   }
   return coords
@@ -885,7 +907,7 @@ function shouldRetry(error: APIError, retryContext: RetryContext): boolean {
   }
 
   // 服务端点名了一块处理不了的媒体 —— 换掉那一块就能重发。
-  if (findUnstrippedMedia(error, retryContext.strippedMedia)) {
+  if (findUnstrippedMedia(error, retryContext.confirmedStrippedMedia)) {
     return true
   }
 

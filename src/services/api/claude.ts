@@ -1812,12 +1812,20 @@ async function* queryModel(
     lastRequestBetas = filteredBetas
 
     // 服务端拒过的媒体块换成占位文本再发（坐标由 withRetry 分类后累积在
-    // retryContext 上）。坐标越界说明请求体形状变了，跳过该条即可 ——
-    // 老的 reactive compact 路径仍在后面兜着。
+    // retryContext 上）。stripMediaBlockAt 返回 undefined 说明坐标处的块类型
+    // 与预期不符（不是 image/document），此时不追加到 confirmedStrippedMedia —
+    // findUnstrippedMedia 用 confirmedStrippedMedia 做排除，未确认的坐标下次
+    // API 再拒时仍能被重新检测到。
     let messagesToSend = messagesForAPI
     for (const coords of retryContext.strippedMedia ?? []) {
-      messagesToSend =
-        stripMediaBlockAt(messagesToSend, coords) ?? messagesToSend
+      const stripped = stripMediaBlockAt(messagesToSend, coords)
+      if (stripped !== undefined) {
+        messagesToSend = stripped
+        retryContext.confirmedStrippedMedia = [
+          ...(retryContext.confirmedStrippedMedia ?? []),
+          coords,
+        ]
+      }
     }
 
     return {

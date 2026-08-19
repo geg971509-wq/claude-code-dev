@@ -84,12 +84,15 @@ export function modelSupportsMaxEffort(model: string): boolean {
   if (supported3P !== undefined) {
     return supported3P
   }
+  // catalog 不认识的模型（3P、自定义端点）保持放行，沿用原先的宽松取向。
+  const entry = lookupModelCatalog(getCanonicalName(model))
+  if (!entry) {
+    return true
+  }
   if (!modelSupportsEffort(model)) {
     return false
   }
-  // catalog 不认识的模型（3P、自定义端点）保持放行，沿用原先的宽松取向。
-  const entry = lookupModelCatalog(getCanonicalName(model))
-  return entry ? entry.capabilities.includes('max_effort') : true
+  return entry.capabilities.includes('max_effort')
 }
 
 export function modelSupportsXhighEffort(model: string): boolean {
@@ -97,11 +100,14 @@ export function modelSupportsXhighEffort(model: string): boolean {
   if (supported3P !== undefined) {
     return supported3P
   }
+  const entry = lookupModelCatalog(getCanonicalName(model))
+  if (!entry) {
+    return true
+  }
   if (!modelSupportsEffort(model)) {
     return false
   }
-  const entry = lookupModelCatalog(getCanonicalName(model))
-  return entry ? entry.capabilities.includes('xhigh_effort') : true
+  return entry.capabilities.includes('xhigh_effort')
 }
 
 export function isEffortLevel(value: string): value is EffortLevel {
