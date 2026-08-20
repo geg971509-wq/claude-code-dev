@@ -139,17 +139,16 @@ export interface RetryContext {
   thinkingConfig: ThinkingConfig
   fastMode?: boolean
   /**
-   * 服务端点名处理不了的媒体块坐标，累积。paramsFromContext 每次重试重新
-   * 组装请求体时按这份清单把对应块换成占位文本（见 mediaBlockStrip.ts）。
+   * 待尝试剥离的媒体块坐标。withRetry 在 API 400 解析出坐标后追加；
+   * claude.ts 每次组装请求体时按这份清单调用 stripMediaBlockAt
+   * （见 mediaBlockStrip.ts）。
    */
   strippedMedia?: MediaBlockCoords[]
   /**
-   * stripMediaBlockAt 实际成功替换过的坐标子集。
-   *
-   * 与 strippedMedia（检测到即加入）不同，这里只在 claude.ts 里 strip 返回
-   * 非 undefined 时才追加。findUnstrippedMedia 用这个集合做排除，而不是
-   * strippedMedia —— 这样一次 strip 失败不会把坐标永远锁出排除集，下次
-   * API 再拒同一块时仍能被检测到。
+   * 已确认剥离成功的坐标。claude.ts 仅在 stripMediaBlockAt 返回非
+   * undefined 时追加。findUnstrippedMedia 用这个集合做排除，不用
+   * strippedMedia —— 一次 strip 失败不会把坐标锁出排除集，下次 API
+   * 再拒同一块时仍能被检测到。
    */
   confirmedStrippedMedia?: MediaBlockCoords[]
 }
@@ -740,17 +739,7 @@ function canFlipThinkingType(error: unknown, model: string): boolean {
   )
 }
 
-/**
- * 排除集用 confirmedStrippedMedia，不用 strippedMedia。
- *
- * strippedMedia 在检测到坏块时立即追加（withRetry 侧），但 strip 是否真正
- * 成功要到下一次循环 claude.ts 才知道。如果 strip 返回 undefined（块类型不符
- * 或坐标偏移），用 strippedMedia 做排除会把那个坐标永远锁住，API 再拒同一块
- * 时无法重触发，最终耗尽重试后失败而不是降级到 reactive compact。
- *
- * confirmedStrippedMedia 只在 claude.ts 里 stripMediaBlockAt 返回非 null 时
- * 追加，语义是"已确认替换过"，用它排除才是正确的闭环。
- */
+/** 排除集见 RetryContext.confirmedStrippedMedia。 */
 function findUnstrippedMedia(
   error: unknown,
   confirmed: readonly MediaBlockCoords[] | undefined,
