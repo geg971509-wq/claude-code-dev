@@ -11,7 +11,10 @@ import { APIConnectionError } from 'openai'
 import {
   asOpenAIRetryError,
   createThinkingLoopDetector,
+  createThinkingLoopError,
   getOpenAIRequestMaxRetries,
+  getThinkingLoopMaxRetries,
+  isThinkingLoopError,
   getOpenAIRetryDelayMs,
   getOpenAIStreamIdleTimeoutMs,
   getOpenAIStreamMaxRetries,
@@ -96,6 +99,27 @@ describe('isTransientOpenAIError', () => {
     expect(isTransientOpenAIError('503')).toBe(false)
     expect(isTransientOpenAIError(new Error('boom'))).toBe(false)
   })
+
+  test('classifies message-only 5xx gateway copy as transient', () => {
+    expect(
+      isTransientOpenAIError(new Error('502 Upstream request failed')),
+    ).toBe(true)
+    expect(
+      isTransientOpenAIError(new Error('Error: 503 Service Unavailable')),
+    ).toBe(true)
+    expect(isTransientOpenAIError(new Error('502 status code (no body)'))).toBe(
+      true,
+    )
+    expect(
+      isTransientOpenAIError(
+        new Error('Grok failed: 502: Upstream request failed'),
+      ),
+    ).toBe(true)
+    expect(isTransientOpenAIError(new Error('400 Bad Request'))).toBe(false)
+    expect(isTransientOpenAIError(new Error('attempt 502/5 failed'))).toBe(
+      false,
+    )
+  })
 })
 
 describe('isSemanticOpenAIEvent', () => {
@@ -167,6 +191,37 @@ describe('createThinkingLoopDetector', () => {
   })
 })
 
+describe('thinking-loop resample helpers', () => {
+  test('clamps OPENAI_THINKING_LOOP_MAX_RETRIES to 0–5', () => {
+    withEnv({ OPENAI_THINKING_LOOP_MAX_RETRIES: undefined }, () => {
+      expect(getThinkingLoopMaxRetries()).toBe(2)
+    })
+    withEnv({ OPENAI_THINKING_LOOP_MAX_RETRIES: '0' }, () => {
+      expect(getThinkingLoopMaxRetries()).toBe(0)
+    })
+    withEnv({ OPENAI_THINKING_LOOP_MAX_RETRIES: '99' }, () => {
+      expect(getThinkingLoopMaxRetries()).toBe(5)
+    })
+  })
+
+  test('thinking-loop errors are retryable and identifiable', () => {
+    const error = createThinkingLoopError('req_loop')
+    expect(isThinkingLoopError(error)).toBe(true)
+    expect(isTransientOpenAIError(error)).toBe(true)
+    expect(error.retryable).toBe(true)
+    expect(error.terminal).toBe(false)
+    expect(
+      isThinkingLoopError(
+        new ProviderStreamError('OpenAI stream ended before message_stop', {
+          kind: 'premature_eof',
+          retryable: true,
+          terminal: false,
+        }),
+      ),
+    ).toBe(false)
+  })
+})
+
 describe('withTransientOpenAIRetry', () => {
   test('returns the result without retrying on success', async () => {
     let calls = 0
@@ -227,6 +282,20 @@ describe('withTransientOpenAIRetry', () => {
       ),
     ).rejects.toThrow('bad request')
     expect(calls).toBe(1)
+  })
+
+  test('retries a message-only 502 and succeeds on the next attempt', async () => {
+    let calls = 0
+    const result = await withTransientOpenAIRetry(
+      async () => {
+        calls++
+        if (calls === 1) throw new Error('502 Upstream request failed')
+        return 'recovered'
+      },
+      { signal: new AbortController().signal },
+    )
+    expect(result).toBe('recovered')
+    expect(calls).toBe(2)
   })
 
   test('does not retry once the signal is aborted', async () => {

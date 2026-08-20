@@ -237,6 +237,33 @@ function completedEvents(): BetaRawMessageStreamEvent[] {
   ]
 }
 
+const LOOP_SENTENCE =
+  'The leftover test is still not written. I need to write it now. Also I need to look at the idle timeout more carefully. '
+
+function loopingThinkingEvents(): BetaRawMessageStreamEvent[] {
+  return [
+    messageStart(),
+    blockStart(0, { type: 'thinking', thinking: '', signature: '' }),
+    ...Array.from({ length: 8 }, () =>
+      blockDelta(0, { type: 'thinking_delta', thinking: LOOP_SENTENCE }),
+    ),
+  ]
+}
+
+function loopingThinkingThenComplete(
+  text: string,
+): BetaRawMessageStreamEvent[] {
+  return [
+    ...loopingThinkingEvents(),
+    blockStop(0),
+    blockStart(1, { type: 'text', text: '' }),
+    blockDelta(1, { type: 'text_delta', text }),
+    blockStop(1),
+    messageDelta(),
+    messageStop(),
+  ]
+}
+
 async function runQuery(plans: AttemptPlan[]) {
   attemptPlans = plans
   createCalls = 0
@@ -296,11 +323,13 @@ beforeEach(() => {
   process.env.CLAUDE_CODE_MAX_RETRIES = '2'
   delete process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS
   delete process.env.OPENAI_STREAM_MAX_RETRIES
+  delete process.env.OPENAI_THINKING_LOOP_MAX_RETRIES
 })
 
 afterEach(() => {
   delete process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS
   delete process.env.OPENAI_STREAM_MAX_RETRIES
+  delete process.env.OPENAI_THINKING_LOOP_MAX_RETRIES
 })
 
 describe('queryModelGrok terminal assembly', () => {
@@ -443,34 +472,46 @@ describe('queryModelGrok terminal assembly', () => {
     )
   })
 
-  test('cuts a thinking loop without retrying the same prompt', async () => {
-    process.env.OPENAI_STREAM_MAX_RETRIES = '3'
-    const repeated =
-      'The leftover test is still not written. I need to write it now. Also I need to look at the idle timeout more carefully. '
+  test('resamples a thinking loop and accepts the clean attempt', async () => {
+    process.env.OPENAI_STREAM_MAX_RETRIES = '0'
     const result = await runQuery([
-      {
-        events: [
-          messageStart(),
-          blockStart(0, { type: 'thinking', thinking: '', signature: '' }),
-          ...Array.from({ length: 8 }, () =>
-            blockDelta(0, { type: 'thinking_delta', thinking: repeated }),
-          ),
-        ],
-        requestId: 'req_think_loop',
-      },
-      { events: completedEvents(), requestId: 'req_must_not_retry' },
+      { events: loopingThinkingEvents(), requestId: 'req_think_loop' },
+      { events: completedEvents(), requestId: 'req_think_resampled' },
     ])
 
-    expect(createCalls).toBe(1)
-    expect(normalMessages(result.assistantMessages)).toHaveLength(0)
-    expect(errorMessages(result.assistantMessages)).toHaveLength(1)
+    expect(createCalls).toBe(2)
+    expect(normalMessages(result.assistantMessages)).toHaveLength(1)
+    expect(errorMessages(result.assistantMessages)).toHaveLength(0)
+    expect(normalMessages(result.assistantMessages)[0]!.requestId).toBe(
+      'req_think_resampled',
+    )
+  })
+
+  test('accepts the last doomed turn after thinking-loop budget is spent', async () => {
+    process.env.OPENAI_THINKING_LOOP_MAX_RETRIES = '2'
+    process.env.OPENAI_STREAM_MAX_RETRIES = '0'
+    const result = await runQuery([
+      { events: loopingThinkingEvents(), requestId: 'req_loop_1' },
+      { events: loopingThinkingEvents(), requestId: 'req_loop_2' },
+      {
+        events: loopingThinkingThenComplete('still looping answer'),
+        requestId: 'req_loop_accepted',
+      },
+    ])
+
+    expect(createCalls).toBe(3)
+    expect(normalMessages(result.assistantMessages)).toHaveLength(1)
+    expect(errorMessages(result.assistantMessages)).toHaveLength(0)
+    expect(normalMessages(result.assistantMessages)[0]!.requestId).toBe(
+      'req_loop_accepted',
+    )
     expect(
-      (
-        errorMessages(result.assistantMessages)[0]!.message.content![0] as {
-          text: string
-        }
-      ).text,
-    ).toContain('Thinking loop detected')
+      normalMessages(result.assistantMessages)[0]!.message.content,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'text', text: 'still looping answer' }),
+      ]),
+    )
   })
 
   test('retries request establishment and uses the successful request ID', async () => {
@@ -490,6 +531,39 @@ describe('queryModelGrok terminal assembly', () => {
     expect(errorMessages(result.assistantMessages)).toHaveLength(0)
     expect(normalMessages(result.assistantMessages)[0]!.requestId).toBe(
       'req_recovered',
+    )
+  })
+
+  test('retries a message-only 502 handshake and recovers', async () => {
+    const result = await runQuery([
+      { handshakeError: new Error('502 Upstream request failed') },
+      { events: completedEvents(), requestId: 'req_502_hs' },
+    ])
+
+    expect(createCalls).toBe(2)
+    expect(normalMessages(result.assistantMessages)).toHaveLength(1)
+    expect(errorMessages(result.assistantMessages)).toHaveLength(0)
+    expect(normalMessages(result.assistantMessages)[0]!.requestId).toBe(
+      'req_502_hs',
+    )
+  })
+
+  test('retries a message-only 502 mid-stream and recovers', async () => {
+    process.env.OPENAI_STREAM_MAX_RETRIES = '1'
+    const result = await runQuery([
+      {
+        events: completedEvents().slice(0, 4),
+        streamError: new Error('502 Upstream request failed'),
+        requestId: 'req_502',
+      },
+      { events: completedEvents(), requestId: 'req_502_recovered' },
+    ])
+
+    expect(createCalls).toBe(2)
+    expect(normalMessages(result.assistantMessages)).toHaveLength(1)
+    expect(errorMessages(result.assistantMessages)).toHaveLength(0)
+    expect(normalMessages(result.assistantMessages)[0]!.requestId).toBe(
+      'req_502_recovered',
     )
   })
 })

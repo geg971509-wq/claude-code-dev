@@ -847,6 +847,67 @@ describe('queryModelOpenAI — retry boundaries', () => {
     expect(assistantMessages[0]!.isApiErrorMessage).toBeUndefined()
   })
 
+  const loopSentence =
+    'The leftover test is still not written. I need to write it now. Also I need to look at the idle timeout more carefully. '
+  const loopingThinkingEvents = () => [
+    makeMessageStart(),
+    makeContentBlockStart(0, 'thinking'),
+    ...Array.from({ length: 8 }, () => makeThinkingDelta(0, loopSentence)),
+  ]
+  const loopingThinkingThenComplete = (text: string) => [
+    ...loopingThinkingEvents(),
+    makeContentBlockStop(0),
+    makeContentBlockStart(1, 'text'),
+    makeTextDelta(1, text),
+    makeContentBlockStop(1),
+    makeMessageDelta('end_turn', 5),
+    makeMessageStop(),
+  ]
+
+  test('resamples a thinking loop and accepts the clean attempt', async () => {
+    const { assistantMessages, otherOutputs } = await runQueryModel(
+      [],
+      {
+        OPENAI_STREAM_MAX_RETRIES: '0',
+        OPENAI_THINKING_LOOP_MAX_RETRIES: '2',
+      },
+      [
+        { events: loopingThinkingEvents(), requestId: 'req_think_loop' },
+        { events: completedEvents('clean'), requestId: 'req_think_resampled' },
+      ],
+    )
+
+    expect(_createCalls).toBe(2)
+    expect(otherOutputs).toHaveLength(0)
+    expect(assistantMessages).toHaveLength(1)
+    expect(assistantMessages[0]!.isApiErrorMessage).toBeUndefined()
+    expect(assistantMessages[0]!.requestId).toBe('req_think_resampled')
+  })
+
+  test('accepts the last doomed turn after thinking-loop budget is spent', async () => {
+    const { assistantMessages, otherOutputs } = await runQueryModel(
+      [],
+      {
+        OPENAI_STREAM_MAX_RETRIES: '0',
+        OPENAI_THINKING_LOOP_MAX_RETRIES: '2',
+      },
+      [
+        { events: loopingThinkingEvents(), requestId: 'req_loop_1' },
+        { events: loopingThinkingEvents(), requestId: 'req_loop_2' },
+        {
+          events: loopingThinkingThenComplete('still looping answer'),
+          requestId: 'req_loop_accepted',
+        },
+      ],
+    )
+
+    expect(_createCalls).toBe(3)
+    expect(otherOutputs).toHaveLength(0)
+    expect(assistantMessages).toHaveLength(1)
+    expect(assistantMessages[0]!.isApiErrorMessage).toBeUndefined()
+    expect(assistantMessages[0]!.requestId).toBe('req_loop_accepted')
+  })
+
   const committedFailures: Array<{
     name: string
     events: BetaRawMessageStreamEvent[]

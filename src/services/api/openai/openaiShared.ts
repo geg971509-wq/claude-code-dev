@@ -107,11 +107,18 @@ export function isSemanticOpenAIEvent(
 
 export const THINKING_LOOP_MIN_CHARS = 20
 export const THINKING_LOOP_REPEAT = 6
+export const THINKING_LOOP_ERROR_MESSAGE =
+  'Thinking loop detected: the same planning sentence repeated until the stream was cut.'
+/** grok-build default: 2 resamples on a separate budget from transport retries. */
+export const DEFAULT_THINKING_LOOP_MAX_RETRIES = 2
+const THINKING_LOOP_MAX_RETRIES_RANGE = { min: 0, max: 5 } as const
+const THINKING_LOOP_BACKOFF_MAX_MS = 250
 
 /**
  * Detect a thinking channel stuck restating the same sentence. Tokens are
- * still arriving, so the idle watchdog never fires. Official Codex has no
- * equivalent; we cut the stream instead of waiting for the user to abort.
+ * still arriving, so the idle watchdog never fires. Callers resample the
+ * same request (grok-build doom-loop recovery) instead of surfacing this
+ * as a terminal API Error while budget remains.
  */
 export function createThinkingLoopDetector(options?: {
   minChars?: number
@@ -165,6 +172,43 @@ export function createThinkingLoopDetector(options?: {
       return false
     },
   }
+}
+
+export function getThinkingLoopMaxRetries(): number {
+  const parsed = Number.parseInt(
+    process.env.OPENAI_THINKING_LOOP_MAX_RETRIES || '',
+    10,
+  )
+  if (!Number.isFinite(parsed)) return DEFAULT_THINKING_LOOP_MAX_RETRIES
+  return Math.min(
+    THINKING_LOOP_MAX_RETRIES_RANGE.max,
+    Math.max(THINKING_LOOP_MAX_RETRIES_RANGE.min, parsed),
+  )
+}
+
+export function isThinkingLoopError(error: unknown): boolean {
+  return (
+    error instanceof ProviderStreamError &&
+    error.kind === 'protocol' &&
+    error.message === THINKING_LOOP_ERROR_MESSAGE
+  )
+}
+
+/** grok-build doom_loop_backoff: 0–250ms jitter. Waiting does not break a sample loop. */
+export function getThinkingLoopBackoffMs(): number {
+  return Math.floor(Math.random() * (THINKING_LOOP_BACKOFF_MAX_MS + 1))
+}
+
+export function createThinkingLoopError(
+  requestId: string | null | undefined,
+): ProviderStreamError {
+  return new ProviderStreamError(THINKING_LOOP_ERROR_MESSAGE, {
+    kind: 'protocol',
+    retryable: true,
+    terminal: false,
+    completionState: 'open',
+    requestId,
+  })
 }
 
 export type OpenAIUsageCounters = {
@@ -453,7 +497,14 @@ function readOpenAIErrorHeader(headers: unknown, name: string): string | null {
 }
 
 function statusFromOpenAIErrorMessage(message: string): number | null {
-  const match = message.match(/\b([45]\d\d)\s+status code\b/i)
+  // Gateway / proxy copy often has the status only in the message
+  // (`502 Upstream request failed`) with no `.status` field. Keep the
+  // match anchored to SDK / HTTP phrasing so numbers like 4000 or
+  // "attempt 502/5" are not treated as statuses.
+  const match =
+    message.match(/\b([45]\d\d)\s+status code\b/i) ??
+    message.match(/^(?:error:\s*)?([45]\d\d)\b/i) ??
+    message.match(/\bfailed:\s*([45]\d\d)\b/i)
   if (!match) return null
   const n = Number(match[1])
   return Number.isFinite(n) ? n : null
@@ -703,8 +754,10 @@ export function isTransientOpenAIError(error: unknown): boolean {
   if (isOpenAIUserAbortError(error)) return false
   if (error instanceof ProviderStreamError) return error.retryable
 
-  const status = getProviderErrorStatus(error)
-  if (status !== undefined) {
+  const status =
+    getProviderErrorStatus(error) ??
+    statusFromOpenAIErrorMessage(formatOpenAIErrorMessage(error))
+  if (status != null) {
     return status === 408 || status === 409 || status === 429 || status >= 500
   }
   // OpenAI SDK connection failures (incl. timeouts) carry no HTTP status.

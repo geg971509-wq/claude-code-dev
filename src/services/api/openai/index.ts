@@ -22,9 +22,13 @@ import {
   getOpenAIRequestMaxRetries,
   getOpenAIRetryDelayMs,
   getOpenAIStreamMaxRetries,
+  getThinkingLoopBackoffMs,
+  getThinkingLoopMaxRetries,
   isOpenAIUserAbortError,
   createThinkingLoopDetector,
+  createThinkingLoopError,
   isSemanticOpenAIEvent,
+  isThinkingLoopError,
   isTransientOpenAIError,
   toProviderHttpError,
   updateOpenAIUsage,
@@ -408,6 +412,7 @@ export async function* queryModelOpenAI(
 
     const requestMaxRetries = getOpenAIRequestMaxRetries()
     const streamMaxRetries = getOpenAIStreamMaxRetries()
+    const thinkingLoopMaxRetries = getThinkingLoopMaxRetries()
     const collectedMessages: AssistantMessage[] = []
     const start = Date.now()
     let finalUsage: OpenAIUsageCounters = {
@@ -419,6 +424,7 @@ export async function* queryModelOpenAI(
     let finalTtftMs = 0
     let requestRetries = 0
     let streamRetries = 0
+    let thinkingLoopRetries = 0
     let requestAttempt = 0
 
     for (;;) {
@@ -496,7 +502,10 @@ export async function* queryModelOpenAI(
       let eventCount = 0
       let streamError: unknown
       const prelude: StreamEvent[] = []
-      const thinkingLoop = createThinkingLoopDetector()
+      const thinkingLoop =
+        thinkingLoopRetries < thinkingLoopMaxRetries
+          ? createThinkingLoopDetector()
+          : null
 
       try {
         const timedStream = withOpenAIStreamIdleTimeout(attempt.stream, {
@@ -570,17 +579,8 @@ export async function* queryModelOpenAI(
                 block.thinking =
                   ((block.thinking as string | undefined) || '') +
                   delta.thinking
-                if (thinkingLoop.push(delta.thinking)) {
-                  throw new ProviderStreamError(
-                    'Thinking loop detected: the same planning sentence repeated until the stream was cut.',
-                    {
-                      kind: 'protocol',
-                      retryable: false,
-                      terminal: true,
-                      completionState: 'open',
-                      requestId: attempt.requestId,
-                    },
-                  )
+                if (thinkingLoop?.push(delta.thinking)) {
+                  throw createThinkingLoopError(attempt.requestId)
                 }
               } else if (delta.type === 'signature_delta') {
                 block.signature = delta.signature
@@ -689,9 +689,39 @@ export async function* queryModelOpenAI(
         // content_block_start clears). Refusing to retry here made every
         // mid-stream drop fatal — 91 of 92 stream failures in the raw logs
         // died without a second attempt.
+        if (signal.aborted || isOpenAIUserAbortError(streamError)) {
+          throw streamError
+        }
         if (
-          signal.aborted ||
-          isOpenAIUserAbortError(streamError) ||
+          isThinkingLoopError(streamError) &&
+          thinkingLoopRetries < thinkingLoopMaxRetries
+        ) {
+          thinkingLoopRetries++
+          const delayMs = getThinkingLoopBackoffMs()
+          logOpenAIRawLifecycle({
+            lifecycle: 'retry',
+            route: openaiRoute,
+            model: openaiModel,
+            source: options.querySource,
+            streamId,
+            requestAttempt,
+            streamAttempt: streamRetries + 1,
+            status: String(attempt.status),
+            requestId: attempt.requestId ?? undefined,
+            phase: 'stream',
+            attempt: thinkingLoopRetries,
+            maxRetries: thinkingLoopMaxRetries,
+            delayMs,
+            error: streamError,
+          })
+          logForDebugging(
+            `[OpenAI] Thinking loop (attempt ${thinkingLoopRetries}/${thinkingLoopMaxRetries}, resampling in ${delayMs}ms)`,
+            { level: 'error' },
+          )
+          await sleep(delayMs, signal, { throwOnAbort: true })
+          continue
+        }
+        if (
           !isTransientOpenAIError(streamError) ||
           streamRetries >= streamMaxRetries
         ) {

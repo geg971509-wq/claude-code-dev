@@ -23,9 +23,13 @@ import {
   formatOpenAIErrorStack,
   getOpenAIRetryDelayMs,
   getOpenAIStreamMaxRetries,
+  getThinkingLoopBackoffMs,
+  getThinkingLoopMaxRetries,
   isOpenAIUserAbortError,
   createThinkingLoopDetector,
+  createThinkingLoopError,
   isSemanticOpenAIEvent,
+  isThinkingLoopError,
   isTransientOpenAIError,
   toProviderHttpError,
   type TransientRetryInfo,
@@ -149,7 +153,9 @@ export async function* queryModelGrok(
     // thinking-only events stay in `prelude` so the retry replays them in
     // order.
     const streamMaxRetries = getOpenAIStreamMaxRetries()
+    const thinkingLoopMaxRetries = getThinkingLoopMaxRetries()
     let streamRetries = 0
+    let thinkingLoopRetries = 0
     const collectedMessages: AssistantMessage[] = []
     let usage: GrokUsageCounters = { ...EMPTY_USAGE }
     let ttftMs = 0
@@ -162,7 +168,11 @@ export async function* queryModelGrok(
       let completed = false
       let committed = false
       const prelude: StreamEvent[] = []
-      const thinkingLoop = createThinkingLoopDetector()
+      // grok-build: last resample is disarmed so a still-looping turn is accepted.
+      const thinkingLoop =
+        thinkingLoopRetries < thinkingLoopMaxRetries
+          ? createThinkingLoopDetector()
+          : null
       usage = { ...EMPTY_USAGE }
 
       const {
@@ -276,17 +286,8 @@ export async function* queryModelGrok(
                   block.thinking =
                     ((block.thinking as string | undefined) || '') +
                     delta.thinking
-                  if (thinkingLoop.push(delta.thinking)) {
-                    throw new ProviderStreamError(
-                      'Thinking loop detected: the same planning sentence repeated until the stream was cut.',
-                      {
-                        kind: 'protocol',
-                        retryable: false,
-                        terminal: true,
-                        completionState: 'open',
-                        requestId,
-                      },
-                    )
+                  if (thinkingLoop?.push(delta.thinking)) {
+                    throw createThinkingLoopError(requestId)
                   }
                 } else if (delta.type === 'signature_delta') {
                   block.signature = delta.signature
@@ -380,6 +381,19 @@ export async function* queryModelGrok(
       } catch (error) {
         if (signal.aborted || isOpenAIUserAbortError(error)) {
           throw error
+        }
+        if (
+          isThinkingLoopError(error) &&
+          thinkingLoopRetries < thinkingLoopMaxRetries
+        ) {
+          thinkingLoopRetries++
+          const delayMs = getThinkingLoopBackoffMs()
+          logForDebugging(
+            `[Grok] Thinking loop (attempt ${thinkingLoopRetries}/${thinkingLoopMaxRetries}, resampling in ${delayMs}ms)`,
+            { level: 'error' },
+          )
+          await sleep(delayMs, signal, { throwOnAbort: true })
+          continue
         }
         const layered =
           isProviderContextOverflowError(error) ||
