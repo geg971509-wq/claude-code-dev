@@ -8,6 +8,8 @@ import { clearPolicyLimitsCache } from '../../services/policyLimits/index.js';
 import { clearRemoteManagedSettingsCache } from '../../services/remoteManagedSettings/index.js';
 import { removeChatGPTAuth } from '../../services/api/openai/chatgptAuth.js';
 import { removeKimiAuth } from '../../services/api/openai/kimiAuth.js';
+import { clearCodexClientCache } from '../../services/api/codex/client.js';
+import { clearCodexAuth } from '../../services/api/codex/credentials.js';
 import { getClaudeAIOAuthTokens, removeApiKey } from '../../utils/auth.js';
 import { clearBetasCaches } from '../../utils/betas.js';
 import { saveGlobalConfig } from '../../utils/config.js';
@@ -26,6 +28,7 @@ export async function performLogout({ clearOnboarding = false }): Promise<void> 
   await removeChatGPTAuth();
   await removeKimiAuth();
   clearChatGPTSettingsAuthMode();
+  clearCodexSettingsAuth();
 
   // Wipe all secure storage data on logout
   const secureStorage = getSecureStorage();
@@ -47,6 +50,33 @@ export async function performLogout({ clearOnboarding = false }): Promise<void> 
     }
     updated.oauthAccount = undefined;
     return updated;
+  });
+}
+
+function clearCodexSettingsAuth(): void {
+  clearCodexAuth();
+  clearCodexClientCache();
+  delete process.env.CODEX_LOGIN_METHOD;
+  delete process.env.CODEX_ACCESS_TOKEN;
+  delete process.env.CODEX_REFRESH_TOKEN;
+  delete process.env.CODEX_API_KEY;
+  const userSettings = getSettingsForSource('userSettings') ?? {};
+  const env = userSettings.env ?? {};
+  if (
+    env.CODEX_LOGIN_METHOD === undefined &&
+    env.CODEX_ACCESS_TOKEN === undefined &&
+    env.CODEX_REFRESH_TOKEN === undefined &&
+    env.CODEX_API_KEY === undefined
+  ) {
+    return;
+  }
+  updateSettingsForSource('userSettings', {
+    env: {
+      CODEX_LOGIN_METHOD: undefined,
+      CODEX_ACCESS_TOKEN: undefined,
+      CODEX_REFRESH_TOKEN: undefined,
+      CODEX_API_KEY: undefined,
+    } as unknown as Record<string, string>,
   });
 }
 

@@ -80,6 +80,7 @@ const PROVIDER_GENERATION_NAMES: Record<string, string> = {
   openai: 'ChatOpenAI',
   gemini: 'ChatGoogleGenerativeAI',
   grok: 'ChatXAI',
+  codex: 'ChatCodex',
 }
 
 export function recordLLMObservation(

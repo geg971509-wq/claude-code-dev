@@ -43,9 +43,9 @@ export function modelSupportsEffort(model: string): boolean {
     return supported3P
   }
   if (
-    getAPIProvider() === 'openai' &&
-    isChatGPTAuthMode() &&
-    isChatGPTCodexReasoningModel(model)
+    isChatGPTCodexReasoningModel(model) &&
+    (isChatGPTAuthMode() ||
+      process.env.CODEX_LOGIN_METHOD === 'chatgpt_subscription')
   ) {
     return true
   }

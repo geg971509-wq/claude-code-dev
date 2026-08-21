@@ -33,7 +33,6 @@
         "@azure/identity": "^4.13.1",
         "@biomejs/biome": "^2.4.12",
         "@claude-code-best/agent-tools": "workspace:*",
-        "@claude-code-best/builtin-tools": "workspace:*",
         "@claude-code-best/core-utils": "workspace:*",
         "@claude-code-best/mcp-client": "workspace:*",
         "@claude-code-best/weixin": "workspace:*",
@@ -233,15 +232,6 @@
     "packages/audio-capture-napi": {
       "name": "audio-capture-napi",
       "version": "1.0.0",
-    },
-    "packages/builtin-tools": {
-      "name": "@claude-code-best/builtin-tools",
-      "version": "1.0.0",
-      "dependencies": {
-        "@claude-code-best/agent-tools": "workspace:*",
-        "@claude-code-best/core-utils": "workspace:*",
-        "marked": "^17.0.6",
-      },
     },
     "packages/cloud-artifacts": {
       "name": "cloud-artifacts",
@@ -616,8 +606,6 @@
     "@chevrotain/utils": ["@chevrotain/utils@12.0.0", "https://registry.npmmirror.com/@chevrotain/utils/-/utils-12.0.0.tgz", {}, "sha512-lB59uJoaGIfOOL9knQqQRfhl9g7x8/wqFkp13zTdkRu1huG9kg6IJs1O8hqj9rs6h7orGxHJUKb+mX3rPbWGhA=="],
 
     "@claude-code-best/agent-tools": ["@claude-code-best/agent-tools@workspace:packages/agent-tools"],
-
-    "@claude-code-best/builtin-tools": ["@claude-code-best/builtin-tools@workspace:packages/builtin-tools"],
 
     "@claude-code-best/core-utils": ["@claude-code-best/core-utils@workspace:packages/core-utils"],
 

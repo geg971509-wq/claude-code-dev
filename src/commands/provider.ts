@@ -53,6 +53,7 @@ const call: LocalCommandCall = async (args, _context) => {
     delete process.env.CLAUDE_CODE_USE_VERTEX
     delete process.env.CLAUDE_CODE_USE_FOUNDRY
     delete process.env.CLAUDE_CODE_USE_OPENAI
+    delete process.env.CLAUDE_CODE_USE_CODEX
     delete process.env.CLAUDE_CODE_USE_GEMINI
     delete process.env.CLAUDE_CODE_USE_GROK
     return {
@@ -65,6 +66,7 @@ const call: LocalCommandCall = async (args, _context) => {
   const validProviders = [
     'anthropic',
     'openai',
+    'codex',
     'gemini',
     'grok',
     'bedrock',
@@ -96,6 +98,28 @@ const call: LocalCommandCall = async (args, _context) => {
       return {
         type: 'text',
         value: `Switched to OpenAI provider.\nWarning: Missing env vars: ${missing.join(', ')}\nConfigure them via /login or set manually.`,
+      }
+    }
+  }
+
+  if (arg === 'codex') {
+    const { readCodexAuth } = await import(
+      '../services/api/codex/credentials.js'
+    )
+    const auth = readCodexAuth()
+    const mergedEnv = getMergedEnv()
+    const hasKey = !!(
+      auth?.accessToken ||
+      auth?.refreshToken ||
+      auth?.apiKey ||
+      mergedEnv.CODEX_API_KEY
+    )
+    if (!hasKey) {
+      updateSettingsForSource('userSettings', { modelType: 'codex' })
+      return {
+        type: 'text',
+        value:
+          'Switched to Codex provider.\nWarning: No Codex credentials found.\nUse /login (OpenAI Codex) or set CODEX_API_KEY.',
       }
     }
   }
@@ -133,6 +157,7 @@ const call: LocalCommandCall = async (args, _context) => {
   if (
     arg === 'anthropic' ||
     arg === 'openai' ||
+    arg === 'codex' ||
     arg === 'gemini' ||
     arg === 'grok'
   ) {
@@ -141,6 +166,7 @@ const call: LocalCommandCall = async (args, _context) => {
     delete process.env.CLAUDE_CODE_USE_VERTEX
     delete process.env.CLAUDE_CODE_USE_FOUNDRY
     delete process.env.CLAUDE_CODE_USE_OPENAI
+    delete process.env.CLAUDE_CODE_USE_CODEX
     delete process.env.CLAUDE_CODE_USE_GEMINI
     delete process.env.CLAUDE_CODE_USE_GROK
     // Update settings.json
@@ -155,6 +181,7 @@ const call: LocalCommandCall = async (args, _context) => {
     delete process.env.OPENAI_BASE_URL
     delete process.env.CLAUDE_CODE_USE_GEMINI
     delete process.env.CLAUDE_CODE_USE_GROK
+    delete process.env.CLAUDE_CODE_USE_CODEX
     process.env[getEnvVarForProvider(arg)] = '1'
     // Do not modify settings.json - cloud providers controlled solely by env vars
     applyConfigEnvironmentVariables()
@@ -169,9 +196,10 @@ const provider = {
   type: 'local',
   name: 'provider',
   description:
-    'Switch API provider (anthropic/openai/gemini/grok/bedrock/vertex/foundry)',
+    'Switch API provider (anthropic/openai/codex/gemini/grok/bedrock/vertex/foundry)',
   aliases: ['api'],
-  argumentHint: '[anthropic|openai|gemini|grok|bedrock|vertex|foundry|unset]',
+  argumentHint:
+    '[anthropic|openai|codex|gemini|grok|bedrock|vertex|foundry|unset]',
   supportsNonInteractive: true,
   load: () => Promise.resolve({ call }),
 } satisfies Command

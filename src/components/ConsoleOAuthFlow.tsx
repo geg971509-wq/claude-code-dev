@@ -22,6 +22,8 @@ import {
   requestKimiDeviceCode,
   type KimiDeviceCode,
 } from '../services/api/openai/kimiAuth.js';
+import { readCodexAuth } from '../services/api/codex/credentials.js';
+import { parseManualCodeInput, performOpenAICodexLogin, persistCodexLogin } from '../services/oauth/openai-codex.js';
 import { OAuthService } from '../services/oauth/index.js';
 import { getOauthAccountInfo, validateForceLoginOrg } from '../utils/auth.js';
 import { openBrowser } from '../utils/browser.js';
@@ -65,6 +67,8 @@ type OAuthStatus =
       phase: 'requesting' | 'waiting';
       deviceCode?: ChatGPTDeviceCode;
     } // ChatGPT account subscription via Codex OAuth device flow
+  | { state: 'codex_oauth_start' }
+  | { state: 'codex_oauth_waiting'; url: string }
   | {
       state: 'gemini_api';
       baseUrl: string;
@@ -141,6 +145,12 @@ export function ConsoleOAuthFlow({
   const pastePromptTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const urlCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const activeOAuthUrlRef = useRef<string | undefined>(undefined);
+  const [showCodexPastePrompt, setShowCodexPastePrompt] = useState(false);
+  const [codexUrlCopied, setCodexUrlCopied] = useState(false);
+  const [codexPastedCode, setCodexPastedCode] = useState('');
+  const [codexPastedCursor, setCodexPastedCursor] = useState(0);
+  const codexManualCodeResolveRef = useRef<((code: string) => void) | null>(null);
+  const codexAbortRef = useRef<AbortController | null>(null);
 
   const textInputColumns = useTerminalSize().columns - PASTE_HERE_MSG.length - 1;
 
@@ -219,6 +229,36 @@ export function ConsoleOAuthFlow({
       setPastedCode('');
     }
   }, [pastedCode, oauthStatus, showPastePrompt, urlCopied]);
+
+  useEffect(() => {
+    if (
+      codexPastedCode === 'c' &&
+      oauthStatus.state === 'codex_oauth_waiting' &&
+      showCodexPastePrompt &&
+      !codexUrlCopied
+    ) {
+      void setClipboard(oauthStatus.url).then(raw => {
+        if (raw) process.stdout.write(raw);
+        setCodexUrlCopied(true);
+        setTimeout(setCodexUrlCopied, 2000, false);
+      });
+      setCodexPastedCode('');
+    }
+  }, [codexPastedCode, oauthStatus, showCodexPastePrompt, codexUrlCopied]);
+
+  const handleCodexPasteSubmit = useCallback((value: string) => {
+    const code = parseManualCodeInput(value);
+    if (!code) {
+      setOAuthStatus({
+        state: 'error',
+        message: 'Invalid code. Paste the full redirect URL or just the authorization code.',
+        toRetry: { state: 'codex_oauth_start' },
+      });
+      return;
+    }
+    codexManualCodeResolveRef.current?.(code);
+    codexManualCodeResolveRef.current = null;
+  }, []);
 
   async function handleSubmitCode(value: string, url: string) {
     try {
@@ -338,6 +378,93 @@ export function ConsoleOAuthFlow({
     }
   }, [oauthService, setShowPastePrompt, loginWithClaudeAi, mode, orgUUID]);
 
+  const startCodexOAuth = useCallback(async () => {
+    setShowCodexPastePrompt(false);
+    setCodexUrlCopied(false);
+    setCodexPastedCode('');
+    setCodexPastedCursor(0);
+
+    const existing = readCodexAuth();
+    if (existing?.accessToken || existing?.refreshToken) {
+      persistCodexLogin({
+        apiKey: existing.apiKey ?? null,
+        accessToken: existing.accessToken ?? '',
+        refreshToken: existing.refreshToken ?? '',
+        accountId: existing.accountId ?? '',
+        expiresAt: existing.expiresAt,
+      });
+      setOAuthStatus({ state: 'success' });
+      void onDone();
+      return;
+    }
+
+    const controller = new AbortController();
+    codexAbortRef.current = controller;
+    const manualCodePromise = new Promise<string>(resolve => {
+      codexManualCodeResolveRef.current = resolve;
+    });
+
+    try {
+      await performOpenAICodexLogin({
+        onUrl: url => {
+          setOAuthStatus({ state: 'codex_oauth_waiting', url });
+          setTimeout(setShowCodexPastePrompt, 3000, true);
+        },
+        manualCode: manualCodePromise,
+        signal: controller.signal,
+      });
+      setOAuthStatus({ state: 'success' });
+      void sendNotification(
+        {
+          message: 'Codex login successful',
+          notificationType: 'auth_success',
+        },
+        terminal,
+      );
+      void onDone();
+    } catch (err) {
+      if (controller.signal.aborted) {
+        setOAuthStatus({ state: 'idle' });
+        return;
+      }
+      logError(err as Error);
+      setOAuthStatus({
+        state: 'error',
+        message: (err as Error).message,
+        toRetry: { state: 'codex_oauth_start' },
+      });
+    } finally {
+      codexManualCodeResolveRef.current = null;
+      if (codexAbortRef.current === controller) {
+        codexAbortRef.current = null;
+      }
+    }
+  }, [onDone, terminal]);
+
+  const pendingCodexOAuthRef = useRef(false);
+  useEffect(() => {
+    if (oauthStatus.state === 'codex_oauth_start' && !pendingCodexOAuthRef.current) {
+      pendingCodexOAuthRef.current = true;
+      void startCodexOAuth().finally(() => {
+        pendingCodexOAuthRef.current = false;
+      });
+    }
+  }, [oauthStatus.state, startCodexOAuth]);
+
+  useKeybinding(
+    'confirm:no',
+    () => {
+      setShowCodexPastePrompt(false);
+      setCodexPastedCode('');
+      codexAbortRef.current?.abort();
+      setOAuthStatus({ state: 'idle' });
+    },
+    {
+      context: 'Confirmation',
+      isActive: oauthStatus.state === 'codex_oauth_waiting',
+    },
+  );
+
   const pendingOAuthStartRef = useRef(false);
 
   useEffect(() => {
@@ -423,6 +550,13 @@ export function ConsoleOAuthFlow({
           setOAuthStatus={setOAuthStatus}
           setLoginWithClaudeAi={setLoginWithClaudeAi}
           onDone={onDone}
+          showCodexPastePrompt={showCodexPastePrompt}
+          codexUrlCopied={codexUrlCopied}
+          codexPastedCode={codexPastedCode}
+          setCodexPastedCode={setCodexPastedCode}
+          codexPastedCursor={codexPastedCursor}
+          setCodexPastedCursor={setCodexPastedCursor}
+          handleCodexPasteSubmit={handleCodexPasteSubmit}
         />
       </Box>
     </Box>
@@ -444,6 +578,13 @@ type OAuthStatusMessageProps = {
   handleSubmitCode: (value: string, url: string) => void;
   setOAuthStatus: (status: OAuthStatus) => void;
   setLoginWithClaudeAi: (value: boolean) => void;
+  showCodexPastePrompt: boolean;
+  codexUrlCopied: boolean;
+  codexPastedCode: string;
+  setCodexPastedCode: (value: string) => void;
+  codexPastedCursor: number;
+  setCodexPastedCursor: (offset: number) => void;
+  handleCodexPasteSubmit: (value: string) => void;
 };
 
 function OAuthStatusMessage({
@@ -461,6 +602,13 @@ function OAuthStatusMessage({
   setOAuthStatus,
   setLoginWithClaudeAi,
   onDone,
+  showCodexPastePrompt,
+  codexUrlCopied,
+  codexPastedCode,
+  setCodexPastedCode,
+  codexPastedCursor,
+  setCodexPastedCursor,
+  handleCodexPasteSubmit,
 }: OAuthStatusMessageProps): React.ReactNode {
   switch (oauthStatus.state) {
     case 'idle':
@@ -512,6 +660,15 @@ function OAuthStatusMessage({
                     </Text>
                   ),
                   value: 'chatgpt_subscription',
+                },
+                {
+                  label: (
+                    <Text>
+                      OpenAI Codex (ChatGPT Subscription) · <Text dimColor>Official Codex backend, PKCE login</Text>
+                      {'\n'}
+                    </Text>
+                  ),
+                  value: 'codex_chatgpt',
                 },
                 {
                   label: (
@@ -592,6 +749,9 @@ function OAuthStatusMessage({
                     state: 'chatgpt_subscription',
                     phase: 'requesting',
                   });
+                } else if (value === 'codex_chatgpt') {
+                  logEvent('tengu_codex_chatgpt_selected', {});
+                  setOAuthStatus({ state: 'codex_oauth_start' });
                 } else if (value === 'gemini_api') {
                   logEvent('tengu_gemini_api_selected', {});
                   setOAuthStatus({
@@ -1132,6 +1292,63 @@ function OAuthStatusMessage({
             </Box>
           )}
           <Text dimColor>Esc to go back. Device codes expire after 15 minutes.</Text>
+        </Box>
+      );
+    }
+
+    case 'codex_oauth_start':
+      return (
+        <Box>
+          <Spinner />
+          <Text>Starting Codex login…</Text>
+        </Box>
+      );
+
+    case 'codex_oauth_waiting': {
+      const { url } = oauthStatus;
+      const codexPasteColumns = useTerminalSize().columns - PASTE_HERE_MSG.length - 1;
+      return (
+        <Box flexDirection="column" gap={1}>
+          {!showCodexPastePrompt && (
+            <Box>
+              <Spinner />
+              <Text>Opening browser for ChatGPT login…</Text>
+            </Box>
+          )}
+          {showCodexPastePrompt && (
+            <Box flexDirection="column" gap={1}>
+              <Box paddingX={1}>
+                <Text dimColor>Browser didn&apos;t open? Use the url below to sign in </Text>
+                {codexUrlCopied ? (
+                  <Text color="success">(Copied!)</Text>
+                ) : (
+                  <Text dimColor>
+                    <KeyboardShortcutHint shortcut="c" action="copy" parens />
+                  </Text>
+                )}
+              </Box>
+              <Link url={url}>
+                <Text dimColor>{url}</Text>
+              </Link>
+            </Box>
+          )}
+          {showCodexPastePrompt && (
+            <Box>
+              <Text>{PASTE_HERE_MSG}</Text>
+              <TextInput
+                value={codexPastedCode}
+                onChange={setCodexPastedCode}
+                onSubmit={handleCodexPasteSubmit}
+                cursorOffset={codexPastedCursor}
+                onChangeCursorOffset={setCodexPastedCursor}
+                columns={codexPasteColumns}
+                mask="*"
+              />
+            </Box>
+          )}
+          <Text dimColor>
+            Press <Text bold>Esc</Text> to cancel
+          </Text>
         </Box>
       );
     }

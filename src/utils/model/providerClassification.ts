@@ -6,6 +6,7 @@ export type APIProvider =
   | 'openai'
   | 'gemini'
   | 'grok'
+  | 'codex'
 
 export function isThirdPartyAPIProvider(provider: APIProvider): boolean {
   return provider !== 'firstParty'

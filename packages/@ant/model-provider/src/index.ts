@@ -105,3 +105,17 @@ export {
   normalizeOpenAIUsage,
   type AnthropicUsage,
 } from './shared/openaiUsage.js'
+
+// Codex provider utilities
+export {
+  normalizeCodexCallId,
+  resolveCodexCallId,
+  createCodexFallbackCallId,
+} from './providers/codex/callIds.js'
+export {
+  resolveCodexModel,
+  resolveCodexMaxTokens,
+} from './providers/codex/modelMapping.js'
+export { anthropicMessagesToCodexInput } from './providers/codex/convertMessages.js'
+export type { CodexImageConversionOptions } from './providers/codex/convertMessages.js'
+export { anthropicToolsToCodex } from './providers/codex/convertTools.js'

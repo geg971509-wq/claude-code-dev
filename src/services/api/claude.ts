@@ -1378,6 +1378,18 @@ async function* queryModel(
     return
   }
 
+  if (getAPIProvider() === 'codex') {
+    const { queryModelCodex } = await import('./codex/index.js')
+    yield* queryModelCodex(
+      messagesForAPI,
+      systemPrompt,
+      filteredTools,
+      signal,
+      options,
+    )
+    return
+  }
+
   if (getAPIProvider() === 'gemini') {
     const { queryModelGemini } = await import('./gemini/index.js')
     yield* queryModelGemini(

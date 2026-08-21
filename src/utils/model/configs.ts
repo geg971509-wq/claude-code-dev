@@ -584,8 +584,24 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
  * 而"只改了一处"正是 1M 判定、输出上限、知识截止那几个缺陷的共同成因。
  *
  * openai / gemini / grok 是 dev 自有的兼容层，官方没有对应项；它们沿用
- * firstParty 的 ID，由映射层再做转换。
+ * firstParty 的 ID，由映射层再做转换。codex 是 ChatGPT 订阅采样路径，
+ * 按家族落到 GPT 机型，真正的解析仍走 resolveCodexModel。
  */
+function codexIdFor(canonical: string): string {
+  const c = canonical.toLowerCase()
+  if (
+    c.includes('opus-4-7') ||
+    c.includes('opus-4-8') ||
+    c.includes('opus-5') ||
+    c.includes('fable') ||
+    c.includes('mythos')
+  ) {
+    return 'gpt-5.5'
+  }
+  if (c.includes('opus')) return 'gpt-5.4'
+  return 'gpt-5.4-mini'
+}
+
 function toModelConfig(entry: ModelCatalogEntry): ModelConfig {
   const ids = entry.providerIds!
   // 带 key 的条目一定四家齐全（见 providerIds 的类型注释）。
@@ -597,6 +613,7 @@ function toModelConfig(entry: ModelCatalogEntry): ModelConfig {
     openai: ids.firstParty,
     gemini: ids.firstParty,
     grok: ids.firstParty,
+    codex: codexIdFor(entry.canonical),
   }
 }
 

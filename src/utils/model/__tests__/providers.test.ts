@@ -18,6 +18,7 @@ import {
 function getAPIProviderTest(settings: { modelType?: string }): APIProvider {
   const modelType = settings.modelType
   if (modelType === 'openai') return 'openai'
+  if (modelType === 'codex') return 'codex'
   if (modelType === 'gemini') return 'gemini'
   if (modelType === 'grok') return 'grok'
 
@@ -48,6 +49,11 @@ function getAPIProviderTest(settings: { modelType?: string }): APIProvider {
   )
     return 'gemini'
   if (
+    process.env.CLAUDE_CODE_USE_CODEX === '1' ||
+    process.env.CLAUDE_CODE_USE_CODEX === 'true'
+  )
+    return 'codex'
+  if (
     process.env.CLAUDE_CODE_USE_GROK === '1' ||
     process.env.CLAUDE_CODE_USE_GROK === 'true'
   )
@@ -68,13 +74,14 @@ describe('isThirdPartyAPIProvider', () => {
     'openai',
     'gemini',
     'grok',
+    'codex',
   ] as const satisfies readonly APIProvider[]) {
     test(`returns true for ${provider}`, () => {
       expect(isThirdPartyAPIProvider(provider)).toBe(true)
     })
   }
 
-  for (const modelType of ['openai', 'gemini', 'grok'] as const) {
+  for (const modelType of ['openai', 'gemini', 'grok', 'codex'] as const) {
     test(`classifies settings modelType=${modelType} as third-party`, () => {
       expect(isThirdPartyAPIProvider(getAPIProviderTest({ modelType }))).toBe(
         true,
@@ -105,6 +112,7 @@ describe('getAPIProvider', () => {
     'CLAUDE_CODE_USE_VERTEX',
     'CLAUDE_CODE_USE_FOUNDRY',
     'CLAUDE_CODE_USE_OPENAI',
+    'CLAUDE_CODE_USE_CODEX',
     'CLAUDE_CODE_USE_GROK',
     'OPENAI_BASE_URL',
     'GEMINI_BASE_URL',
@@ -169,6 +177,15 @@ describe('getAPIProvider', () => {
   test('returns "grok" when CLAUDE_CODE_USE_GROK is set', () => {
     process.env.CLAUDE_CODE_USE_GROK = '1'
     expect(getAPIProviderTest({})).toBe('grok')
+  })
+
+  test('returns "codex" when modelType is codex', () => {
+    expect(getAPIProviderTest({ modelType: 'codex' })).toBe('codex')
+  })
+
+  test('returns "codex" when CLAUDE_CODE_USE_CODEX is set', () => {
+    process.env.CLAUDE_CODE_USE_CODEX = '1'
+    expect(getAPIProviderTest({})).toBe('codex')
   })
 
   test('bedrock takes precedence over gemini', () => {
