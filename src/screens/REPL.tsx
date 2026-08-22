@@ -3577,6 +3577,11 @@ export function REPL({
         // isLoading is derived from queryGuard — tryStart() above already
         // transitioned dispatching→running, so no setter call needed here.
         resetTimingRefs();
+        // Clear the placeholder immediately before adding the real user message
+        // to prevent displaying the input twice (placeholder + actual message)
+        // in the same frame. The placeholder's purpose is to bridge the gap
+        // between submission and setMessages — once setMessages fires, it's done.
+        setUserInputOnProcessing(undefined);
         setMessages(oldMessages => [...oldMessages, ...newMessages]);
         responseLengthRef.current = 0;
         if (feature('TOKEN_BUDGET')) {
