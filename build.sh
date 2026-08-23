@@ -32,9 +32,8 @@ bun run scripts/compile.ts windows-x64
 
 echo
 echo "=== Building linux x64 ==="
-# Linux binary gets a different name to avoid collision with macOS binary
+# compile.ts writes linux to dist/ccb-linux so it does not overwrite mac dist/ccb
 bun run scripts/compile.ts linux-x64
-mv dist/ccb dist/ccb-linux
 
 # Sidecar vendor layout used by src/utils/ripgrep.ts for dist/ccb*:
 #   dist/vendor/ripgrep/{arch}-{platform}/rg[.exe]

@@ -10,10 +10,14 @@ import { getMacroDefines, DEFAULT_BUILD_FEATURES } from './defines.ts'
 
 const targetArg = process.argv[2] // e.g. "darwin-arm64" | "windows-x64" | "linux-x64"
 const isWindows = targetArg?.startsWith('windows') ?? false
+const isLinux = targetArg?.startsWith('linux') ?? false
 const bunTarget = targetArg ? (`bun-${targetArg}` as string) : undefined
 
 const outdir = 'dist'
-const outfile = join(outdir, isWindows ? 'ccb.exe' : 'ccb')
+const outfile = join(
+  outdir,
+  isWindows ? 'ccb.exe' : isLinux ? 'ccb-linux' : 'ccb',
+)
 
 mkdirSync(outdir, { recursive: true })
 try {
