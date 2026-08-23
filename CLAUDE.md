@@ -44,6 +44,12 @@ bun run build
 # Build with Vite (alternative build pipeline)
 bun run build:vite
 
+# Compile to standalone executable (cross-platform)
+bun run compile                    # compile for current host platform
+bun run compile:darwin-arm64       # compile for macOS ARM64
+bun run compile:windows-x64        # compile for Windows x64
+bun run compile:linux-x64          # compile for Linux x64
+
 # Test
 bun test                                    # run all tests
 bun test src/utils/__tests__/hash.test.ts   # run single file

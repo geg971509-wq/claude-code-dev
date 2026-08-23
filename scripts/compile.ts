@@ -1,14 +1,14 @@
 #!/usr/bin/env bun
 /**
  * Cross-platform compile script.
- * Usage: bun run scripts/compile.ts [darwin-arm64|windows-x64]
+ * Usage: bun run scripts/compile.ts [darwin-arm64|windows-x64|linux-x64]
  * Defaults to the current host platform when no argument is given.
  */
 import { rmSync, chmodSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { getMacroDefines, DEFAULT_BUILD_FEATURES } from './defines.ts'
 
-const targetArg = process.argv[2] // e.g. "darwin-arm64" | "windows-x64"
+const targetArg = process.argv[2] // e.g. "darwin-arm64" | "windows-x64" | "linux-x64"
 const isWindows = targetArg?.startsWith('windows') ?? false
 const bunTarget = targetArg ? (`bun-${targetArg}` as string) : undefined
 
