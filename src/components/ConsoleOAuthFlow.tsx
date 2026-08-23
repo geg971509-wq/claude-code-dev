@@ -22,8 +22,8 @@ import {
   requestKimiDeviceCode,
   type KimiDeviceCode,
 } from '../services/api/openai/kimiAuth.js';
-import { readCodexAuth } from '../services/api/codex/credentials.js';
-import { parseManualCodeInput, performOpenAICodexLogin, persistCodexLogin } from '../services/oauth/openai-codex.js';
+import { persistCodexLogin, readCodexAuth } from '../services/api/codex/credentials.js';
+import { parseManualCodeInput, performOpenAICodexLogin } from '../services/oauth/openai-codex.js';
 import { OAuthService } from '../services/oauth/index.js';
 import { getOauthAccountInfo, validateForceLoginOrg } from '../utils/auth.js';
 import { openBrowser } from '../utils/browser.js';
@@ -386,15 +386,24 @@ export function ConsoleOAuthFlow({
 
     const existing = readCodexAuth();
     if (existing?.accessToken || existing?.refreshToken) {
-      persistCodexLogin({
-        apiKey: existing.apiKey ?? null,
-        accessToken: existing.accessToken ?? '',
-        refreshToken: existing.refreshToken ?? '',
-        accountId: existing.accountId ?? '',
-        expiresAt: existing.expiresAt,
-      });
-      setOAuthStatus({ state: 'success' });
-      void onDone();
+      try {
+        await persistCodexLogin({
+          apiKey: existing.apiKey ?? null,
+          accessToken: existing.accessToken ?? '',
+          refreshToken: existing.refreshToken ?? '',
+          accountId: existing.accountId ?? '',
+          expiresAt: existing.expiresAt,
+        });
+        setOAuthStatus({ state: 'success' });
+        void onDone();
+      } catch (err) {
+        logError(err as Error);
+        setOAuthStatus({
+          state: 'error',
+          message: (err as Error).message,
+          toRetry: { state: 'codex_oauth_start' },
+        });
+      }
       return;
     }
 

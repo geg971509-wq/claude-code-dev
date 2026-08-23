@@ -130,7 +130,7 @@ describe('ConsoleOAuthFlow OAuth URL lifecycle', () => {
       mock.module('src/keybindings/useKeybinding.js', () => ({
         ...realKeybindings,
         useKeybinding(_key, handler, options) {
-          if (options.context === 'Confirmation') confirmationHandler = options.isActive ? handler : undefined;
+          if (options.context === 'Confirmation' && options.isActive !== false) confirmationHandler = handler;
         },
       }));
       const realAnalytics = await import('src/services/analytics/index.js');

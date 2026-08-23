@@ -29,7 +29,7 @@ import {
   CODEX_OAUTH_SCOPE,
   CODEX_ORIGINATOR,
   CODEX_TOKEN_URL,
-  writeCodexAuth,
+  persistCodexLogin,
 } from '../api/codex/credentials.js'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -450,38 +450,11 @@ export async function performOpenAICodexLogin(
           ? Date.now() + tokens.expires_in * 1000
           : undefined,
     }
-    persistCodexLogin(result)
+    await persistCodexLogin(result)
     return result
   } finally {
     server.close()
   }
-}
-
-export function persistCodexLogin(result: CodexOAuthResult): void {
-  writeCodexAuth({
-    accessToken: result.accessToken,
-    refreshToken: result.refreshToken,
-    apiKey: result.apiKey,
-    accountId: result.accountId,
-    expiresAt: result.expiresAt,
-  })
-  delete process.env.CODEX_ACCESS_TOKEN
-  delete process.env.CODEX_REFRESH_TOKEN
-  delete process.env.CODEX_API_KEY
-  process.env.CODEX_LOGIN_METHOD = 'chatgpt_subscription'
-  void import('../../utils/settings/settings.js')
-    .then(({ updateSettingsForSource }) => {
-      updateSettingsForSource('userSettings', {
-        modelType: 'codex',
-        env: {
-          CODEX_LOGIN_METHOD: 'chatgpt_subscription',
-          CODEX_ACCESS_TOKEN: undefined,
-          CODEX_REFRESH_TOKEN: undefined,
-          CODEX_API_KEY: undefined,
-        } as unknown as Record<string, string>,
-      })
-    })
-    .catch(() => undefined)
 }
 
 // Export helpers for testing

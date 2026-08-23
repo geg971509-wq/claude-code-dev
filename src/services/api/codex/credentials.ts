@@ -108,24 +108,70 @@ export function clearCodexAuth(): void {
   storage.update(rest)
 }
 
-function consumeEnvTokens(auth: CodexStoredAuth): void {
+async function writeCodexUserSettings(settings: {
+  modelType?: 'codex'
+  env: Record<string, string | undefined>
+}): Promise<void> {
+  const { updateSettingsForSource } = await import(
+    '../../../utils/settings/settings.js'
+  )
+  const { error } = updateSettingsForSource('userSettings', {
+    ...(settings.modelType ? { modelType: settings.modelType } : {}),
+    env: settings.env as unknown as Record<string, string>,
+  })
+  if (error) throw error
+}
+
+export async function persistCodexLogin(result: {
+  apiKey: string | null
+  accessToken: string
+  refreshToken: string
+  accountId: string
+  expiresAt?: number
+}): Promise<void> {
+  writeCodexAuth({
+    accessToken: result.accessToken,
+    refreshToken: result.refreshToken,
+    apiKey: result.apiKey,
+    accountId: result.accountId,
+    expiresAt: result.expiresAt,
+  })
+  await writeCodexUserSettings({
+    modelType: 'codex',
+    env: {
+      CODEX_LOGIN_METHOD: 'chatgpt_subscription',
+      CODEX_ACCESS_TOKEN: undefined,
+      CODEX_REFRESH_TOKEN: undefined,
+      CODEX_API_KEY: undefined,
+    },
+  })
+  delete process.env.CODEX_ACCESS_TOKEN
+  delete process.env.CODEX_REFRESH_TOKEN
+  delete process.env.CODEX_API_KEY
+  process.env.CODEX_LOGIN_METHOD = 'chatgpt_subscription'
+}
+
+async function consumeEnvTokens(auth: CodexStoredAuth): Promise<void> {
   writeCodexAuth(auth)
+  try {
+    await writeCodexUserSettings({
+      env: {
+        CODEX_ACCESS_TOKEN: undefined,
+        CODEX_REFRESH_TOKEN: undefined,
+        ...(isCodexSubscriptionAuth() ? { CODEX_API_KEY: undefined } : {}),
+      },
+    })
+  } catch (err) {
+    logForDebugging(
+      `[Codex] Failed to strip leftover tokens from settings.env: ${err}`,
+    )
+    return
+  }
   delete process.env.CODEX_ACCESS_TOKEN
   delete process.env.CODEX_REFRESH_TOKEN
   if (isCodexSubscriptionAuth()) {
     delete process.env.CODEX_API_KEY
   }
-  void import('../../../utils/settings/settings.js')
-    .then(({ updateSettingsForSource }) => {
-      updateSettingsForSource('userSettings', {
-        env: {
-          CODEX_ACCESS_TOKEN: undefined,
-          CODEX_REFRESH_TOKEN: undefined,
-          ...(isCodexSubscriptionAuth() ? { CODEX_API_KEY: undefined } : {}),
-        } as unknown as Record<string, string>,
-      })
-    })
-    .catch(() => undefined)
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
@@ -268,7 +314,7 @@ export async function resolveCodexRequestContext(): Promise<CodexRequestContext>
   )
   const fromEnv = liftFromEnv()
   if (fromEnv) {
-    consumeEnvTokens(fromStorage ?? fromEnv)
+    await consumeEnvTokens(fromStorage ?? fromEnv)
   }
 
   const auth = (await refreshCodexAuthIfNeeded()) ?? readCodexAuth()

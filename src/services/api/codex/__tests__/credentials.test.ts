@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
+import { resolve } from 'path'
 import {
   CHATGPT_ACCOUNT_ID_HEADER,
   CHATGPT_CODEX_BASE_URL,
@@ -15,9 +13,25 @@ import {
   writeCodexAuth,
 } from '../credentials.js'
 import { getCodexClient, clearCodexClientCache } from '../client.js'
-import { persistCodexLogin } from '../../../oauth/openai-codex.js'
-import { resetSettingsCache } from '../../../../utils/settings/settingsCache.js'
 import { getSessionId } from '../../../../bootstrap/state.js'
+
+const PROJECT_ROOT = resolve(import.meta.dir, '..', '..', '..', '..', '..')
+
+async function runIsolated(
+  source: string,
+): Promise<{ code: number; output: string }> {
+  const proc = Bun.spawn([process.execPath, '-e', source], {
+    cwd: PROJECT_ROOT,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  const code = await proc.exited
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ])
+  return { code, output: `${stdout}\n${stderr}` }
+}
 
 const store: { blob: Record<string, unknown> } = { blob: {} }
 
@@ -252,109 +266,308 @@ describe('codex credentials store', () => {
 })
 
 describe('persistCodexLogin leftover stripping', () => {
-  let isolatedDir = ''
-  const saved: Record<string, string | undefined> = {}
-
-  beforeEach(() => {
-    isolatedDir = mkdtempSync(join(tmpdir(), 'codex-leftover-'))
-    for (const key of [
-      'HOME',
-      'CLAUDE_CONFIG_DIR',
-      'CODEX_ACCESS_TOKEN',
-      'CODEX_REFRESH_TOKEN',
-      'CODEX_API_KEY',
-      'CODEX_LOGIN_METHOD',
-    ]) {
-      saved[key] = process.env[key]
-    }
-    process.env.HOME = isolatedDir
-    process.env.CLAUDE_CONFIG_DIR = isolatedDir
-    process.env.CODEX_ACCESS_TOKEN = 'old-access-secret'
-    process.env.CODEX_REFRESH_TOKEN = 'old-refresh-secret'
-    process.env.CODEX_API_KEY = 'old-api-secret'
-    process.env.CODEX_LOGIN_METHOD = 'chatgpt_subscription'
-    writeFileSync(
-      join(isolatedDir, 'settings.json'),
-      JSON.stringify({
-        env: {
-          CODEX_ACCESS_TOKEN: 'old-access-secret',
-          CODEX_REFRESH_TOKEN: 'old-refresh-secret',
-          CODEX_API_KEY: 'old-api-secret',
-          CODEX_LOGIN_METHOD: 'chatgpt_subscription',
-        },
-      }),
-    )
-    store.blob = {}
-    _resetCodexAuthForTests()
-    resetSettingsCache()
-  })
-
-  afterEach(() => {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key]
-      else process.env[key] = value
-    }
-    resetSettingsCache()
-    _resetCodexAuthForTests()
-    if (isolatedDir) rmSync(isolatedDir, { recursive: true, force: true })
-  })
-
   test('moves leftover tokens into secureStorage and strips settings.env', async () => {
-    persistCodexLogin({
-      apiKey: 'new-api-key',
-      accessToken: 'new-access',
-      refreshToken: 'new-refresh',
-      accountId: 'acc_new',
-      expiresAt: Date.now() + 60_000,
-    })
+    const { code, output } = await runIsolated(`
+      import { mock } from 'bun:test'
+      import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+      import { tmpdir } from 'os'
+      import { join } from 'path'
 
-    expect(store.blob.codexOauth).toEqual({
-      accessToken: 'new-access',
-      refreshToken: 'new-refresh',
-      apiKey: 'new-api-key',
-      accountId: 'acc_new',
-      expiresAt: expect.any(Number),
-    })
-    expect(process.env.CODEX_ACCESS_TOKEN).toBeUndefined()
-    expect(process.env.CODEX_REFRESH_TOKEN).toBeUndefined()
-    expect(process.env.CODEX_API_KEY).toBeUndefined()
-    expect(process.env.CODEX_LOGIN_METHOD).toBe('chatgpt_subscription')
+      const store = { blob: {} }
+      mock.module('src/utils/secureStorage/index.js', () => ({
+        getSecureStorage: () => ({
+          read: () => store.blob,
+          update: (next) => {
+            store.blob = { ...next }
+            return { success: true }
+          },
+          delete: () => {
+            store.blob = {}
+            return true
+          },
+        }),
+      }))
 
-    await Bun.sleep(80)
-    resetSettingsCache()
-    const settings = JSON.parse(
-      readFileSync(join(isolatedDir, 'settings.json'), 'utf8'),
-    ) as {
-      env?: Record<string, string>
-      modelType?: string
-    }
-    expect(settings.modelType).toBe('codex')
-    expect(settings.env).toEqual({
-      CODEX_LOGIN_METHOD: 'chatgpt_subscription',
-    })
+      const isolatedDir = mkdtempSync(join(tmpdir(), 'codex-leftover-'))
+      process.env.HOME = isolatedDir
+      process.env.CLAUDE_CONFIG_DIR = isolatedDir
+      process.env.CODEX_ACCESS_TOKEN = 'old-access-secret'
+      process.env.CODEX_REFRESH_TOKEN = 'old-refresh-secret'
+      process.env.CODEX_API_KEY = 'old-api-secret'
+      process.env.CODEX_LOGIN_METHOD = 'chatgpt_subscription'
+      writeFileSync(
+        join(isolatedDir, 'settings.json'),
+        JSON.stringify({
+          env: {
+            CODEX_ACCESS_TOKEN: 'old-access-secret',
+            CODEX_REFRESH_TOKEN: 'old-refresh-secret',
+            CODEX_API_KEY: 'old-api-secret',
+            CODEX_LOGIN_METHOD: 'chatgpt_subscription',
+          },
+        }),
+      )
+
+      try {
+        const { persistCodexLogin } = await import('src/services/api/codex/credentials.js')
+        const { resetSettingsCache } = await import('src/utils/settings/settingsCache.js')
+        resetSettingsCache()
+        await persistCodexLogin({
+          apiKey: 'new-api-key',
+          accessToken: 'new-access',
+          refreshToken: 'new-refresh',
+          accountId: 'acc_new',
+          expiresAt: Date.now() + 60_000,
+        })
+        if (!store.blob.codexOauth) throw new Error('expected stored auth')
+        if (process.env.CODEX_ACCESS_TOKEN) throw new Error('ACCESS leftover')
+        if (process.env.CODEX_REFRESH_TOKEN) throw new Error('REFRESH leftover')
+        if (process.env.CODEX_API_KEY) throw new Error('API_KEY leftover')
+        if (process.env.CODEX_LOGIN_METHOD !== 'chatgpt_subscription') {
+          throw new Error('login method not persisted')
+        }
+        resetSettingsCache()
+        const settings = JSON.parse(
+          readFileSync(join(isolatedDir, 'settings.json'), 'utf8'),
+        )
+        if (settings.modelType !== 'codex') throw new Error('modelType not set')
+        if (JSON.stringify(settings.env) !== JSON.stringify({
+          CODEX_LOGIN_METHOD: 'chatgpt_subscription',
+        })) {
+          throw new Error('settings.env not stripped: ' + JSON.stringify(settings.env))
+        }
+        console.log('ok')
+      } finally {
+        rmSync(isolatedDir, { recursive: true, force: true })
+      }
+    `)
+    expect(code).toBe(0)
+    expect(output).toContain('ok')
   })
 
   test('resolveCodexRequestContext strips leftover env even when storage already has tokens', async () => {
-    writeCodexAuth({
-      accessToken: 'stored-access',
-      refreshToken: 'stored-refresh',
-      accountId: 'acc_stored',
-      expiresAt: Date.now() + 60 * 60 * 1000,
-    })
+    const { code, output } = await runIsolated(`
+      import { mock } from 'bun:test'
+      import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+      import { tmpdir } from 'os'
+      import { join } from 'path'
 
-    const ctx = await resolveCodexRequestContext()
-    expect(ctx.apiKey).toBe('stored-access')
-    expect(process.env.CODEX_ACCESS_TOKEN).toBeUndefined()
-    expect(process.env.CODEX_REFRESH_TOKEN).toBeUndefined()
-    expect(process.env.CODEX_API_KEY).toBeUndefined()
+      const store = { blob: {} }
+      mock.module('src/utils/secureStorage/index.js', () => ({
+        getSecureStorage: () => ({
+          read: () => store.blob,
+          update: (next) => {
+            store.blob = { ...next }
+            return { success: true }
+          },
+          delete: () => {
+            store.blob = {}
+            return true
+          },
+        }),
+      }))
 
-    await Bun.sleep(80)
-    resetSettingsCache()
-    const settings = JSON.parse(
-      readFileSync(join(isolatedDir, 'settings.json'), 'utf8'),
-    ) as { env?: Record<string, string> }
-    expect(settings.env).toEqual({
-      CODEX_LOGIN_METHOD: 'chatgpt_subscription',
-    })
+      const isolatedDir = mkdtempSync(join(tmpdir(), 'codex-leftover-'))
+      process.env.HOME = isolatedDir
+      process.env.CLAUDE_CONFIG_DIR = isolatedDir
+      process.env.CODEX_ACCESS_TOKEN = 'old-access-secret'
+      process.env.CODEX_REFRESH_TOKEN = 'old-refresh-secret'
+      process.env.CODEX_API_KEY = 'old-api-secret'
+      process.env.CODEX_LOGIN_METHOD = 'chatgpt_subscription'
+      writeFileSync(
+        join(isolatedDir, 'settings.json'),
+        JSON.stringify({
+          env: {
+            CODEX_ACCESS_TOKEN: 'old-access-secret',
+            CODEX_REFRESH_TOKEN: 'old-refresh-secret',
+            CODEX_API_KEY: 'old-api-secret',
+            CODEX_LOGIN_METHOD: 'chatgpt_subscription',
+          },
+        }),
+      )
+
+      try {
+        const {
+          writeCodexAuth,
+          resolveCodexRequestContext,
+        } = await import('src/services/api/codex/credentials.js')
+        const { resetSettingsCache } = await import('src/utils/settings/settingsCache.js')
+        resetSettingsCache()
+        writeCodexAuth({
+          accessToken: 'stored-access',
+          refreshToken: 'stored-refresh',
+          accountId: 'acc_stored',
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        })
+        const ctx = await resolveCodexRequestContext()
+        if (ctx.apiKey !== 'stored-access') throw new Error('wrong apiKey')
+        if (process.env.CODEX_ACCESS_TOKEN) throw new Error('ACCESS leftover')
+        if (process.env.CODEX_REFRESH_TOKEN) throw new Error('REFRESH leftover')
+        if (process.env.CODEX_API_KEY) throw new Error('API_KEY leftover')
+        resetSettingsCache()
+        const settings = JSON.parse(
+          readFileSync(join(isolatedDir, 'settings.json'), 'utf8'),
+        )
+        if (JSON.stringify(settings.env) !== JSON.stringify({
+          CODEX_LOGIN_METHOD: 'chatgpt_subscription',
+        })) {
+          throw new Error('settings.env not stripped: ' + JSON.stringify(settings.env))
+        }
+        console.log('ok')
+      } finally {
+        rmSync(isolatedDir, { recursive: true, force: true })
+      }
+    `)
+    expect(code).toBe(0)
+    expect(output).toContain('ok')
+  })
+
+  test('persistCodexLogin keeps process.env leftover when settings write fails', async () => {
+    const { code, output } = await runIsolated(`
+      import { mock } from 'bun:test'
+      import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+      import { tmpdir } from 'os'
+      import { join } from 'path'
+
+      const store = { blob: {} }
+      mock.module('src/utils/secureStorage/index.js', () => ({
+        getSecureStorage: () => ({
+          read: () => store.blob,
+          update: (next) => {
+            store.blob = { ...next }
+            return { success: true }
+          },
+          delete: () => {
+            store.blob = {}
+            return true
+          },
+        }),
+      }))
+      mock.module('src/utils/settings/settings.js', () => ({
+        updateSettingsForSource: () => ({ error: new Error('disk full') }),
+      }))
+
+      const isolatedDir = mkdtempSync(join(tmpdir(), 'codex-leftover-fail-'))
+      process.env.HOME = isolatedDir
+      process.env.CLAUDE_CONFIG_DIR = isolatedDir
+      process.env.CODEX_ACCESS_TOKEN = 'old-access-secret'
+      process.env.CODEX_REFRESH_TOKEN = 'old-refresh-secret'
+      process.env.CODEX_API_KEY = 'old-api-secret'
+      process.env.CODEX_LOGIN_METHOD = 'chatgpt_subscription'
+      writeFileSync(
+        join(isolatedDir, 'settings.json'),
+        JSON.stringify({
+          env: {
+            CODEX_ACCESS_TOKEN: 'old-access-secret',
+            CODEX_REFRESH_TOKEN: 'old-refresh-secret',
+            CODEX_API_KEY: 'old-api-secret',
+            CODEX_LOGIN_METHOD: 'chatgpt_subscription',
+          },
+        }),
+      )
+
+      try {
+        const { persistCodexLogin } = await import('src/services/api/codex/credentials.js')
+        let threw = false
+        try {
+          await persistCodexLogin({
+            apiKey: 'new-api-key',
+            accessToken: 'new-access',
+            refreshToken: 'new-refresh',
+            accountId: 'acc_new',
+            expiresAt: Date.now() + 60_000,
+          })
+        } catch (err) {
+          threw = err instanceof Error && err.message === 'disk full'
+        }
+        if (!threw) throw new Error('expected persist to throw')
+        if (!store.blob.codexOauth) throw new Error('expected stored auth')
+        if (process.env.CODEX_ACCESS_TOKEN !== 'old-access-secret') {
+          throw new Error('ACCESS should remain for retry')
+        }
+        if (process.env.CODEX_REFRESH_TOKEN !== 'old-refresh-secret') {
+          throw new Error('REFRESH should remain for retry')
+        }
+        const settings = JSON.parse(
+          readFileSync(join(isolatedDir, 'settings.json'), 'utf8'),
+        )
+        if (settings.env?.CODEX_ACCESS_TOKEN !== 'old-access-secret') {
+          throw new Error('settings.env leftover should remain')
+        }
+        console.log('ok')
+      } finally {
+        rmSync(isolatedDir, { recursive: true, force: true })
+      }
+    `)
+    expect(code).toBe(0)
+    expect(output).toContain('ok')
+  })
+
+  test('resolveCodexRequestContext does not block when leftover strip fails', async () => {
+    const { code, output } = await runIsolated(`
+      import { mock } from 'bun:test'
+      import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+      import { tmpdir } from 'os'
+      import { join } from 'path'
+
+      const store = { blob: {} }
+      mock.module('src/utils/secureStorage/index.js', () => ({
+        getSecureStorage: () => ({
+          read: () => store.blob,
+          update: (next) => {
+            store.blob = { ...next }
+            return { success: true }
+          },
+          delete: () => {
+            store.blob = {}
+            return true
+          },
+        }),
+      }))
+      mock.module('src/utils/settings/settings.js', () => ({
+        updateSettingsForSource: () => ({ error: new Error('settings write denied') }),
+      }))
+
+      const isolatedDir = mkdtempSync(join(tmpdir(), 'codex-leftover-open-'))
+      process.env.HOME = isolatedDir
+      process.env.CLAUDE_CONFIG_DIR = isolatedDir
+      process.env.CODEX_ACCESS_TOKEN = 'old-access-secret'
+      process.env.CODEX_REFRESH_TOKEN = 'old-refresh-secret'
+      process.env.CODEX_API_KEY = 'old-api-secret'
+      process.env.CODEX_LOGIN_METHOD = 'chatgpt_subscription'
+      writeFileSync(
+        join(isolatedDir, 'settings.json'),
+        JSON.stringify({
+          env: {
+            CODEX_ACCESS_TOKEN: 'old-access-secret',
+            CODEX_REFRESH_TOKEN: 'old-refresh-secret',
+            CODEX_API_KEY: 'old-api-secret',
+            CODEX_LOGIN_METHOD: 'chatgpt_subscription',
+          },
+        }),
+      )
+
+      try {
+        const {
+          writeCodexAuth,
+          resolveCodexRequestContext,
+        } = await import('src/services/api/codex/credentials.js')
+        writeCodexAuth({
+          accessToken: 'stored-access',
+          refreshToken: 'stored-refresh',
+          accountId: 'acc_stored',
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        })
+        const ctx = await resolveCodexRequestContext()
+        if (ctx.apiKey !== 'stored-access') throw new Error('wrong apiKey')
+        if (process.env.CODEX_ACCESS_TOKEN !== 'old-access-secret') {
+          throw new Error('ACCESS should remain for retry')
+        }
+        console.log('ok')
+      } finally {
+        rmSync(isolatedDir, { recursive: true, force: true })
+      }
+    `)
+    expect(code).toBe(0)
+    expect(output).toContain('ok')
   })
 })

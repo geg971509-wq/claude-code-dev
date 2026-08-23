@@ -500,11 +500,11 @@ describe('withOpenAIStreamIdleTimeout', () => {
       [Symbol.asyncIterator]() {
         let sent = false
         return {
-          next: () =>
-            sent
-              ? new Promise<IteratorResult<string>>(() => {})
-              : ((sent = true),
-                Promise.resolve({ done: false, value: 'chunk' })),
+          next: () => {
+            if (sent) return new Promise<IteratorResult<string>>(() => {})
+            sent = true
+            return Promise.resolve({ done: false, value: 'chunk' })
+          },
           return: async () => ({ done: true, value: undefined }),
         }
       },
