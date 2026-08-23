@@ -163,7 +163,34 @@ const EXTENDED_KEYS_TERMINALS = [
 /** True if this terminal correctly handles extended key reporting
  *  (Kitty keyboard protocol + xterm modifyOtherKeys). */
 export function supportsExtendedKeys(): boolean {
-  return EXTENDED_KEYS_TERMINALS.includes(process.env.TERM_PROGRAM ?? '')
+  // Check TERM_PROGRAM first (macOS/Windows terminals)
+  if (EXTENDED_KEYS_TERMINALS.includes(process.env.TERM_PROGRAM ?? '')) {
+    return true
+  }
+
+  // On Linux, many terminals support extended keys but don't set TERM_PROGRAM.
+  // Check for common Linux terminals via TERM and other environment variables.
+  if (process.platform === 'linux') {
+    const term = process.env.TERM ?? ''
+    const termProgram = process.env.TERM_PROGRAM ?? ''
+
+    // Modern terminals that support kitty protocol or modifyOtherKeys
+    if (
+      term.includes('kitty') ||
+      term.includes('xterm-256color') ||
+      term.includes('xterm') ||
+      term.includes('alacritty') ||
+      term.includes('tmux') ||
+      termProgram.includes('alacritty') ||
+      termProgram.includes('konsole') ||
+      process.env.ALACRITTY_SOCKET ||
+      process.env.KONSOLE_VERSION
+    ) {
+      return true
+    }
+  }
+
+  return false
 }
 
 /** True if the terminal scrolls the viewport when it receives cursor-up
