@@ -22,6 +22,7 @@ import {
   createProjectOnboardingFeed,
   createGuestPassesFeed,
 } from './feedConfigs.js';
+import { getOauthAccountInfo } from 'src/utils/auth.js';
 import { getGlobalConfig, saveGlobalConfig } from 'src/utils/config.js';
 import { resolveThemeSetting } from 'src/utils/systemTheme.js';
 import { getInitialSettings } from 'src/utils/settings/settings.js';
@@ -70,7 +71,8 @@ const LEFT_PANEL_MAX_WIDTH = 50;
 
 export function LogoV2(): React.ReactNode {
   const activities = getRecentActivitySync();
-  const username = getGlobalConfig().oauthAccount?.displayName ?? '';
+  const oauthAccount = getOauthAccountInfo();
+  const username = oauthAccount?.displayName ?? '';
 
   const { columns } = useTerminalSize();
   const showOnboarding = shouldShowProjectOnboarding();
@@ -168,8 +170,8 @@ export function LogoV2(): React.ReactNode {
         )}
         {announcement && (
           <Box paddingLeft={2} flexDirection="column">
-            {!process.env.IS_DEMO && config.oauthAccount?.organizationName && (
-              <Text dimColor>Message from {config.oauthAccount.organizationName}:</Text>
+            {!process.env.IS_DEMO && oauthAccount?.organizationName && (
+              <Text dimColor>Message from {oauthAccount.organizationName}:</Text>
             )}
             <Text>{announcement}</Text>
           </Box>
@@ -263,8 +265,8 @@ export function LogoV2(): React.ReactNode {
 
   const welcomeMessage = formatWelcomeMessage(username);
   const modelLine =
-    !process.env.IS_DEMO && config.oauthAccount?.organizationName
-      ? `${modelDisplayName} · ${billingType} · ${config.oauthAccount.organizationName}`
+    !process.env.IS_DEMO && oauthAccount?.organizationName
+      ? `${modelDisplayName} · ${billingType} · ${oauthAccount.organizationName}`
       : `${modelDisplayName} · ${billingType}`;
   // Calculate cwd width accounting for agent name if present
   const cwdSeparator = ' · ';
@@ -368,8 +370,8 @@ export function LogoV2(): React.ReactNode {
       )}
       {announcement && (
         <Box paddingLeft={2} flexDirection="column">
-          {!process.env.IS_DEMO && config.oauthAccount?.organizationName && (
-            <Text dimColor>Message from {config.oauthAccount.organizationName}:</Text>
+          {!process.env.IS_DEMO && oauthAccount?.organizationName && (
+            <Text dimColor>Message from {oauthAccount.organizationName}:</Text>
           )}
           <Text>{announcement}</Text>
         </Box>
