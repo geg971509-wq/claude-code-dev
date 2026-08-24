@@ -17,7 +17,7 @@ export function isSkillSearchCompiledIn(): boolean {
  * Runtime activation check: is the skill-search subsystem currently doing
  * work (intentNormalize Haiku calls, prefetch hot path, telemetry)? Off by
  * default — the operator must run `/skill-search start` (which sets
- * `SKILL_SEARCH_ENABLED=1`). See docs/agent/sur-skill-overflow-bugs.md §5.
+ * `SKILL_SEARCH_ENABLED=1`).
  *
  * Build-flag gating is intentionally NOT performed here: the command
  * registry already gates command compilation on the build flag, and this

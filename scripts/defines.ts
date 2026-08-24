@@ -81,10 +81,9 @@ export const DEFAULT_BUILD_FEATURES = [
   // commands /skill-* etc. exist), but the runtime "enabled" toggle
   // defaults to OFF (see featureCheck.ts). Operators turn on via the
   // slash-command toggle or env vars (SKILL_SEARCH_ENABLED=1,
-  // SKILL_LEARNING_ENABLED=1). Rationale: bounded caches added on
-  // this branch (see docs/agent/sur-skill-overflow-bugs.md) close the
-  // overflow risk, but Haiku-on-first-Chinese-query and disk-side
-  // observation accumulation remain operator-discretion concerns.
+  // SKILL_LEARNING_ENABLED=1). Bounded caches close the overflow risk;
+  // Haiku-on-first-Chinese-query and disk-side observation accumulation
+  // remain operator-discretion concerns.
   'EXPERIMENTAL_SKILL_SEARCH', // 技能搜索（bounded caches 已修复 overflow，内存问题已解决）
   'EXPERIMENTAL_SEARCH_EXTRA_TOOLS', // 工具搜索预取管道（TF-IDF 索引 + inter-turn 异步预取）
   // 'SKILL_LEARNING',
