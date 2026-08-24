@@ -1,22 +1,20 @@
 import type { Command } from '../../commands.js'
 import { env } from '../../utils/env.js'
-
-// Terminals that natively support CSI u / Kitty keyboard protocol
-const NATIVE_CSIU_TERMINALS: Record<string, string> = {
-  ghostty: 'Ghostty',
-  kitty: 'Kitty',
-  'iTerm.app': 'iTerm2',
-  WezTerm: 'WezTerm',
-}
+import { nativeCsiuDisplayName } from './nativeCsiu.js'
 
 const terminalSetup = {
   type: 'local-jsx',
   name: 'terminal-setup',
-  description:
-    env.terminal === 'Apple_Terminal'
-      ? 'Enable Option+Enter key binding for newlines and visual bell'
-      : 'Install Shift+Enter key binding for newlines',
-  isHidden: env.terminal !== null && env.terminal in NATIVE_CSIU_TERMINALS,
+  get description() {
+    if (env.terminal === 'Apple_Terminal') {
+      return 'Enable Option+Enter key binding for newlines and visual bell'
+    }
+    const native = nativeCsiuDisplayName(env.terminal)
+    if (native) {
+      return `Check terminal setup (Shift+Enter is natively supported in ${native})`
+    }
+    return 'Install Shift+Enter key binding for newlines'
+  },
   load: () => import('./terminalSetup.js'),
 } satisfies Command
 

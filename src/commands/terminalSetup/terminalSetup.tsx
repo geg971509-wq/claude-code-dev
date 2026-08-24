@@ -25,17 +25,11 @@ import { addItemToJSONCArray, safeParseJSONC } from '../../utils/json.js';
 import { logError } from '../../utils/log.js';
 import { getPlatform } from '../../utils/platform.js';
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js';
+import { NATIVE_CSIU_TERMINALS } from './nativeCsiu.js';
+
+export { getNativeCSIuTerminalDisplayName } from './nativeCsiu.js';
 
 const EOL = '\n';
-
-// Terminals that natively support CSI u / Kitty keyboard protocol
-const NATIVE_CSIU_TERMINALS: Record<string, string> = {
-  ghostty: 'Ghostty',
-  kitty: 'Kitty',
-  'iTerm.app': 'iTerm2',
-  WezTerm: 'WezTerm',
-  WarpTerminal: 'Warp',
-};
 
 /**
  * Detect if we're running in a VSCode Remote SSH session.
@@ -56,13 +50,6 @@ function isVSCodeRemoteSSH(): boolean {
     path.includes('.cursor-server') ||
     path.includes('.windsurf-server')
   );
-}
-
-export function getNativeCSIuTerminalDisplayName(): string | null {
-  if (!env.terminal || !(env.terminal in NATIVE_CSIU_TERMINALS)) {
-    return null;
-  }
-  return NATIVE_CSIU_TERMINALS[env.terminal] ?? null;
 }
 
 /**
@@ -86,9 +73,8 @@ function formatPathLink(filePath: string): string {
 }
 
 export function shouldOfferTerminalSetup(): boolean {
-  // iTerm2, WezTerm, Ghostty, Kitty, and Warp natively support CSI u / Kitty
-  // keyboard protocol, which Claude Code already parses. No setup needed for
-  // these terminals.
+  // Native CSI-u terminals are listed in nativeCsiu.ts. This only returns true
+  // for terminals that still need a keybinding installed.
   return (
     (platform() === 'darwin' && env.terminal === 'Apple_Terminal') ||
     env.terminal === 'vscode' ||
@@ -204,7 +190,7 @@ ${platformTerminals}   • IDE: VSCode, Cursor, Windsurf, Zed
    • Other: Alacritty
 3. Return to tmux/screen - settings will persist
 
-${chalk.dim('Note: iTerm2, WezTerm, Ghostty, Kitty, and Warp support Shift+Enter natively.')}`;
+${chalk.dim('Note: iTerm2, WezTerm, Ghostty, Kitty, Warp, and Windows Terminal support Shift+Enter natively.')}`;
     onDone(message);
     return null;
   }

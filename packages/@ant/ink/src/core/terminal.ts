@@ -158,39 +158,35 @@ const EXTENDED_KEYS_TERMINALS = [
   'ghostty',
   'tmux',
   'windows-terminal',
+  'WarpTerminal',
 ]
 
 /** True if this terminal correctly handles extended key reporting
  *  (Kitty keyboard protocol + xterm modifyOtherKeys). */
 export function supportsExtendedKeys(): boolean {
-  // Check TERM_PROGRAM first (macOS/Windows terminals)
-  if (EXTENDED_KEYS_TERMINALS.includes(process.env.TERM_PROGRAM ?? '')) {
+  const termProgram = process.env.TERM_PROGRAM ?? ''
+  if (EXTENDED_KEYS_TERMINALS.includes(termProgram)) {
     return true
   }
 
-  // On Linux, many terminals support extended keys but don't set TERM_PROGRAM.
-  // Check for common Linux terminals via TERM and other environment variables.
-  if (process.platform === 'linux') {
-    const term = process.env.TERM ?? ''
-    const termProgram = process.env.TERM_PROGRAM ?? ''
-
-    // Modern terminals that support kitty protocol or modifyOtherKeys
-    if (
-      term.includes('kitty') ||
-      term.includes('xterm-256color') ||
-      term.includes('xterm') ||
-      term.includes('alacritty') ||
-      term.includes('tmux') ||
-      termProgram.includes('alacritty') ||
-      termProgram.includes('konsole') ||
-      process.env.ALACRITTY_SOCKET ||
-      process.env.KONSOLE_VERSION
-    ) {
-      return true
-    }
-  }
-
-  return false
+  // Linux (and some SSH sessions) omit TERM_PROGRAM. Identify by TERM or a
+  // terminal-specific env var — never by generic "xterm" / "xterm-256color",
+  // which re-opens #23350 on gnome-terminal and VS Code's xterm.js.
+  const term = process.env.TERM ?? ''
+  return (
+    term.includes('kitty') ||
+    term.includes('ghostty') ||
+    !!process.env.KITTY_WINDOW_ID ||
+    !!process.env.GHOSTTY_RESOURCES_DIR ||
+    !!process.env.WEZTERM_EXECUTABLE ||
+    !!process.env.WEZTERM_UNIX_SOCKET ||
+    !!process.env.WARP_IS_LOCAL_SHELL_SESSION ||
+    !!process.env.ALACRITTY_SOCKET ||
+    !!process.env.ALACRITTY_LOG ||
+    !!process.env.KONSOLE_VERSION ||
+    // TMUX only when TERM_PROGRAM is unset: tmux-inside-vscode must stay off.
+    (!termProgram && !!process.env.TMUX)
+  )
 }
 
 /** True if the terminal scrolls the viewport when it receives cursor-up
