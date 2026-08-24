@@ -44,7 +44,7 @@ bun run build
 # Build with Vite (alternative build pipeline)
 bun run build:vite
 
-# Compile to standalone executable (cross-platform)
+# Compile to standalone executable (cross-platform); also stages matching vendored rg
 bun run compile                    # compile for current host platform
 bun run compile:darwin-arm64       # compile for macOS ARM64
 bun run compile:windows-x64        # compile for Windows x64

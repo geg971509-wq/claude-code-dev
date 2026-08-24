@@ -36,7 +36,7 @@ function vendoredRgBinaryPath(rgRoot: string): string {
 
 /**
  * Candidate vendor roots for the bundled rg binary.
- * Standalone `dist/ccb` resolves next to the executable (build.sh places it there).
+ * Standalone `dist/ccb` resolves next to the executable (compile.ts stages it there).
  * JS/dev layouts still use distRoot/vendor (or project vendor via distRoot).
  */
 function vendoredRgRoots(): string[] {
