@@ -66,6 +66,12 @@ const getTeamDeleteTool = () =>
 const getSendMessageTool = () =>
   require('src/tools/SendMessageTool/SendMessageTool.js')
     .SendMessageTool as typeof import('src/tools/SendMessageTool/SendMessageTool.js').SendMessageTool
+const getListAgentsTool = () =>
+  require('src/tools/ListAgentsTool/ListAgentsTool.js')
+    .ListAgentsTool as typeof import('src/tools/ListAgentsTool/ListAgentsTool.js').ListAgentsTool
+const getSendFileTool = () =>
+  require('src/tools/SendFileTool/SendFileTool.js')
+    .SendFileTool as typeof import('src/tools/SendFileTool/SendFileTool.js').SendFileTool
 import { AskUserQuestionTool } from 'src/tools/AskUserQuestionTool/AskUserQuestionTool.js'
 import { LSPTool } from 'src/tools/LSPTool/LSPTool.js'
 import { ListMcpResourcesTool } from 'src/tools/ListMcpResourcesTool/ListMcpResourcesTool.js'
@@ -224,7 +230,9 @@ export function getAllBaseTools(): Tools {
     ...(TerminalCaptureTool ? [TerminalCaptureTool] : []),
     ...(isEnvTruthy(process.env.ENABLE_LSP_TOOL) ? [LSPTool] : []),
     ...(isWorktreeModeEnabled() ? [EnterWorktreeTool, ExitWorktreeTool] : []),
+    getListAgentsTool(),
     getSendMessageTool(),
+    getSendFileTool(),
     getTeamCreateTool(),
     getTeamDeleteTool(),
     ...(VerifyPlanExecutionTool ? [VerifyPlanExecutionTool] : []),

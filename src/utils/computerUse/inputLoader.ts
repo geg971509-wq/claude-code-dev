@@ -6,9 +6,8 @@ import type {
 let cached: ComputerUseInputAPI | undefined
 
 /**
- * Package's js/index.js reads COMPUTER_USE_INPUT_NODE_PATH (baked by
- * build-with-plugins.ts on darwin targets, unset otherwise — falls through to
- * the node_modules prebuilds/ path).
+ * The package loads its vendored native addon first and accepts
+ * COMPUTER_USE_INPUT_NODE_PATH as a development override.
  *
  * The package exports a discriminated union on `isSupported` — narrowed here
  * once so callers get the bare `ComputerUseInputAPI` without re-checking.

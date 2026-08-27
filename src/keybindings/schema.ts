@@ -5,58 +5,12 @@
 
 import { z } from 'zod/v4'
 import { lazySchema } from '../utils/lazySchema.js'
+import { KEYBINDING_CONTEXTS } from './contexts.js'
 
-/**
- * Valid context names where keybindings can be applied.
- */
-export const KEYBINDING_CONTEXTS = [
-  'Global',
-  'Chat',
-  'Autocomplete',
-  'Confirmation',
-  'Help',
-  'Transcript',
-  'HistorySearch',
-  'Task',
-  'ThemePicker',
-  'Settings',
-  'Tabs',
-  // New contexts for keybindings migration
-  'Attachments',
-  'Footer',
-  'MessageSelector',
-  'DiffDialog',
-  'ModelPicker',
-  'Select',
-  'Plugin',
-] as const
-
-/**
- * Human-readable descriptions for each keybinding context.
- */
-export const KEYBINDING_CONTEXT_DESCRIPTIONS: Record<
-  (typeof KEYBINDING_CONTEXTS)[number],
-  string
-> = {
-  Global: 'Active everywhere, regardless of focus',
-  Chat: 'When the chat input is focused',
-  Autocomplete: 'When autocomplete menu is visible',
-  Confirmation: 'When a confirmation/permission dialog is shown',
-  Help: 'When the help overlay is open',
-  Transcript: 'When viewing the transcript',
-  HistorySearch: 'When searching command history (ctrl+r)',
-  Task: 'When a task/agent is running in the foreground',
-  ThemePicker: 'When the theme picker is open',
-  Settings: 'When the settings menu is open',
-  Tabs: 'When tab navigation is active',
-  Attachments: 'When navigating image attachments in a select dialog',
-  Footer: 'When footer indicators are focused',
-  MessageSelector: 'When the message selector (rewind) is open',
-  DiffDialog: 'When the diff dialog is open',
-  ModelPicker: 'When the model picker is open',
-  Select: 'When a select/list component is focused',
-  Plugin: 'When the plugin dialog is open',
-}
+export {
+  KEYBINDING_CONTEXT_DESCRIPTIONS,
+  KEYBINDING_CONTEXTS,
+} from './contexts.js'
 
 /**
  * All valid keybinding action identifiers.
@@ -123,6 +77,18 @@ export const KEYBINDING_ACTIONS = [
   'theme:toggleSyntaxHighlighting',
   // Help menu actions
   'help:dismiss',
+  // Scroll and terminal selection actions
+  'scroll:pageUp',
+  'scroll:pageDown',
+  'scroll:lineUp',
+  'scroll:lineDown',
+  'scroll:halfPageUp',
+  'scroll:halfPageDown',
+  'scroll:fullPageUp',
+  'scroll:fullPageDown',
+  'scroll:top',
+  'scroll:bottom',
+  'selection:copy',
   // Attachment navigation (select dialog image attachments)
   'attachments:next',
   'attachments:previous',
@@ -142,6 +108,18 @@ export const KEYBINDING_ACTIONS = [
   'messageSelector:top',
   'messageSelector:bottom',
   'messageSelector:select',
+  // Message actions
+  'messageActions:prev',
+  'messageActions:next',
+  'messageActions:prevUser',
+  'messageActions:nextUser',
+  'messageActions:top',
+  'messageActions:bottom',
+  'messageActions:escape',
+  'messageActions:ctrlc',
+  'messageActions:enter',
+  'messageActions:c',
+  'messageActions:p',
   // Diff dialog actions
   'diff:dismiss',
   'diff:previousSource',

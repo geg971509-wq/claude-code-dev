@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'bun:test'
 import { toClientPayload } from '../transport/client-payload'
 import type { SessionEvent } from '../transport/event-bus'
+import { normalizePayload } from '../services/transport'
 
 function makeEvent(
   overrides: Partial<SessionEvent> & Pick<SessionEvent, 'type' | 'sessionId'>,
@@ -44,14 +45,48 @@ describe('toClientPayload — user message', () => {
     expect(result.session_id).toBe('sess-2')
   })
 
-  test('falls back to message field when content is missing', () => {
+  test('uses normalized message.content when direct content is missing', () => {
     const event = makeEvent({
       type: 'user',
       sessionId: 'sess-3',
-      payload: { message: 'fallback msg' },
+      payload: { message: { role: 'user', content: 'fallback msg' } },
     })
     const result = toClientPayload(event)
     expect((result as any).message.content).toBe('fallback msg')
+  })
+
+  test('prefers raw message content and preserves multimodal arrays exactly', () => {
+    const content = [
+      { type: 'text', text: 'look' },
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: 'abc' },
+      },
+    ]
+    const event = makeEvent({
+      type: 'user',
+      sessionId: 'sess-multimodal',
+      payload: {
+        raw: { message: { role: 'user', content } },
+        message: { role: 'user', content: 'normalized message' },
+        content: 'flattened text',
+      },
+    })
+
+    const result = toClientPayload(event)
+
+    expect((result as any).message.content).toBe(content)
+  })
+
+  test('preserves object content from normalized message', () => {
+    const content = { type: 'text', text: 'object content' }
+    const event = makeEvent({
+      type: 'user',
+      sessionId: 'sess-object',
+      payload: { message: { role: 'user', content } },
+    })
+
+    expect((toClientPayload(event) as any).message.content).toBe(content)
   })
 
   test('falls back to empty string when both content and message missing', () => {
@@ -192,6 +227,59 @@ describe('toClientPayload — permission response', () => {
     })
     const result = toClientPayload(event)
     expect((result as any).response.response.updatedPermissions).toEqual(perms)
+  })
+
+  test('preserves plan response fields through normalize and client conversion', () => {
+    const updatedInput = { plan: 'approved' }
+    const updatedPermissions = [
+      { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+    ]
+    const payload = normalizePayload('permission_response', {
+      approved: true,
+      request_id: 'plan-1',
+      updated_input: updatedInput,
+      updated_permissions: updatedPermissions,
+    })
+    const result = toClientPayload(
+      makeEvent({
+        type: 'permission_response',
+        sessionId: 'sess-plan',
+        payload,
+      }),
+    )
+    expect((result as any).response).toMatchObject({
+      request_id: 'plan-1',
+      response: {
+        behavior: 'allow',
+        updatedInput,
+        updatedPermissions,
+      },
+    })
+  })
+
+  test('preserves denial feedback and existing responses through normalize', () => {
+    const denied = toClientPayload(
+      makeEvent({
+        type: 'permission_response',
+        sessionId: 'sess-denied',
+        payload: normalizePayload('permission_response', {
+          approved: false,
+          request_id: 'req-denied',
+          message: 'Please revise the plan',
+        }),
+      }),
+    )
+    expect((denied as any).response.message).toBe('Please revise the plan')
+
+    const response = { subtype: 'success', request_id: 'req-existing' }
+    const existing = toClientPayload(
+      makeEvent({
+        type: 'control_response',
+        sessionId: 'sess-existing',
+        payload: normalizePayload('control_response', { response }),
+      }),
+    )
+    expect((existing as any).response).toEqual(response)
   })
 })
 

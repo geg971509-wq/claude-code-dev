@@ -37,7 +37,6 @@ import {
   getSessionMemoryDir,
   getSessionMemoryPath,
 } from '../../utils/permissions/filesystem.js'
-import { sequential } from '../../utils/sequential.js'
 import { asSystemPrompt } from '../../utils/systemPromptType.js'
 import { getTokenUsage, tokenCountWithEstimation } from '../../utils/tokens.js'
 import { logEvent } from '../analytics/index.js'
@@ -270,7 +269,7 @@ const initSessionMemoryConfigIfNeeded = memoize((): void => {
 // Track if we've logged the gate check failure this session (to avoid spam)
 let hasLoggedGateFailure = false
 
-const extractSessionMemory = sequential(async function (
+const extractSessionMemory = async function (
   context: REPLHookContext,
 ): Promise<void> {
   const { messages, toolUseContext, querySource } = context
@@ -304,57 +303,59 @@ const extractSessionMemory = sequential(async function (
     return
   }
 
-  markExtractionStarted()
+  if (!markExtractionStarted()) return
 
-  // Create isolated context for setup to avoid polluting parent's cache
-  const setupContext = createSubagentContext(toolUseContext)
+  try {
+    // Create isolated context for setup to avoid polluting parent's cache
+    const setupContext = createSubagentContext(toolUseContext)
 
-  // Set up file system and read current state with isolated context
-  const { memoryPath, currentMemory } =
-    await setupSessionMemoryFile(setupContext)
+    // Set up file system and read current state with isolated context
+    const { memoryPath, currentMemory } =
+      await setupSessionMemoryFile(setupContext)
 
-  // Create extraction message
-  const userPrompt = await buildSessionMemoryUpdatePrompt(
-    currentMemory,
-    memoryPath,
-  )
+    // Create extraction message
+    const userPrompt = await buildSessionMemoryUpdatePrompt(
+      currentMemory,
+      memoryPath,
+    )
 
-  // Run session memory extraction using runForkedAgent for prompt caching
-  // runForkedAgent creates an isolated context to prevent mutation of parent state
-  // Pass setupContext.readFileState so the forked agent can edit the memory file
-  await runForkedAgent({
-    promptMessages: [createUserMessage({ content: userPrompt })],
-    cacheSafeParams: createCacheSafeParams(context),
-    canUseTool: createMemoryFileCanUseTool(memoryPath),
-    querySource: 'session_memory',
-    forkLabel: 'session_memory',
-    overrides: { readFileState: setupContext.readFileState },
-  })
+    // Run session memory extraction using runForkedAgent for prompt caching
+    // runForkedAgent creates an isolated context to prevent mutation of parent state
+    // Pass setupContext.readFileState so the forked agent can edit the memory file
+    await runForkedAgent({
+      promptMessages: [createUserMessage({ content: userPrompt })],
+      cacheSafeParams: createCacheSafeParams(context),
+      canUseTool: createMemoryFileCanUseTool(memoryPath),
+      querySource: 'session_memory',
+      forkLabel: 'session_memory',
+      overrides: { readFileState: setupContext.readFileState },
+    })
 
-  // Log extraction event for tracking frequency
-  // Use the token usage from the last message in the conversation
-  const lastMessage = messages[messages.length - 1]
-  const usage = lastMessage ? getTokenUsage(lastMessage) : undefined
-  const config = getSessionMemoryConfig()
-  logEvent('tengu_session_memory_extraction', {
-    input_tokens: usage?.input_tokens,
-    output_tokens: usage?.output_tokens,
-    cache_read_input_tokens: usage?.cache_read_input_tokens ?? undefined,
-    cache_creation_input_tokens:
-      usage?.cache_creation_input_tokens ?? undefined,
-    config_min_message_tokens_to_init: config.minimumMessageTokensToInit,
-    config_min_tokens_between_update: config.minimumTokensBetweenUpdate,
-    config_tool_calls_between_updates: config.toolCallsBetweenUpdates,
-  })
+    // Log extraction event for tracking frequency
+    // Use the token usage from the last message in the conversation
+    const lastMessage = messages[messages.length - 1]
+    const usage = lastMessage ? getTokenUsage(lastMessage) : undefined
+    const config = getSessionMemoryConfig()
+    logEvent('tengu_session_memory_extraction', {
+      input_tokens: usage?.input_tokens,
+      output_tokens: usage?.output_tokens,
+      cache_read_input_tokens: usage?.cache_read_input_tokens ?? undefined,
+      cache_creation_input_tokens:
+        usage?.cache_creation_input_tokens ?? undefined,
+      config_min_message_tokens_to_init: config.minimumMessageTokensToInit,
+      config_min_tokens_between_update: config.minimumTokensBetweenUpdate,
+      config_tool_calls_between_updates: config.toolCallsBetweenUpdates,
+    })
 
-  // Record the context size at extraction for tracking minimumTokensBetweenUpdate
-  recordExtractionTokenCount(tokenCountWithEstimation(messages))
+    // Record the context size at extraction for tracking minimumTokensBetweenUpdate
+    recordExtractionTokenCount(tokenCountWithEstimation(messages))
 
-  // Update lastSummarizedMessageId after successful completion
-  updateLastSummarizedMessageIdIfSafe(messages)
-
-  markExtractionCompleted()
-})
+    // Update lastSummarizedMessageId after successful completion
+    updateLastSummarizedMessageIdIfSafe(messages)
+  } finally {
+    markExtractionCompleted()
+  }
+}
 
 /**
  * Initialize session memory by registering the post-sampling hook.
@@ -398,7 +399,12 @@ export async function manuallyExtractSessionMemory(
   if (messages.length === 0) {
     return { success: false, error: 'No messages to summarize' }
   }
-  markExtractionStarted()
+  if (!markExtractionStarted()) {
+    return {
+      success: false,
+      error: 'Session memory extraction already in progress',
+    }
+  }
 
   try {
     // Create isolated context for setup to avoid polluting parent's cache
@@ -432,6 +438,7 @@ export async function manuallyExtractSessionMemory(
         systemContext,
         toolUseContext: setupContext,
         forkContextMessages: messages,
+        effectiveContextWindow: toolUseContext.effectiveContextWindow,
       },
       canUseTool: createMemoryFileCanUseTool(memoryPath),
       querySource: 'session_memory',

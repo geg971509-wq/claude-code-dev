@@ -30,6 +30,7 @@
 import { logForDebugging } from './debug.js'
 import { isEnvTruthy } from './envUtils.js'
 import { formatMs, formatTimelineLine, getPerformance } from './profilerBase.js'
+import { memoryDebugEvent } from './memoryDebug.js'
 
 // Module-level state - initialized once when the module loads
 const ENABLED = isEnvTruthy(process.env.CLAUDE_CODE_PROFILE_QUERY)
@@ -65,7 +66,11 @@ export function startQueryProfile(): void {
 /**
  * Record a checkpoint with the given name
  */
-export function queryCheckpoint(name: string): void {
+export function queryCheckpoint(
+  name: string,
+  fields?: Record<string, unknown>,
+): void {
+  memoryDebugEvent('query_checkpoint', { checkpoint: name, ...fields })
   if (!ENABLED) return
 
   const perf = getPerformance()

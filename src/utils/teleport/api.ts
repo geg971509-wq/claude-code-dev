@@ -3,15 +3,19 @@ import { randomUUID } from 'crypto'
 import { getOauthConfig } from 'src/constants/oauth.js'
 import { getOrganizationUUID } from 'src/services/oauth/client.js'
 import z from 'zod/v4'
-import { getClaudeAIOAuthTokens } from '../auth.js'
+import { getClaudeAIOAuthTokens, handleOAuth401Error } from '../auth.js'
+import { getTrustedDeviceToken } from '../../bridge/trustedDevice.js'
 import { getGlobalConfig } from '../config.js'
 import { logForDebugging } from '../debug.js'
 import { parseGitHubRepository } from '../detectRepository.js'
 import { errorMessage, toError } from '../errors.js'
 import { lazySchema } from '../lazySchema.js'
 import { logError } from '../log.js'
+import { paginateSessionResources } from '../sessionResourcePagination.js'
 import { sleep } from '../sleep.js'
 import { jsonStringify } from '../slowOperations.js'
+import { getClaudeCodeUserAgent } from '../userAgent.js'
+import { postRemoteUserEvent } from '../remoteSessionEvents.js'
 
 // Retry configuration for teleport API requests
 const TELEPORT_RETRY_DELAYS = [2000, 4000, 8000, 16000] // 4 retries with exponential backoff
@@ -134,6 +138,8 @@ export type SessionResource = {
   created_at: string
   updated_at: string
   session_context: SessionContext
+  environment_kind?: 'bridge' | 'anthropic_cloud' | 'byoc' | 'snap'
+  connection_status?: 'connected' | 'disconnected'
 }
 
 export type ListSessionsResponse = {
@@ -169,6 +175,10 @@ export const CodeSessionSchema = lazySchema(() =>
     turns: z.array(z.string()),
     created_at: z.string(),
     updated_at: z.string(),
+    environment_kind: z
+      .enum(['bridge', 'anthropic_cloud', 'byoc', 'snap'])
+      .optional(),
+    connection_status: z.enum(['connected', 'disconnected']).optional(),
   }),
 )
 
@@ -275,36 +285,64 @@ export async function prepareApiRequest(): Promise<{
   return { accessToken, orgUUID }
 }
 
-/**
- * Fetches code sessions from the new Sessions API (/v1/sessions)
- * @returns Array of code sessions
- */
+let sessionResourcesInFlight: Promise<SessionResource[]> | undefined
+
+export function isCloudSessionEnvironment(
+  environmentKind: SessionResource['environment_kind'],
+): boolean {
+  return environmentKind !== undefined && environmentKind !== 'bridge'
+}
+
+export async function fetchSessionResourcesFromSessionsAPI(): Promise<
+  SessionResource[]
+> {
+  if (sessionResourcesInFlight) return sessionResourcesInFlight
+  const operation = fetchSessionResourcesOnce()
+  sessionResourcesInFlight = operation
+  try {
+    return await operation
+  } finally {
+    if (sessionResourcesInFlight === operation) {
+      sessionResourcesInFlight = undefined
+    }
+  }
+}
+
+async function fetchSessionResourcesOnce(): Promise<SessionResource[]> {
+  const { accessToken, orgUUID } = await prepareApiRequest()
+  const url = `${getOauthConfig().BASE_API_URL}/v1/sessions`
+  const headers: Record<string, string> = {
+    ...getOAuthHeaders(accessToken),
+    'anthropic-beta': CCR_BYOC_BETA,
+    'x-organization-uuid': orgUUID,
+    'User-Agent': getClaudeCodeUserAgent(),
+  }
+  const trustedDeviceToken = getTrustedDeviceToken()
+  if (trustedDeviceToken) {
+    headers['X-Trusted-Device-Token'] = trustedDeviceToken
+  }
+  const result = await paginateSessionResources<SessionResource>({
+    url,
+    headers,
+    request: (requestUrl, config) => axios.get(requestUrl, config),
+  })
+  if (result.truncated) {
+    logForDebugging(
+      '[sessions:list] Page budget exhausted while more sessions remained',
+      { level: 'warn' },
+    )
+  }
+  return result.rows
+}
+
+/** Fetch all current web sessions and map them to the legacy CodeSession view. */
 export async function fetchCodeSessionsFromSessionsAPI(): Promise<
   CodeSession[]
 > {
-  const { accessToken, orgUUID } = await prepareApiRequest()
-
-  const url = `${getOauthConfig().BASE_API_URL}/v1/sessions`
-
   try {
-    const headers = {
-      ...getOAuthHeaders(accessToken),
-      'anthropic-beta': 'ccr-byoc-2025-07-29',
-      'x-organization-uuid': orgUUID,
-    }
-
-    const response = await axiosGetWithRetry<ListSessionsResponse>(url, {
-      headers,
-    })
-
-    if (response.status !== 200) {
-      throw new Error(`Failed to fetch code sessions: ${response.statusText}`)
-    }
-
-    // Transform SessionResource[] to CodeSession[] format
-    const sessions: CodeSession[] = response.data.data.map(session => {
+    return (await fetchSessionResourcesFromSessionsAPI()).map(session => {
       // Extract repository info from git sources
-      const gitSource = session.session_context.sources.find(
+      const gitSource = session.session_context?.sources?.find(
         (source): source is GitSource => source.type === 'git_repository',
       )
 
@@ -335,10 +373,10 @@ export async function fetchCodeSessionsFromSessionsAPI(): Promise<
         turns: [], // SessionResource doesn't have turns field
         created_at: session.created_at,
         updated_at: session.updated_at,
+        environment_kind: session.environment_kind,
+        connection_status: session.connection_status,
       }
     })
-
-    return sessions
   } catch (error) {
     const err = toError(error)
     logError(err)
@@ -439,59 +477,38 @@ export type RemoteMessageContent =
 export async function sendEventToRemoteSession(
   sessionId: string,
   messageContent: RemoteMessageContent,
-  opts?: { uuid?: string },
+  opts?: {
+    uuid?: string
+    fileAttachments?: import('../remoteSessionEvents.js').RemoteFileAttachment[]
+  },
 ): Promise<boolean> {
-  try {
-    const { accessToken, orgUUID } = await prepareApiRequest()
-
-    const url = `${getOauthConfig().BASE_API_URL}/v1/sessions/${sessionId}/events`
-    const headers = {
-      ...getOAuthHeaders(accessToken),
-      'anthropic-beta': 'ccr-byoc-2025-07-29',
-      'x-organization-uuid': orgUUID,
-    }
-
-    const userEvent = {
-      uuid: opts?.uuid ?? randomUUID(),
-      session_id: sessionId,
-      type: 'user',
-      parent_tool_use_id: null,
-      message: {
-        role: 'user',
-        content: messageContent,
+  const result = await postRemoteUserEvent(
+    {
+      baseUrl: getOauthConfig().BASE_API_URL,
+      sessionId,
+      content: messageContent,
+      msgId: opts?.uuid ?? randomUUID(),
+      fileAttachments: opts?.fileAttachments,
+    },
+    {
+      getAuth: async () => {
+        const { accessToken, orgUUID } = await prepareApiRequest()
+        return {
+          accessToken,
+          organizationId: orgUUID,
+          trustedDeviceToken: getTrustedDeviceToken(),
+        }
       },
-    }
-
-    const requestBody = {
-      events: [userEvent],
-    }
-
+      refreshAuth: handleOAuth401Error,
+      post: (url, body, config) => axios.post(url, body, config),
+    },
+  )
+  if (!result.ok) {
     logForDebugging(
-      `[sendEventToRemoteSession] Sending event to session ${sessionId}`,
+      `[sendEventToRemoteSession] ${result.errorCode}: ${result.error}`,
     )
-    // The endpoint may block until the CCR worker is ready. Observed ~2.6s
-    // in normal cases; allow a generous margin for cold-start containers.
-    const response = await axios.post(url, requestBody, {
-      headers,
-      validateStatus: status => status < 500,
-      timeout: 30000,
-    })
-
-    if (response.status === 200 || response.status === 201) {
-      logForDebugging(
-        `[sendEventToRemoteSession] Successfully sent event to session ${sessionId}`,
-      )
-      return true
-    }
-
-    logForDebugging(
-      `[sendEventToRemoteSession] Failed with status ${response.status}: ${jsonStringify(response.data)}`,
-    )
-    return false
-  } catch (error) {
-    logForDebugging(`[sendEventToRemoteSession] Error: ${errorMessage(error)}`)
-    return false
   }
+  return result.ok
 }
 
 /**

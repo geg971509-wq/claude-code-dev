@@ -5,6 +5,7 @@
 import { feature } from 'bun:bundle'
 import {
   clearInvokedSkills,
+  getSessionId,
   setLastEmittedDate,
 } from '../../bootstrap/state.js'
 import { clearCommandsCache } from '../../commands.js'
@@ -21,6 +22,7 @@ import { clearAllDumpState } from '../../services/api/dumpPrompts.js'
 import { resetPromptCacheBreakDetection } from '../../services/api/promptCacheBreakDetection.js'
 import { clearAllSessions } from '../../services/api/sessionIngress.js'
 import { runPostCompactCleanup } from '../../services/compact/postCompactCleanup.js'
+import { discardPrecomputedCompactForSession } from '../../services/compact/precomputedCompact.js'
 import { resetAllLSPDiagnosticState } from '../../services/lsp/LSPDiagnosticRegistry.js'
 import { clearTrackedMagicDocs } from '../../services/MagicDocs/magicDocs.js'
 import { clearDynamicSkills } from '../../skills/loadSkillsDir.js'
@@ -72,6 +74,7 @@ export function clearSessionCaches(
   // classifier approvals, speculative checks, and — for main-thread compacts — memory
   // files cache with load_reason 'compact').
   runPostCompactCleanup()
+  void discardPrecomputedCompactForSession(getSessionId())
   // Reset sent skill names so the skill listing is re-sent after /clear.
   // runPostCompactCleanup intentionally does NOT reset this (post-compact
   // re-injection costs ~4K tokens), but /clear wipes messages entirely so

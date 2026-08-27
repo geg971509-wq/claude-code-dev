@@ -3,6 +3,8 @@ export interface DisplayGeometry {
   height: number
   scaleFactor: number
   displayId: number
+  originX: number
+  originY: number
   label?: string
   isPrimary?: boolean
 }
@@ -33,12 +35,21 @@ export interface ScreenshotResult {
   base64: string
   width: number
   height: number
+  displayWidth?: number
+  displayHeight?: number
+  originX?: number
+  originY?: number
+  displayId?: number
 }
 
 export interface ResolvePrepareCaptureResult {
   base64: string
-  width: number
-  height: number
+  width?: number
+  height?: number
+  displayWidth?: number
+  displayHeight?: number
+  originX?: number
+  originY?: number
   captureError?: string
   displayId?: number
   hidden?: string[]
@@ -89,11 +100,33 @@ export interface ScreenshotAPI {
     quality: number,
     displayId?: number,
   ): Promise<ScreenshotResult>
-  captureWindowTarget(titleOrHwnd: string | number): ScreenshotResult | null
+  captureWindowTarget?(titleOrHwnd: string | number): ScreenshotResult | null
 }
 
 export interface SwiftBackend {
   display: DisplayAPI
   apps: AppsAPI
   screenshot: ScreenshotAPI
+  resolvePrepareCapture(
+    allowedBundleIds: string[],
+    surrogateHost: string,
+    quality: number,
+    targetW: number,
+    targetH: number,
+    displayId: number | undefined,
+    autoResolve: boolean,
+    doHide?: boolean,
+  ): Promise<ResolvePrepareCaptureResult>
+  hotkey?: {
+    registerEscape(onEscape: () => void): boolean
+    unregister(): void
+    notifyExpectedEscape(): void
+  }
+  tcc?: {
+    checkAccessibility(): boolean
+    requestAccessibility(): void
+    checkScreenRecording(): boolean
+    requestScreenRecording(): void
+  }
+  _drainMainRunLoop?(): void
 }

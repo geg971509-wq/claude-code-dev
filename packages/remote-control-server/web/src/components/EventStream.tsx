@@ -998,7 +998,8 @@ export function useEventProcessor() {
           return;
         }
         const rawMsg = payload.message;
-        const msg = (typeof rawMsg === 'string' ? rawMsg : '') || payload.content || '';
+        const msg =
+          (typeof rawMsg === 'string' ? rawMsg : '') || (typeof payload.content === 'string' ? payload.content : '');
         if (/connecting|waiting|initializing|Remote Control/i.test(msg)) return;
         if (!msg.trim()) return;
         setMessages(prev => [...prev, { kind: 'system', content: msg }]);
@@ -1010,7 +1011,11 @@ export function useEventProcessor() {
           ...prev,
           {
             kind: 'system',
-            content: `Error: ${(typeof payload.message === 'string' ? payload.message : '') || payload.content || 'Unknown error'}`,
+            content: `Error: ${
+              (typeof payload.message === 'string' ? payload.message : '') ||
+              (typeof payload.content === 'string' ? payload.content : '') ||
+              'Unknown error'
+            }`,
           },
         ]);
         break;

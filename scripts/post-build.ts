@@ -13,6 +13,7 @@ import {
   CLI_BUN_WRAPPER_SOURCE,
   CLI_NODE_WRAPPER_SOURCE,
 } from './cli-entry-wrappers.ts'
+import { stageRipgrep } from './ripgrep-sidecar.ts'
 
 const outdir = 'dist'
 
@@ -68,9 +69,11 @@ async function postBuild() {
   } as never)
   console.log(`Copied vendor/audio-capture/ → ${audioCaptureDir}/`)
 
-  const ripgrepDir = join(outdir, 'vendor', 'ripgrep')
-  await cp('src/utils/vendor/ripgrep', ripgrepDir, { recursive: true } as never)
-  console.log(`Copied src/utils/vendor/ripgrep/ → ${ripgrepDir}/`)
+  const computerUseDir = join(outdir, 'vendor', 'computer-use')
+  await cp('vendor/computer-use', computerUseDir, { recursive: true } as never)
+  console.log(`Copied vendor/computer-use/ → ${computerUseDir}/`)
+
+  stageRipgrep({ outdir, allKnown: true })
 
   // Step 3: Generate dual entry points — wrapper sources shared with build.ts
   // via scripts/cli-entry-wrappers.ts (single source of truth, no drift).

@@ -5,7 +5,7 @@ describe('selectEngine', () => {
     const { selectEngine } = await import('../engines/index.js')
     const engine = await selectEngine()
     expect(engine.name).toBeDefined()
-    expect(['tmux', 'detached']).toContain(engine.name)
+    expect(['tmux', 'detached', 'pty']).toContain(engine.name)
     expect(typeof engine.available).toBe('function')
     expect(typeof engine.start).toBe('function')
     expect(typeof engine.attach).toBe('function')
@@ -20,7 +20,7 @@ describe('selectEngine', () => {
 })
 
 describe('SessionEntry type', () => {
-  test('engine field accepts tmux or detached', async () => {
+  test('engine field accepts tmux, detached, or pty', async () => {
     // Verify the module loads and exports the expected interface shape
     const mod = await import('../engine.js')
     expect(mod).toBeDefined()

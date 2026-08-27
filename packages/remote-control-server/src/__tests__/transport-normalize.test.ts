@@ -112,6 +112,27 @@ describe('normalizePayload — field preservation', () => {
     expect(result.subtype).toBe('progress')
   })
 
+  test('preserves result error metadata', () => {
+    const errors = ['tool failed']
+    const result = normalizePayload('result', {
+      subtype: 'error_during_execution',
+      is_error: true,
+      errors,
+    })
+    expect(result).toMatchObject({
+      subtype: 'error_during_execution',
+      is_error: true,
+      errors,
+    })
+  })
+
+  test('preserves result detail as a direct normalized field', () => {
+    const detail = { message: 'Maximum turns reached', turns: 25 }
+    expect(normalizePayload('result', { result: detail }).result).toEqual(
+      detail,
+    )
+  })
+
   test('preserves tool_name from tool_name field', () => {
     const result = normalizePayload('tool', { tool_name: 'bash' })
     expect(result.tool_name).toBe('bash')

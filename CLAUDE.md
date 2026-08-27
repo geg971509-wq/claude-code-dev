@@ -50,6 +50,10 @@ bun run compile:darwin-arm64       # compile for macOS ARM64
 bun run compile:windows-x64        # compile for Windows x64
 bun run compile:linux-x64          # compile for Linux x64
 
+# macOS release package (universal PKG inside DMG)
+bun run release:macos -- --local      # ad-hoc signed local verification package
+bun run release:macos -- --notarize   # Developer ID sign + notarize + staple
+
 # Test
 bun test                                    # run all tests
 bun test src/utils/__tests__/hash.test.ts   # run single file
@@ -86,13 +90,14 @@ bun run docs:dev
 ### Runtime & Build
 
 - **Runtime**: Bun (not Node.js). All imports, builds, and execution use Bun APIs.
-- **Build**: `build.ts` 执行 `Bun.build()` with `splitting: true`，入口 `src/entrypoints/cli.tsx`，输出 `dist/cli.js` + chunk files。Build 默认启用 19 个 feature（见下方 Feature Flag 段）。构建后自动替换 `import.meta.require` 为 Node.js 兼容版本（产物 bun/node 都可运行）。构建时会将 `vendor/audio-capture/` 和 `src/utils/vendor/ripgrep/` 复制到 `dist/vendor/` 下。
-- **Build (Vite)**: `vite.config.ts` + `scripts/post-build.ts`，代码分割模式，chunk 输出到 `dist/chunks/`。post-build 遍历 `dist/` 和 `dist/chunks/` 下所有 `.js` 文件做 `globalThis.Bun` 解构 patch，复制 vendor 文件到 `dist/vendor/`。
-- **Vendor 路径解析**: 构建后 chunk 文件位于 `dist/` 或 `dist/chunks/` 下，vendor 二进制在 `dist/vendor/`。`src/utils/distRoot.ts` 提供共享的 `distRoot` 函数，通过 `import.meta.url` 路径中 `lastIndexOf('dist')` 或 `lastIndexOf('src')` 定位根目录。`ripgrep.ts`、`computerUse/setup.ts`、`claudeInChrome/setup.ts`、`updateCCB.ts` 均使用 `distRoot` 而非内联 `import.meta.url` 路径推算。`packages/audio-capture-napi/src/index.ts` 有独立的 `lastIndexOf('dist')` 逻辑，功能等价。
+- **Build**: `build.ts` 执行 `Bun.build()` with `splitting: true`，入口 `src/entrypoints/cli.tsx`，输出 `dist/cli.js` + chunk files。Build 默认启用 `DEFAULT_BUILD_FEATURES`（见 `scripts/defines.ts`，当前 44 个）。构建后自动替换 `import.meta.require` 为 Node.js 兼容版本（产物 bun/node 都可运行）。构建时会将 `vendor/audio-capture/`、`vendor/computer-use/` 复制到 `dist/vendor/` 下；ripgrep 走 `scripts/ripgrep-sidecar.ts` 的 `stageRipgrep({ allKnown: true })`（本地没有就先下，再缺就警告跳过，JS 构建暂存全部已知平台）。
+- **Build (Vite)**: `vite.config.ts` + `scripts/post-build.ts`，代码分割模式，chunk 输出到 `dist/chunks/`。post-build 遍历 `dist/` 和 `dist/chunks/` 下所有 `.js` 文件做 `globalThis.Bun` 解构 patch，复制 audio-capture / computer-use，并用同一套 `stageRipgrep({ allKnown: true })` 暂存 ripgrep。
+- **macOS Release**: `scripts/release-macos.ts` 编译 arm64/x64 standalone 后用 `lipo` 合成 universal CLI，连同两架构 audio-capture、ripgrep 和 universal Computer Use addons 安装到稳定 `/usr/local/lib/claude-code-best`（升级原位覆盖，不累积旧版本目录）；输出 PKG + DMG。`--local` 做 ad-hoc 完整打包验证，`--notarize` 从环境变量读取 Developer ID identity 和 `notarytool` keychain profile，执行 nested-first hardened-runtime 签名、PKG/DMG 公证、staple 与 Gatekeeper 验证。详见 `docs/features/macos-release.md`。
+- **Vendor 路径解析**: 构建后 chunk 文件位于 `dist/` 或 `dist/chunks/` 下，vendor 二进制在 `dist/vendor/`。`src/utils/distRoot.ts` 提供共享的 `distRoot` 函数，通过 `import.meta.url` 路径中 `lastIndexOf('dist')` 或 `lastIndexOf('src')` 定位根目录。`ripgrep.ts`、`computerUse/setup.ts`、`claudeInChrome/setup.ts`、`updateCCB.ts` 均使用 `distRoot` 而非内联 `import.meta.url` 路径推算。`packages/audio-capture-napi/src/index.ts` 与两个 macOS Computer Use package 有各自的 native addon 路径解析；Computer Use 还从 `process.execPath` 相邻的 `vendor/computer-use/` 解析 standalone sidecar。
 - **为什么 Vite 必须代码分割**: Bun/JSC 会全量解析单个大 JS 文件的 bytecode 和 JIT，单文件 17MB 产物导致 RSS 暴涨至 ~1GB（Node/V8 懒解析仅需 ~220MB）。代码分割为 600+ 小 chunk 后 Bun 按需加载，`--version` RSS 从 966MB 降至 35MB，完整加载从 1GB+ 降至 ~500MB。
 - **Dev mode**: `scripts/dev.ts` 通过 Bun `-d` flag 注入 `MACRO.*` defines，并以 `--feature` 启用 `DEFAULT_BUILD_FEATURES`（与 build 同一列表，见 `scripts/defines.ts`），另可用 `FEATURE_<NAME>=1` 追加。裸跑 `bun src/entrypoints/cli.tsx` 不会注入任何 feature（全关）。
 - **Module system**: ESM (`"type": "module"`), TSX with `react-jsx` transform.
-- **Monorepo**: Bun workspaces — 19 个 workspace packages（含 package.json，经 `workspace:*` 解析）+ 若干辅助目录 in `packages/`。
+- **Monorepo**: Bun workspaces — 20 个 workspace packages（含 package.json，经 `workspace:*` 解析）+ 若干辅助目录 in `packages/`。
 - **Lint/Format**: Biome (`biome.json`)。覆盖 `src/`、`scripts/`、`packages/` 全项目（含 `packages/@ant/`）。`bun run lint` / `bun run lint:fix` / `bun run format` / `bun run check` / `bun run check:fix`。42 条规则因 decompiled 代码被关闭，仅保留 `recommended` 基线。
 - **Pre-commit**: husky + lint-staged。提交时自动对暂存文件执行 `biome check --fix`（TS/JS）和 `biome format --write`（JSON）。
 - **CI Lint**: `ci.yml` 在依赖安装后、类型检查前执行 `bunx biome ci .`，lint 或格式化不达标则 CI 失败。
@@ -173,8 +178,8 @@ bun run docs:dev
 |---------|------|
 | `packages/@ant/ink/` | Forked Ink 框架（components、hooks、keybindings、theme） |
 | `packages/@ant/computer-use-mcp/` | Computer Use MCP server（截图/键鼠/剪贴板/应用管理） |
-| `packages/@ant/computer-use-input/` | 键鼠模拟（dispatcher + darwin/win32/linux backend） |
-| `packages/@ant/computer-use-swift/` | 截图 + 应用管理（dispatcher + per-platform backend） |
+| `packages/@ant/computer-use-input/` | macOS 原生键鼠模拟（vendored `.node` 优先、脚本回退）；Windows/Linux 由 `src/utils/computerUse/platforms/` 实现 |
+| `packages/@ant/computer-use-swift/` | macOS 原生截图、显示器与应用管理（vendored `.node` 优先、脚本回退）；Windows/Linux 由 `src/utils/computerUse/platforms/` 实现 |
 | `packages/@ant/claude-for-chrome-mcp/` | Chrome 浏览器控制（通过 `--chrome` 启用） |
 | `packages/@ant/model-provider/` | Model provider 抽象层 |
 | `packages/agent-tools/` | Agent 工具集 |
@@ -189,7 +194,8 @@ bun run docs:dev
 | `packages/url-handler-napi/` | URL scheme 处理（环境变量 + CLI 参数读取） |
 | `packages/wire-types/` | RCS/ACP 稳定 wire 错误码表（`WireErrorCode` + `wireError` 封套），零依赖，被 acp-link 与 remote-control-server 共享 |
 | `packages/workflow-engine/` | 工作流引擎（WORKFLOW_SCRIPTS feature 的执行层） |
-| `packages/weixin/` | 微信集成（非 workspace 包） |
+| `packages/core-utils/` | 跨包纯工具（lazySchema / stringUtils / ids 等） |
+| `packages/weixin/` | 微信集成 |
 
 辅助目录（无 package.json，非 workspace 包）: `langfuse-dashboard`（Langfuse 面板）、`shared-web-ui`（共享 Web UI 组件）、`highlight-code`（代码高亮）、`claude-pencil`（编辑器）、`vscode-ide-bridge`（VS Code 桥接）、`pokemon`（示例/测试）。
 
@@ -232,13 +238,13 @@ Feature flags control which functionality is enabled at runtime. 代码中统一
 - P0 本地: `AGENT_TRIGGERS`, `ULTRATHINK`, `BUILTIN_EXPLORE_PLAN_AGENTS`, `LODESTONE`
 - P1 API 依赖: `EXTRACT_MEMORIES`, `VERIFICATION_AGENT`, `KAIROS_BRIEF`, `AWAY_SUMMARY`, `ULTRAPLAN`
 - P2: `DAEMON`, `ACP`
-- 工作流: `WORKFLOW_SCRIPTS`, `HISTORY_SNIP`, `MONITOR_TOOL`, `KAIROS`
-- 多 worker: `COORDINATOR_MODE`, `BG_SESSIONS`, `TEMPLATES`
+- 工作流: `WORKFLOW_SCRIPTS`, `MONITOR_TOOL`, `KAIROS`
+- 多 worker: `COORDINATOR_MODE`, `CROSS_SESSION_MESSAGING`, `BG_SESSIONS`, `TEMPLATES`
 - 连接器: `CONNECTOR_TEXT`, `COMMIT_ATTRIBUTION`, `DIRECT_CONNECT`
 - 实验性: `EXPERIMENTAL_SKILL_SEARCH`, `EXPERIMENTAL_SEARCH_EXTRA_TOOLS`
-- Agent 增强: `TOOL_LOOP_DETECTION`（工具死循环分级干预）, `SUBAGENT_SUMMARY_GATE`（子代理摘要质量门）, `COMPACT_PRESERVE_USER_MESSAGES`（compact 保留真实用户消息 HEAD+TAIL）, `COMPACT_TAIL_PRESERVATION`（compact 后逐字保留最近 N 个 API round，借鉴 opencode；与 `COMPACT_PRESERVE_USER_MESSAGES` 共用 `postCompactBudget.ts` 的单一天花板：窗口 25% 夹取 2k-16k，tail 优先分配，两者之和不再无条件叠加）, `REACTIVE_COMPACT`（413/media-size 应急压缩；本地单次 compactConversation，非官方全阶梯、非 reactive-only）, `FILE_MUTATION_QUEUE`（同文件 mutation 串行化）, `AGENT_LAUNCH_THROTTLE`（子代理启动限速）
-- 模式: `POOR`, `SSH_REMOTE`
-- 已禁用: `SKILL_LEARNING`
+- Agent 增强: `TOOL_LOOP_DETECTION`（工具死循环分级干预）, `SUBAGENT_SUMMARY_GATE`（子代理摘要质量门）, `COMPACT_PRESERVE_USER_MESSAGES`（compact 保留真实用户消息 HEAD+TAIL）, `COMPACT_TAIL_PRESERVATION`（compact 后逐字保留最近 N 个 API round，借鉴 opencode；与 `COMPACT_PRESERVE_USER_MESSAGES` 共用 `postCompactBudget.ts` 的单一天花板：窗口 25% 夹取 4k-16k，tail 优先拿 2k-8k，两者之和不再无条件叠加）, `PRECOMPUTED_COMPACT`（压缩状态机预计算）, `REACTIVE_COMPACT`（413/media-size 应急压缩；本地单次 compactConversation，非官方全阶梯、非 reactive-only）, `FILE_MUTATION_QUEUE`（同文件 mutation 串行化）, `AGENT_LAUNCH_THROTTLE`（子代理启动限速）
+- 模式: `POOR`, `SSH_REMOTE`, `AUTOFIX_PR`, `GOAL`
+- 已禁用: `SKILL_LEARNING`, `HISTORY_SNIP`, `UDS_INBOX`, `LAN_PIPES`
 
 **Dev mode 默认**: 与 build 相同，启用 `DEFAULT_BUILD_FEATURES`（不是注册表里的全部 flag）；`FEATURE_<NAME>=1` 可追加。裸 `cli.tsx` 全关。
 

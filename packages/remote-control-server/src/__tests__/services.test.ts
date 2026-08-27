@@ -337,6 +337,21 @@ describe('Transport Service', () => {
   })
 
   describe('normalizePayload', () => {
+    test('preserves stream event as a direct normalized field', () => {
+      const event = {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: 'checking' },
+      }
+      const result = normalizePayload('stream_event', {
+        uuid: 'stream-1',
+        event,
+      })
+
+      expect(result.event).toBe(event)
+      expect(result.uuid).toBe('stream-1')
+    })
+
     test('handles string payload', () => {
       const result = normalizePayload('user', 'hello world')
       expect(result.content).toBe('hello world')

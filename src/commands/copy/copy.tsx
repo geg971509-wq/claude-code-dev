@@ -7,7 +7,7 @@ import type { CommandResultDisplay } from '../../commands.js';
 import type { OptionWithDescription } from '../../components/CustomSelect/select.js';
 import { Select } from '../../components/CustomSelect/select.js';
 import { Byline, KeyboardShortcutHint, Pane } from '@anthropic/ink';
-import { Box, setClipboard, Text, stringWidth, type KeyboardEvent } from '@anthropic/ink';
+import { Box, getClipboardPath, setClipboard, Text, stringWidth, type KeyboardEvent } from '@anthropic/ink';
 import { logEvent } from '../../services/analytics/index.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
 import type { AssistantMessage, Message } from '../../types/message.js';
@@ -74,6 +74,7 @@ async function writeToFile(text: string, filename: string): Promise<string> {
 }
 
 async function copyOrWriteToFile(text: string, filename: string): Promise<string> {
+  const clipboardStatus = getClipboardPath() === 'native' ? 'Copied to clipboard' : 'Copy requested';
   const raw = await setClipboard(text);
   if (raw) process.stdout.write(raw);
   const lineCount = countCharInString(text, '\n') + 1;
@@ -82,9 +83,9 @@ async function copyOrWriteToFile(text: string, filename: string): Promise<string
   // terminal support), so the file provides a reliable fallback.
   try {
     const filePath = await writeToFile(text, filename);
-    return `Copied to clipboard (${charCount} characters, ${lineCount} lines)\nAlso written to ${filePath}`;
+    return `${clipboardStatus} (${charCount} characters, ${lineCount} lines)\nAlso written to ${filePath}`;
   } catch {
-    return `Copied to clipboard (${charCount} characters, ${lineCount} lines)`;
+    return `${clipboardStatus} (${charCount} characters, ${lineCount} lines)`;
   }
 }
 

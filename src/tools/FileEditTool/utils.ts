@@ -59,6 +59,30 @@ export function findActualString(
   return null
 }
 
+export type EditApplicability = 'no_match' | 'ambiguous' | 'applies'
+
+export function getEditApplicability(
+  fileContent: string,
+  oldString: string,
+  replaceAll: boolean,
+): EditApplicability {
+  if (oldString === '') return 'no_match'
+  const actualOldString = findActualString(fileContent, oldString)
+  if (!actualOldString) return 'no_match'
+  if (!replaceAll) {
+    const firstIndex = fileContent.indexOf(actualOldString)
+    if (
+      fileContent.indexOf(
+        actualOldString,
+        firstIndex + actualOldString.length,
+      ) !== -1
+    ) {
+      return 'ambiguous'
+    }
+  }
+  return 'applies'
+}
+
 /**
  * Transform edits to ensure replace_all always has a boolean value
  * @param edits Array of edits with optional replace_all

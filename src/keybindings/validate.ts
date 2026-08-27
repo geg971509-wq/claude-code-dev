@@ -1,14 +1,11 @@
 import { plural } from '../utils/stringUtils.js'
+import { KEYBINDING_CONTEXTS } from './contexts.js'
 import { chordToString, parseChord, parseKeystroke } from './parser.js'
 import {
   getReservedShortcuts,
   normalizeKeyForComparison,
 } from './reservedShortcuts.js'
-import type {
-  KeybindingBlock,
-  KeybindingContextName,
-  ParsedBinding,
-} from './types.js'
+import type { KeybindingBlock, ParsedBinding } from './types.js'
 
 /**
  * Types of validation issues that can occur with keybindings.
@@ -54,38 +51,12 @@ function isKeybindingBlockArray(arr: unknown): arr is KeybindingBlock[] {
 }
 
 /**
- * Valid context names for keybindings.
- * Must match KeybindingContextName in types.ts
- */
-const VALID_CONTEXTS: KeybindingContextName[] = [
-  'Global',
-  'Chat',
-  'Autocomplete',
-  'Confirmation',
-  'Help',
-  'Transcript',
-  'HistorySearch',
-  'Task',
-  'ThemePicker',
-  'Settings',
-  'Tabs',
-  'Attachments',
-  'Footer',
-  'FormField',
-  'MessageActions',
-  'MessageSelector',
-  'DiffDialog',
-  'ModelPicker',
-  'Scroll',
-  'Select',
-  'Plugin',
-]
-
-/**
  * Type guard to check if a string is a valid context name.
  */
-function isValidContext(value: string): value is KeybindingContextName {
-  return (VALID_CONTEXTS as readonly string[]).includes(value)
+function isValidContext(
+  value: string,
+): value is (typeof KEYBINDING_CONTEXTS)[number] {
+  return (KEYBINDING_CONTEXTS as readonly string[]).includes(value)
 }
 
 /**
@@ -162,7 +133,7 @@ function validateBlock(
       severity: 'error',
       message: `Unknown context "${rawContext}"`,
       context: rawContext,
-      suggestion: `Valid contexts: ${VALID_CONTEXTS.join(', ')}`,
+      suggestion: `Valid contexts: ${KEYBINDING_CONTEXTS.join(', ')}`,
     })
   } else {
     contextName = rawContext

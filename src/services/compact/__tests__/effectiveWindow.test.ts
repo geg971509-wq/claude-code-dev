@@ -23,6 +23,7 @@ import {
   afterAll,
   afterEach,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   test,
@@ -33,9 +34,12 @@ import { join } from 'path'
 import { getSdkBetas, setSdkBetas } from '../../../bootstrap/state'
 import { CONTEXT_1M_BETA_HEADER } from '../../../constants/betas'
 import { getMaxOutputTokensForModel } from '../../api/claude'
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config'
 import {
   getEffectiveContextWindowSize,
   MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+  parseAutoCompactWindow,
+  resolveAutoCompactWindow,
 } from '../effectiveWindow'
 
 // Both tests below need a model whose base window is 200k and whose 1M is
@@ -157,5 +161,181 @@ describe('getEffectiveContextWindowSize', () => {
     } finally {
       setSdkBetas(before)
     }
+  })
+})
+
+describe('parseAutoCompactWindow', () => {
+  test('parses auto, exact tokens, and thousand-token shorthand', () => {
+    // Given: every supported input spelling.
+    const inputs = ['auto', '500k', '200000', '200', '100', '1000']
+
+    // When: the values cross the parser boundary.
+    const parsed = inputs.map(parseAutoCompactWindow)
+
+    // Then: shorthand and exact values resolve to token counts.
+    expect(parsed).toEqual([
+      'auto',
+      500_000,
+      200_000,
+      200_000,
+      100_000,
+      1_000_000,
+    ])
+  })
+
+  test('rejects partial, out-of-range, and unsupported spellings', () => {
+    // Given: values outside the strict 100k..1M contract.
+    const inputs = ['500kfoo', '99k', '1000001', '1m', '-200', '200.5k']
+
+    // When: the values cross the parser boundary.
+    const parsed = inputs.map(parseAutoCompactWindow)
+
+    // Then: none are partially accepted.
+    expect(parsed).toEqual(inputs.map(() => undefined))
+  })
+})
+
+describe('resolveAutoCompactWindow', () => {
+  const MAX_CONTEXT_ENV = 'CLAUDE_CODE_MAX_CONTEXT_TOKENS'
+  let previousUserType: string | undefined
+  let previousMaxContext: string | undefined
+  let previousSetting: string | undefined
+  let previousBetas: string[] | undefined
+
+  beforeEach(() => {
+    previousUserType = process.env.USER_TYPE
+    previousMaxContext = process.env[MAX_CONTEXT_ENV]
+    previousSetting = getGlobalConfig().autoCompactWindow
+    previousBetas = getSdkBetas()
+    delete process.env[ENV_VAR]
+    delete process.env[MAX_CONTEXT_ENV]
+    saveGlobalConfig(current => ({
+      ...current,
+      autoCompactWindow: undefined,
+    }))
+    setSdkBetas([CONTEXT_1M_BETA_HEADER])
+  })
+
+  afterEach(() => {
+    if (previousUserType === undefined) delete process.env.USER_TYPE
+    else process.env.USER_TYPE = previousUserType
+    if (previousMaxContext === undefined) delete process.env[MAX_CONTEXT_ENV]
+    else process.env[MAX_CONTEXT_ENV] = previousMaxContext
+    saveGlobalConfig(current => ({
+      ...current,
+      autoCompactWindow: previousSetting,
+    }))
+    setSdkBetas(previousBetas)
+  })
+
+  test('uses env before session, settings, and model defaults', () => {
+    // Given: distinct valid values at every configurable layer.
+    saveGlobalConfig(current => ({
+      ...current,
+      autoCompactWindow: '500k',
+    }))
+    process.env[ENV_VAR] = '300k'
+
+    // When: the effective window is resolved with a session override.
+    const resolution = resolveAutoCompactWindow(MODEL, '400k')
+
+    // Then: env wins and its source remains observable.
+    expect(resolution).toEqual({
+      configured: '300k',
+      window: 300_000,
+      source: 'env',
+      capped: false,
+    })
+  })
+
+  test('falls through invalid higher-priority values', () => {
+    // Given: an invalid env value and a valid session override.
+    process.env[ENV_VAR] = '500kfoo'
+
+    // When: the effective window is resolved.
+    const resolution = resolveAutoCompactWindow(MODEL, '400k')
+
+    // Then: the valid session value is used.
+    expect(resolution.source).toBe('session')
+    expect(resolution.window).toBe(400_000)
+  })
+
+  test('uses the session override before the saved setting', () => {
+    // Given: distinct session and saved settings with no env override.
+    saveGlobalConfig(current => ({
+      ...current,
+      autoCompactWindow: '500k',
+    }))
+
+    // When: the effective window is resolved with a session override.
+    const resolution = resolveAutoCompactWindow(MODEL, '400k')
+
+    // Then: the session layer wins.
+    expect(resolution.source).toBe('session')
+    expect(resolution.window).toBe(400_000)
+  })
+
+  test('uses the saved setting before the model default', () => {
+    // Given: a saved setting with no env or session override.
+    saveGlobalConfig(current => ({
+      ...current,
+      autoCompactWindow: '500k',
+    }))
+
+    // When: the effective window is resolved.
+    const resolution = resolveAutoCompactWindow(MODEL)
+
+    // Then: the saved setting wins.
+    expect(resolution.source).toBe('settings')
+    expect(resolution.window).toBe(500_000)
+  })
+
+  test('caps configured windows at the model safety limit', () => {
+    // Given: a lower hard context cap than the configured auto-compact window.
+    process.env.USER_TYPE = 'ant'
+    process.env[MAX_CONTEXT_ENV] = '350000'
+    process.env[ENV_VAR] = '500k'
+
+    // When: the effective window is resolved.
+    const resolution = resolveAutoCompactWindow(MODEL)
+
+    // Then: the hard cap wins and the cap is reported.
+    expect(resolution).toEqual({
+      configured: '500k',
+      window: 350_000,
+      source: 'env',
+      capped: true,
+    })
+  })
+
+  test('uses the model default when no configured value is valid', () => {
+    // Given: no valid env, session, or saved setting.
+    process.env[ENV_VAR] = 'invalid'
+
+    // When: the effective window is resolved.
+    const resolution = resolveAutoCompactWindow(MODEL)
+
+    // Then: the model default is explicit.
+    expect(resolution).toEqual({
+      configured: 'auto',
+      window: 1_000_000,
+      source: 'model',
+      capped: false,
+    })
+  })
+
+  test('uses the safe model fallback for an unknown model', () => {
+    // Given: an unknown model and no configured value.
+
+    // When: the effective window is resolved.
+    const resolution = resolveAutoCompactWindow('unknown-model')
+
+    // Then: the model resolver's safe fallback is retained.
+    expect(resolution).toEqual({
+      configured: 'auto',
+      window: 200_000,
+      source: 'model',
+      capped: false,
+    })
   })
 })

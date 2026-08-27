@@ -103,13 +103,13 @@ export default function ErrorOverview({ error }: Props) {
           {error.stack
             .split('\n')
             .slice(1)
-            .map(line => {
+            .map((line, index) => {
               const parsedLine = getStackUtils().parseLine(line);
 
               // If the line from the stack cannot be parsed, we print out the unparsed line.
               if (!parsedLine) {
                 return (
-                  <Box key={line}>
+                  <Box key={`${index}:${line}`}>
                     <Text dim>- </Text>
                     <Text bold>{line}</Text>
                   </Box>
@@ -117,7 +117,7 @@ export default function ErrorOverview({ error }: Props) {
               }
 
               return (
-                <Box key={line}>
+                <Box key={`${index}:${line}`}>
                   <Text dim>- </Text>
                   <Text bold>{parsedLine.function}</Text>
                   <Text dim>

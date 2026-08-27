@@ -23,6 +23,17 @@ type Props = {
   changes?: string[];
 };
 
+export function AgentsRemoteTip(): React.ReactNode {
+  return (
+    <Box marginBottom={1}>
+      <Text dimColor>
+        Tip: This screen manages local agent configurations. For scheduled remote agents, use /agents-platform or
+        /schedule-agent.
+      </Text>
+    </Box>
+  );
+}
+
 export function AgentsList({ source, agents, onBack, onSelect, onCreateNew, changes }: Props): React.ReactNode {
   const [selectedAgent, setSelectedAgent] = React.useState<ResolvedAgent | null>(null);
   const [isCreateNewSelected, setIsCreateNewSelected] = React.useState(true);
@@ -209,6 +220,7 @@ export function AgentsList({ source, agents, onBack, onSelect, onCreateNew, chan
     return (
       <Dialog title={sourceTitle} subtitle="No agents found" onCancel={onBack} hideInputGuide>
         <Box flexDirection="column" gap={1} tabIndex={0} autoFocus onKeyDown={handleKeyDown}>
+          <AgentsRemoteTip />
           {onCreateNew && <Box>{renderCreateNewOption()}</Box>}
           <Text dimColor>No agents found. Create specialized subagents that Claude can delegate to.</Text>
           <Text dimColor>Each subagent has its own context window, custom system prompt, and specific tools.</Text>
@@ -233,6 +245,7 @@ export function AgentsList({ source, agents, onBack, onSelect, onCreateNew, chan
       onCancel={onBack}
       hideInputGuide
     >
+      <AgentsRemoteTip />
       {changes && changes.length > 0 && (
         <Box marginTop={1}>
           <Text dimColor>{changes[changes.length - 1]}</Text>

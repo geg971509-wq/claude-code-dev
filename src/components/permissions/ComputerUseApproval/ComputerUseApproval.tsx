@@ -10,6 +10,7 @@ import { plural } from '../../../utils/stringUtils.js';
 import type { OptionWithDescription } from '../../CustomSelect/select.js';
 import { Select } from '../../CustomSelect/select.js';
 import { Dialog } from '@anthropic/ink';
+import { requestComputerUseTccPermission } from '../../../utils/computerUse/swiftLoader.js';
 
 type ComputerUseApprovalProps = {
   request: CuPermissionRequest;
@@ -68,6 +69,7 @@ function ComputerUseTccPanel({
   function onChange(value: TccOption): void {
     switch (value) {
       case 'open_accessibility':
+        requestComputerUseTccPermission('accessibility');
         void execFileNoThrow(
           'open',
           ['x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'],
@@ -75,6 +77,7 @@ function ComputerUseTccPanel({
         );
         return;
       case 'open_screen_recording':
+        requestComputerUseTccPermission('screenRecording');
         void execFileNoThrow(
           'open',
           ['x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'],

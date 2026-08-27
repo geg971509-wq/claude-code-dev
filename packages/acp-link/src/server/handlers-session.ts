@@ -333,6 +333,7 @@ export async function handlePrompt(
     return
   }
 
+  const promptSessionId = state.sessionId
   try {
     const firstText = params.content.find(b => b.type === 'text')?.text
     const images = params.content.filter(b => b.type === 'image')
@@ -346,21 +347,35 @@ export async function handlePrompt(
     )
 
     const result = await state.connection.prompt({
-      sessionId: state.sessionId,
+      sessionId: promptSessionId,
       prompt: params.content as acp.ContentBlock[],
     })
 
     logPrompt.info({ stopReason: result.stopReason }, 'completed')
-    send(ws, 'prompt_complete', result)
-  } catch (error) {
-    logPrompt.error({ error: (error as Error).message }, 'failed')
-    sendJsonRpcError(
+    send(
       ws,
-      state,
-      currentJsonRpcId(state),
-      JSONRPC_INTERNAL_ERROR,
-      `Prompt failed: ${(error as Error).message}`,
+      'prompt_complete',
+      state.jsonRpc ? result : { ...result, sessionId: promptSessionId },
     )
+  } catch (error) {
+    const message = `Prompt failed: ${(error as Error).message}`
+    logPrompt.error({ error: (error as Error).message }, 'failed')
+    if (state.jsonRpc) {
+      sendJsonRpcError(
+        ws,
+        state,
+        currentJsonRpcId(state),
+        JSONRPC_INTERNAL_ERROR,
+        message,
+      )
+    } else {
+      send(ws, 'error', {
+        message,
+        code: String(JSONRPC_INTERNAL_ERROR),
+        type: 'internal',
+        sessionId: promptSessionId,
+      })
+    }
   }
 }
 

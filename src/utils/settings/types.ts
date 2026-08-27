@@ -365,6 +365,18 @@ export const SettingsSchema = lazySchema(() =>
       permissions: PermissionsSchema()
         .optional()
         .describe('Tool usage permissions configuration'),
+      crossSessionInbound: z
+        .enum(['accept', 'hold', 'refuse'])
+        .optional()
+        .describe(
+          'Inbound policy for messages sent by other Claude Code sessions',
+        ),
+      isolatePeerMachines: z
+        .boolean()
+        .optional()
+        .describe(
+          'Require explicit approval before sending messages or files to another machine',
+        ),
       modelType: z
         .enum(['anthropic', 'openai', 'codex', 'gemini', 'grok'])
         .optional()

@@ -19,7 +19,6 @@ export type {
   TombstoneMessage,
   ToolUseSummaryMessage,
   MessageOrigin,
-  CompactMetadata,
   SystemAPIErrorMessage,
   SystemFileSnapshotMessage,
   NormalizedAssistantMessage,
@@ -57,6 +56,25 @@ import type {
 } from '@ant/model-provider'
 import type { UUID } from 'crypto'
 import type { StopHookInfo } from '@ant/model-provider'
+
+export type CompactMetadata = {
+  trigger?: 'manual' | 'auto'
+  preTokens?: number
+  postTokens?: number
+  cumulativeDroppedTokens?: number
+  durationMs?: number
+  userContext?: string
+  messagesSummarized?: number
+  precomputed?: boolean
+  preCompactDiscoveredTools?: string[]
+  preservedSegment?: {
+    headUuid: UUID
+    anchorUuid: UUID
+    tailUuid: UUID
+    [key: string]: unknown
+  }
+  [key: string]: unknown
+}
 
 export type RenderableMessage =
   | AssistantMessage

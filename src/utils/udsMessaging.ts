@@ -17,6 +17,7 @@ import {
   open,
   readFile,
   rename,
+  rmdir,
   unlink,
 } from 'fs/promises'
 import { dirname, join } from 'path'
@@ -29,12 +30,25 @@ import { attachNdjsonFramer } from './ndjsonFramer.js'
 import { attachUdsResponseReader } from './udsResponseReader.js'
 import { logError } from './log.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
+import type { PeerReceipt, UdsPeerUserMessage } from './peerMessageEnvelope.js'
+import {
+  isUdsFleetActionRequest,
+  isUdsFleetSnapshotRequest,
+  isUdsPeerReceiptMessage,
+  isUdsPeerUserMessage,
+} from './peerMessageEnvelope.js'
+import type { PeerReceiptStatus } from './crossSessionInbox.js'
+import type {
+  AgentFleetAction,
+  AgentFleetActionResult,
+  AgentFleetSnapshot,
+} from '../services/agentFleet/types.js'
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type UdsMessageType =
+export type LegacyUdsMessageType =
   | 'text'
   | 'notification'
   | 'query'
@@ -43,9 +57,9 @@ export type UdsMessageType =
   | 'ping'
   | 'pong'
 
-export type UdsMessage = {
+export type LegacyUdsMessage = {
   /** Discriminator */
-  type: UdsMessageType
+  type: LegacyUdsMessageType
   /** Payload text / JSON content */
   data?: string
   /** Sender socket path (so the receiver can reply) */
@@ -56,9 +70,18 @@ export type UdsMessage = {
   meta?: Record<string, unknown>
 }
 
+export type UdsMessage =
+  | LegacyUdsMessage
+  | import('./peerMessageEnvelope.js').UdsPeerUserMessage
+  | import('./peerMessageEnvelope.js').UdsPeerReceiptMessage
+  | import('./peerMessageEnvelope.js').UdsFleetSnapshotRequest
+  | import('./peerMessageEnvelope.js').UdsFleetSnapshotResponse
+  | import('./peerMessageEnvelope.js').UdsFleetActionRequest
+  | import('./peerMessageEnvelope.js').UdsFleetActionResponse
+
 export type UdsInboxEntry = {
   id: string
-  message: UdsMessage
+  message: LegacyUdsMessage
   receivedAt: number
   status: 'pending' | 'processed'
 }
@@ -70,13 +93,32 @@ export type UdsInboxEntry = {
 let server: Server | null = null
 let socketPath: string | null = null
 let onEnqueueCb: (() => void) | null = null
+let onPeerMessageCb:
+  | ((
+      message: UdsPeerUserMessage,
+    ) => PeerReceiptStatus | Promise<PeerReceiptStatus>)
+  | null = null
+let onPeerMessageStatusCb:
+  | ((receipt: PeerReceipt) => void | Promise<void>)
+  | null = null
+let onAgentFleetSnapshotCb:
+  | (() => AgentFleetSnapshot | Promise<AgentFleetSnapshot>)
+  | null = null
+let onAgentFleetActionCb:
+  | ((
+      action: AgentFleetAction,
+    ) => AgentFleetActionResult | Promise<AgentFleetActionResult>)
+  | null = null
 const clients = new Set<Socket>()
+const fleetRequestIds = new Set<string>()
 const inbox: UdsInboxEntry[] = []
 let nextId = 1
 let defaultSocketPath: string | null = null
 let authToken: string | null = null
 let capabilityFilePath: string | null = null
+let socketParentToCleanup: string | null = null
 let inboxBytes = 0
+let startupError: string | undefined
 
 export const MAX_UDS_INBOX_ENTRIES = 1_000
 export const MAX_UDS_FRAME_BYTES = 64 * 1024
@@ -84,6 +126,7 @@ export const MAX_UDS_INBOX_BYTES = 2 * 1024 * 1024
 export const MAX_UDS_CLIENTS = 128
 export const UDS_AUTH_TIMEOUT_MS = 2_000
 export const UDS_IDLE_TIMEOUT_MS = 30_000
+const MAX_FLEET_REQUEST_IDS = 2_048
 
 /** macOS/BSD AF_UNIX `sun_path` limit (bytes, excluding NUL). */
 export const MAX_UNIX_SOCKET_PATH_LENGTH = 104
@@ -136,6 +179,10 @@ export function getUdsMessagingSocketPath(): string | undefined {
   return socketPath ?? undefined
 }
 
+export function getUdsMessagingStartupError(): string | undefined {
+  return startupError
+}
+
 export function formatUdsAddress(socket: string): string {
   return `uds:${socket}`
 }
@@ -148,7 +195,7 @@ export function parseUdsTarget(target: string): {
       'UDS target must not include an inline auth token; use the ListPeers address',
     )
   }
-  return { socketPath: target }
+  return { socketPath: target.startsWith('uds:') ? target.slice(4) : target }
 }
 
 function getCapabilityDir(): string {
@@ -293,6 +340,38 @@ export function setOnEnqueue(cb: (() => void) | null): void {
   onEnqueueCb = cb
 }
 
+export function setOnPeerMessage(
+  cb:
+    | ((
+        message: UdsPeerUserMessage,
+      ) => PeerReceiptStatus | Promise<PeerReceiptStatus>)
+    | null,
+): void {
+  onPeerMessageCb = cb
+}
+
+export function setOnPeerMessageStatus(
+  cb: ((receipt: PeerReceipt) => void | Promise<void>) | null,
+): void {
+  onPeerMessageStatusCb = cb
+}
+
+export function setOnAgentFleetSnapshot(
+  cb: (() => AgentFleetSnapshot | Promise<AgentFleetSnapshot>) | null,
+): void {
+  onAgentFleetSnapshotCb = cb
+}
+
+export function setOnAgentFleetAction(
+  cb:
+    | ((
+        action: AgentFleetAction,
+      ) => AgentFleetActionResult | Promise<AgentFleetActionResult>)
+    | null,
+): void {
+  onAgentFleetActionCb = cb
+}
+
 /**
  * Drain all pending inbox messages and release retained history.
  */
@@ -305,7 +384,7 @@ export function drainInbox(): UdsInboxEntry[] {
   return pending
 }
 
-function getMessageBytes(message: UdsMessage): number {
+function getMessageBytes(message: LegacyUdsMessage): number {
   return Buffer.byteLength(jsonStringify(message), 'utf8')
 }
 
@@ -372,6 +451,48 @@ function writeSocketErrorAndDestroy(socket: Socket, data: string): void {
   })
 }
 
+function writeFleetError(
+  socket: Socket,
+  requestId: string,
+  data: string,
+): void {
+  writeSocketMessage(socket, {
+    type: 'error',
+    data,
+    ts: new Date().toISOString(),
+    meta: { request_id: requestId },
+  })
+}
+
+function rememberFleetRequestId(requestId: string): boolean {
+  if (fleetRequestIds.has(requestId)) return false
+  fleetRequestIds.add(requestId)
+  if (fleetRequestIds.size > MAX_FLEET_REQUEST_IDS) {
+    const oldest = fleetRequestIds.values().next().value
+    if (typeof oldest === 'string') fleetRequestIds.delete(oldest)
+  }
+  return true
+}
+
+function requestIdFromUnknown(value: unknown): string {
+  if (typeof value !== 'object' || value === null || !('request_id' in value)) {
+    return ''
+  }
+  return typeof value.request_id === 'string' ? value.request_id : ''
+}
+
+function isLegacyUdsMessage(message: UdsMessage): message is LegacyUdsMessage {
+  return (
+    message.type === 'text' ||
+    message.type === 'notification' ||
+    message.type === 'query' ||
+    message.type === 'response' ||
+    message.type === 'error' ||
+    message.type === 'ping' ||
+    message.type === 'pong'
+  )
+}
+
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
   const maybeUnref = (timer as { unref?: () => void }).unref
   if (typeof maybeUnref === 'function') {
@@ -394,12 +515,61 @@ async function removeSocketPath(path: string): Promise<void> {
   }
 }
 
-function stripAuthToken(message: UdsMessage): UdsMessage {
+async function removeEmptySocketParent(path: string | null): Promise<void> {
+  if (!path || process.platform === 'win32') return
+  try {
+    await rmdir(path)
+  } catch (error) {
+    if (
+      !isNotFound(error) &&
+      (error as NodeJS.ErrnoException).code !== 'ENOTEMPTY'
+    ) {
+      logForDebugging(
+        `[udsMessaging] failed to remove socket parent ${path}: ${errorMessage(error)}`,
+      )
+    }
+  }
+}
+
+async function removeStaleSocketPath(
+  path: string,
+  isExplicit: boolean,
+): Promise<void> {
+  let stat: Awaited<ReturnType<typeof lstat>>
+  try {
+    stat = await lstat(path)
+  } catch (error) {
+    if (isNotFound(error)) return
+    throw error
+  }
+
+  if (stat.isSymbolicLink()) {
+    throw new Error(
+      `[udsMessaging] existing path is a symbolic link; refusing to remove it${isExplicit ? ' (explicit)' : ''}: ${path}`,
+    )
+  }
+  if (!stat.isSocket()) {
+    throw new Error(
+      `[udsMessaging] existing path is not a socket; refusing to remove it${isExplicit ? ' (explicit)' : ''}: ${path}`,
+    )
+  }
+  if (
+    typeof process.getuid !== 'function' ||
+    Number(stat.uid) !== process.getuid()
+  ) {
+    throw new Error(
+      `[udsMessaging] existing socket is not owned by the current user; refusing to remove it: ${path}`,
+    )
+  }
+  await unlink(path)
+}
+
+function stripAuthToken<T extends UdsMessage>(message: T): T {
   const { authToken: _authToken, ...metaWithoutAuth } = message.meta ?? {}
   return {
     ...message,
     meta: Object.keys(metaWithoutAuth).length > 0 ? metaWithoutAuth : undefined,
-  }
+  } as T
 }
 
 function withRequestAuthToken(message: UdsMessage, token: string): UdsMessage {
@@ -424,27 +594,27 @@ function withRequestAuthToken(message: UdsMessage, token: string): UdsMessage {
  */
 export async function startUdsMessaging(
   path: string,
-  opts?: { isExplicit?: boolean },
+  opts?: { isExplicit?: boolean; sessionId?: string },
 ): Promise<void> {
+  startupError = undefined
   if (server) {
     logForDebugging('[udsMessaging] server already running, skipping start')
     return
   }
 
-  assertValidUnixSocketPath(path)
-
-  // Ensure parent directory exists (skip on Windows — pipe paths aren't files)
-  if (process.platform !== 'win32') {
-    await ensureSocketParent(path)
-  }
-
-  // Clean up stale socket file (skip on Windows — pipe paths aren't files)
-  if (process.platform !== 'win32') {
-    try {
-      await unlink(path)
-    } catch {
-      // ENOENT is fine
+  const autoSocketParent = opts?.isExplicit ? null : dirname(path)
+  try {
+    assertValidUnixSocketPath(path)
+    if (process.platform !== 'win32') {
+      await ensureSocketParent(path)
+      // Clean up a stale socket only after verifying explicit paths are safe.
+      await removeStaleSocketPath(path, opts?.isExplicit === true)
     }
+  } catch (error) {
+    await removeEmptySocketParent(autoSocketParent)
+    defaultSocketPath = null
+    startupError = errorMessage(error)
+    throw error
   }
 
   const token = ensureAuthToken()
@@ -505,6 +675,136 @@ export async function startUdsMessaging(
                 from: socketPath ?? undefined,
                 ts: new Date().toISOString(),
               })
+              return
+            }
+
+            if (msg.type === 'fleet_snapshot') {
+              if (!isUdsFleetSnapshotRequest(msg)) {
+                writeFleetError(
+                  socket,
+                  requestIdFromUnknown(msg),
+                  'invalid fleet snapshot request',
+                )
+                return
+              }
+              if (!rememberFleetRequestId(msg.request_id)) {
+                writeFleetError(socket, msg.request_id, 'duplicate request ID')
+                return
+              }
+              void (async () => {
+                if (!onAgentFleetSnapshotCb) {
+                  writeFleetError(
+                    socket,
+                    msg.request_id,
+                    'fleet snapshot owner unavailable',
+                  )
+                  return
+                }
+                try {
+                  const snapshot = await onAgentFleetSnapshotCb()
+                  writeSocketMessage(socket, {
+                    type: 'fleet_snapshot_response',
+                    request_id: msg.request_id,
+                    snapshot,
+                  })
+                } catch (error) {
+                  writeFleetError(socket, msg.request_id, errorMessage(error))
+                }
+              })()
+              return
+            }
+
+            if (msg.type === 'fleet_action') {
+              if (!isUdsFleetActionRequest(msg)) {
+                writeFleetError(
+                  socket,
+                  requestIdFromUnknown(msg),
+                  'invalid fleet action request',
+                )
+                return
+              }
+              if (!rememberFleetRequestId(msg.request_id)) {
+                writeFleetError(socket, msg.request_id, 'duplicate request ID')
+                return
+              }
+              void (async () => {
+                if (!onAgentFleetActionCb) {
+                  writeFleetError(
+                    socket,
+                    msg.request_id,
+                    'fleet action owner unavailable',
+                  )
+                  return
+                }
+                try {
+                  const result = await onAgentFleetActionCb(msg.action)
+                  writeSocketMessage(socket, {
+                    type: 'fleet_action_response',
+                    request_id: msg.request_id,
+                    result,
+                  })
+                } catch (error) {
+                  writeFleetError(socket, msg.request_id, errorMessage(error))
+                }
+              })()
+              return
+            }
+
+            if (isUdsPeerUserMessage(msg)) {
+              if (
+                opts?.sessionId !== undefined &&
+                msg.session_id !== undefined &&
+                msg.session_id !== opts.sessionId
+              ) {
+                closeWithError('target session mismatch')
+                return
+              }
+              const sanitizedMessage = stripAuthToken(msg)
+              void (async () => {
+                try {
+                  if (!onPeerMessageCb) {
+                    closeWithError('peer receiver unavailable')
+                    return
+                  }
+                  const status = await onPeerMessageCb(sanitizedMessage)
+                  writeSocketMessage(socket, {
+                    type: 'response',
+                    data: 'ok',
+                    ts: new Date().toISOString(),
+                    meta: { msg_id: msg.msg_id, status },
+                  })
+                } catch (error) {
+                  closeWithError(errorMessage(error))
+                }
+              })()
+              return
+            }
+
+            if (isUdsPeerReceiptMessage(msg)) {
+              const receipt: PeerReceipt = {
+                msgId: msg.orig_msg_id,
+                status: msg.status,
+                from: msg.from,
+                reason: msg.reason,
+              }
+              void (async () => {
+                try {
+                  await onPeerMessageStatusCb?.(receipt)
+                  writeSocketMessage(socket, {
+                    type: 'response',
+                    data: 'ok',
+                    ts: new Date().toISOString(),
+                    meta: { msg_id: msg.orig_msg_id, status: msg.status },
+                  })
+                } catch (error) {
+                  closeWithError(errorMessage(error))
+                }
+              })()
+              return
+            }
+
+            if (!isLegacyUdsMessage(msg)) {
+              closeWithError('invalid message type')
               return
             }
 
@@ -600,6 +900,7 @@ export async function startUdsMessaging(
             srv.on('error', logRuntimeError)
             server = srv
             startedServer = srv
+            srv.unref()
             resolve()
           } catch (error) {
             srv.off('error', rejectBeforeListen)
@@ -624,6 +925,7 @@ export async function startUdsMessaging(
 
     await writeCapabilityFile(path, token)
     socketPath = path
+    socketParentToCleanup = autoSocketParent
     // Export so child processes can discover the socket only after the
     // capability file exists and the listener is ready.
     process.env.CLAUDE_CODE_MESSAGING_SOCKET = path
@@ -647,12 +949,15 @@ export async function startUdsMessaging(
       server = null
     }
     await removeSocketPath(path)
+    await removeEmptySocketParent(autoSocketParent)
     if (exportedSocketEnv) {
       delete process.env.CLAUDE_CODE_MESSAGING_SOCKET
     }
     socketPath = null
+    socketParentToCleanup = null
     defaultSocketPath = null
     authToken = null
+    startupError = errorMessage(error)
     throw error
   }
 
@@ -667,6 +972,13 @@ export async function startUdsMessaging(
  */
 export async function stopUdsMessaging(): Promise<void> {
   defaultSocketPath = null
+  startupError = undefined
+  fleetRequestIds.clear()
+  onEnqueueCb = null
+  onPeerMessageCb = null
+  onPeerMessageStatusCb = null
+  onAgentFleetSnapshotCb = null
+  onAgentFleetActionCb = null
   if (!server) return
 
   // Close all connected clients
@@ -681,7 +993,6 @@ export async function stopUdsMessaging(): Promise<void> {
   server = null
   inbox.length = 0
   inboxBytes = 0
-  onEnqueueCb = null
 
   // Remove socket file (skip on Windows — pipe paths aren't files)
   if (socketPath) {
@@ -693,6 +1004,8 @@ export async function stopUdsMessaging(): Promise<void> {
     socketPath = null
     authToken = null
   }
+  await removeEmptySocketParent(socketParentToCleanup)
+  socketParentToCleanup = null
   if (capabilityFilePath) {
     try {
       await unlink(capabilityFilePath)
@@ -709,7 +1022,7 @@ export async function stopUdsMessaging(): Promise<void> {
  */
 export async function sendUdsMessage(
   targetSocketPath: string,
-  message: UdsMessage,
+  message: LegacyUdsMessage,
   opts: { authToken?: string } = {},
 ): Promise<void> {
   const { createConnection } = await import('net')

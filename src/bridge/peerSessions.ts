@@ -1,41 +1,59 @@
 import axios from 'axios'
+import { randomUUID } from 'node:crypto'
+import { getOrganizationUUID } from '../services/oauth/client.js'
+import { handleOAuth401Error } from '../utils/auth.js'
 import { logForDebugging } from '../utils/debug.js'
 import { errorMessage } from '../utils/errors.js'
+import { postRemoteUserEvent } from '../utils/remoteSessionEvents.js'
+import {
+  fetchSessionResourcesFromSessionsAPI,
+  isCloudSessionEnvironment,
+} from '../utils/teleport/api.js'
 import { validateBridgeId } from './bridgeApi.js'
-import { getBridgeAccessToken } from './bridgeConfig.js'
+import {
+  getBridgeAccessToken,
+  getBridgeBaseUrl,
+  getBridgeTokenOverride,
+} from './bridgeConfig.js'
 import { getReplBridgeHandle } from './replBridgeHandle.js'
 import { toCompatSessionId } from './sessionIdCompat.js'
+import { getTrustedDeviceToken } from './trustedDevice.js'
 
 export type BridgePeerSession = {
   address: string
+  sessionId: string
   name?: string
   cwd?: string
-  pid?: number
+  status?: string
+  updatedAt?: number
+  environmentKind?: string
+  connected?: boolean
 }
 
-/**
- * List locally registered sessions that have published a Remote Control
- * session ID. The PID registry is the local source of truth for bridge peers
- * already known to this machine; SendMessage can use these bridge:<id>
- * addresses when the current process has an active bridge handle.
- */
+/** List account-visible Remote Control sessions across machines. */
 export async function listBridgePeers(): Promise<BridgePeerSession[]> {
-  const { listAllLiveSessions } = await import('../utils/udsClient.js')
-  const sessions = await listAllLiveSessions()
-  const peers: BridgePeerSession[] = []
-
-  for (const session of sessions) {
-    if (session.pid === process.pid || !session.bridgeSessionId) continue
-    const compatId = toCompatSessionId(session.bridgeSessionId)
-    peers.push({
-      address: `bridge:${compatId}`,
-      name: session.name ?? session.kind,
-      cwd: session.cwd,
-      pid: session.pid,
+  return (await fetchSessionResourcesFromSessionsAPI())
+    .filter(
+      session =>
+        session.session_status !== 'archived' &&
+        !isCloudSessionEnvironment(session.environment_kind),
+    )
+    .map(session => {
+      const compatId = toCompatSessionId(session.id)
+      return {
+        sessionId: compatId,
+        address: `bridge:${compatId}`,
+        name: session.title ?? 'Remote Control',
+        cwd: session.session_context?.cwd,
+        status: session.session_status,
+        updatedAt: Date.parse(session.updated_at),
+        environmentKind: session.environment_kind,
+        connected:
+          session.connection_status === undefined
+            ? undefined
+            : session.connection_status === 'connected',
+      }
     })
-  }
-
-  return peers
 }
 
 /**
@@ -52,65 +70,69 @@ export async function listBridgePeers(): Promise<BridgePeerSession[]> {
 export async function postInterClaudeMessage(
   target: string,
   message: string,
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  try {
-    const handle = getReplBridgeHandle()
-    if (!handle) {
-      return { ok: false, error: 'Bridge not connected' }
+  opts?: {
+    msgId?: string
+    fileAttachments?: import('../utils/remoteSessionEvents.js').RemoteFileAttachment[]
+  },
+): Promise<
+  | { ok: true; msgId: string; status: number }
+  | {
+      ok: false
+      msgId: string
+      error: string
+      errorCode: string
+      status?: number
     }
-
+> {
+  const msgId = opts?.msgId ?? randomUUID()
+  try {
     const normalizedTarget = target.trim()
     if (!normalizedTarget) {
-      return { ok: false, error: 'No target session specified' }
-    }
-
-    const accessToken = getBridgeAccessToken()
-    if (!accessToken) {
-      return { ok: false, error: 'No access token available' }
+      return {
+        ok: false,
+        msgId,
+        error: 'No target session specified',
+        errorCode: 'invalid_session',
+      }
     }
 
     const compatTarget = toCompatSessionId(normalizedTarget)
-    // Validate against path traversal — same allowlist as bridgeApi.ts
     validateBridgeId(compatTarget, 'target sessionId')
-    const from = toCompatSessionId(handle.bridgeSessionId)
-    const baseUrl = handle.sessionIngressUrl
-
-    const url = `${baseUrl}/v1/sessions/${encodeURIComponent(compatTarget)}/messages`
-
-    const response = await axios.post(
-      url,
+    const handle = getReplBridgeHandle()
+    const result = await postRemoteUserEvent(
       {
-        type: 'peer_message',
-        from,
-        content: message,
+        baseUrl: handle?.sessionIngressUrl ?? getBridgeBaseUrl(),
+        sessionId: compatTarget,
+        content: [{ type: 'text', text: message }],
+        msgId,
+        fileAttachments: opts?.fileAttachments,
       },
       {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-          'anthropic-version': '2023-06-01',
+        getAuth: async () => {
+          const accessToken = getBridgeAccessToken()
+          if (!accessToken) throw new Error('No access token available')
+          return {
+            accessToken,
+            organizationId: (await getOrganizationUUID()) ?? undefined,
+            trustedDeviceToken: getTrustedDeviceToken(),
+          }
         },
-        timeout: 10_000,
-        validateStatus: (s: number) => s < 500,
+        refreshAuth: getBridgeTokenOverride() ? undefined : handleOAuth401Error,
+        post: (url, body, config) => axios.post(url, body, config),
       },
     )
 
-    if (response.status === 200 || response.status === 204) {
+    if (result.ok) {
       logForDebugging(
-        `[bridge:peer] Message sent to ${compatTarget} (${response.status})`,
+        `[bridge:peer] Message sent to ${compatTarget} (${result.status})`,
       )
-      return { ok: true }
+    } else {
+      logForDebugging(`[bridge:peer] Send failed: ${result.error}`)
     }
-
-    const detail =
-      typeof response.data === 'object' && response.data?.error?.message
-        ? response.data.error.message
-        : `HTTP ${response.status}`
-    logForDebugging(`[bridge:peer] Send failed: ${detail}`)
-    return { ok: false, error: detail }
+    return result
   } catch (err: unknown) {
     const msg = errorMessage(err)
     logForDebugging(`[bridge:peer] postInterClaudeMessage error: ${msg}`)
-    return { ok: false, error: msg }
+    return { ok: false, msgId, error: msg, errorCode: 'network_error' }
   }
 }

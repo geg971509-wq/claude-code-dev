@@ -93,6 +93,7 @@ export {
   resolveOpenAIPromptCacheKey,
 }
 import { getModelMaxOutputTokens } from '../../../utils/context.js'
+import { queryCheckpoint } from '../../../utils/queryProfiler.js'
 import type { Options } from '../claude.js'
 import { randomUUID } from 'crypto'
 import {
@@ -265,6 +266,11 @@ export async function* queryModelOpenAI(
 > {
   const includeErrorStack = options.verbose === true || isDebugMode()
   try {
+    queryCheckpoint('query_openai_entry', {
+      querySource: options.querySource,
+      messageCount: messages.length,
+      toolCount: tools.length,
+    })
     // 1. Resolve model name
     const openaiModel = resolveOpenAIModel(options.model)
 
@@ -272,6 +278,7 @@ export async function* queryModelOpenAI(
     const messagesForAPI = normalizeMessagesForAPI(messages, tools)
 
     // 3. Check if tool search is enabled (similar to Anthropic path)
+    queryCheckpoint('query_openai_tool_search_start')
     const useSearchExtraTools = await isSearchExtraToolsEnabled(
       options.model,
       tools,
@@ -280,6 +287,7 @@ export async function* queryModelOpenAI(
       options.agents || [],
       options.querySource,
     )
+    queryCheckpoint('query_openai_tool_search_end', { useSearchExtraTools })
 
     // 4. Build deferred tools set (similar to Anthropic path)
     const deferredToolNames = new Set<string>()
@@ -306,6 +314,9 @@ export async function* queryModelOpenAI(
     }
 
     // 6. Build tool schemas with deferLoading flag
+    queryCheckpoint('query_openai_tool_schema_start', {
+      filteredToolCount: filteredTools.length,
+    })
     const toolSchemas = await Promise.all(
       filteredTools.map(tool =>
         toolToAPISchema(tool, {
@@ -318,6 +329,9 @@ export async function* queryModelOpenAI(
         }),
       ),
     )
+    queryCheckpoint('query_openai_tool_schema_end', {
+      schemaCount: toolSchemas.length,
+    })
 
     // 7. Filter out non-standard tools (server tools like advisor)
     const standardTools = toolSchemas.filter(
@@ -340,12 +354,19 @@ export async function* queryModelOpenAI(
       deferredToolNames,
       useSearchExtraTools,
     )
+    queryCheckpoint('query_openai_message_conversion_start', {
+      messageCount: messagesWithDeferredToolList.length,
+    })
     const openaiMessages = anthropicMessagesToOpenAI(
       messagesWithDeferredToolList,
       systemPrompt,
       { enableThinking },
     )
     const openaiTools = anthropicToolsToOpenAI(standardTools)
+    queryCheckpoint('query_openai_message_conversion_end', {
+      messageCount: openaiMessages.length,
+      toolCount: openaiTools.length,
+    })
     const openaiToolChoice = anthropicToolChoiceToOpenAI(options.toolChoice)
     const reasoningEffort = getChatGPTResponsesReasoningEffort(
       options.effortValue,
@@ -405,6 +426,9 @@ export async function* queryModelOpenAI(
       fetchOverride: options.fetchOverride as unknown as typeof fetch,
       source: options.querySource,
     })
+    queryCheckpoint('query_openai_request_prepared', {
+      route: preparedRequest.route,
+    })
     const openaiRoute: OpenAIRawStreamRoute = preparedRequest.route
     logForDebugging(
       `[OpenAI] route=${openaiRoute} model=${openaiModel} messages=${openaiMessages.length}, tools=${openaiTools.length}, thinking=${enableThinking}, maxTokens=${maxTokens}, prompt_cache_key=${preparedRequest.promptCacheKey}`,
@@ -437,7 +461,12 @@ export async function* queryModelOpenAI(
       let attempt: OpenAIStreamAttempt
 
       try {
+        queryCheckpoint('query_openai_request_start', { requestAttempt })
         attempt = await preparedRequest.createAttempt(combinedSignal.signal)
+        queryCheckpoint('query_openai_request_end', {
+          requestAttempt,
+          status: attempt.status,
+        })
       } catch (error) {
         combinedSignal.cleanup()
         attemptController.abort()

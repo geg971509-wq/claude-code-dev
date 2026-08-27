@@ -55,6 +55,7 @@ import { requireComputerUseSwift } from './swiftLoader.js'
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const SCREENSHOT_JPEG_QUALITY = 0.75
+const SCREENSHOT_TIMEOUT_MS = 5_000
 
 /** Logical → physical → API target dims. See `targetImageSize` + COORDINATES.md. */
 function computeTargetDims(
@@ -443,6 +444,8 @@ export function createCliExecutor(opts: {
           targetW,
           targetH,
           opts.preferredDisplayId,
+          opts.autoResolve,
+          opts.doHide,
         ),
       )
       // Ensure the result has fields expected by toolCalls.ts (hidden, displayId).
@@ -479,15 +482,26 @@ export function createCliExecutor(opts: {
         d.height,
         d.scaleFactor,
       )
-      return drainRunLoop(() =>
-        cu.screenshot.captureExcluding(
-          withoutTerminal(opts.allowedBundleIds),
-          SCREENSHOT_JPEG_QUALITY,
-          targetW,
-          targetH,
-          opts.displayId,
-        ),
+      const raw = await drainRunLoop(
+        () =>
+          cu.screenshot.captureExcluding(
+            withoutTerminal(opts.allowedBundleIds),
+            SCREENSHOT_JPEG_QUALITY,
+            targetW,
+            targetH,
+            opts.displayId,
+          ),
+        SCREENSHOT_TIMEOUT_MS,
+        'CU screenshot backstop',
       )
+      return {
+        ...raw,
+        displayWidth: raw.displayWidth ?? raw.width,
+        displayHeight: raw.displayHeight ?? raw.height,
+        originX: raw.originX ?? d.originX,
+        originY: raw.originY ?? d.originY,
+        displayId: raw.displayId ?? opts.displayId ?? d.displayId,
+      }
     },
 
     async zoom(
@@ -501,18 +515,21 @@ export function createCliExecutor(opts: {
         regionLogical.h,
         d.scaleFactor,
       )
-      return drainRunLoop(() =>
-        cu.screenshot.captureRegion(
-          withoutTerminal(allowedBundleIds),
-          regionLogical.x,
-          regionLogical.y,
-          regionLogical.w,
-          regionLogical.h,
-          outW,
-          outH,
-          SCREENSHOT_JPEG_QUALITY,
-          displayId,
-        ),
+      return drainRunLoop(
+        () =>
+          cu.screenshot.captureRegion(
+            withoutTerminal(allowedBundleIds),
+            regionLogical.x,
+            regionLogical.y,
+            regionLogical.w,
+            regionLogical.h,
+            outW,
+            outH,
+            SCREENSHOT_JPEG_QUALITY,
+            displayId,
+          ),
+        SCREENSHOT_TIMEOUT_MS,
+        'CU zoom backstop',
       )
     },
 

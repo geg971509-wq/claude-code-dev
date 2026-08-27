@@ -18,7 +18,7 @@ let pump: ReturnType<typeof setInterval> | undefined
 let pending = 0
 
 function drainTick(cu: ReturnType<typeof requireComputerUseSwift>): void {
-  ;(cu as any)?._drainMainRunLoop?.()
+  cu._drainMainRunLoop?.()
 }
 
 function retain(): void {
@@ -39,10 +39,14 @@ function release(): void {
   }
 }
 
-const TIMEOUT_MS = 30_000
+const DEFAULT_TIMEOUT_MS = 30_000
 
-function timeoutReject(reject: (e: Error) => void): void {
-  reject(new Error(`computer-use native call exceeded ${TIMEOUT_MS}ms`))
+function timeoutReject(
+  reject: (e: Error) => void,
+  timeoutMs: number,
+  label: string,
+): void {
+  reject(new Error(`${label} exceeded ${timeoutMs}ms`))
 }
 
 /**
@@ -58,7 +62,11 @@ export const releasePump = release
  * Await `fn()` with the shared drain pump running. Safe to nest — multiple
  * concurrent drainRunLoop() calls share one setInterval.
  */
-export async function drainRunLoop<T>(fn: () => Promise<T>): Promise<T> {
+export async function drainRunLoop<T>(
+  fn: () => Promise<T>,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  label = 'computer-use native call',
+): Promise<T> {
   if (process.platform !== 'darwin') return fn()
   retain()
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -71,7 +79,13 @@ export async function drainRunLoop<T>(fn: () => Promise<T>): Promise<T> {
     const work = fn()
     work.catch(() => {})
     const timeout = withResolvers<never>()
-    timer = setTimeout(timeoutReject, TIMEOUT_MS, timeout.reject)
+    timer = setTimeout(
+      timeoutReject,
+      timeoutMs,
+      timeout.reject,
+      timeoutMs,
+      label,
+    )
     return await Promise.race([work, timeout.promise])
   } finally {
     clearTimeout(timer)

@@ -9,12 +9,13 @@ import { Pane, Tab, Tabs } from '@anthropic/ink';
 import { Status, buildDiagnostics } from './Status.js';
 import { Config } from './Config.js';
 import { Usage } from './Usage.js';
+import { Stats } from '../Stats.js';
 import type { LocalJSXCommandContext, CommandResultDisplay } from '../../commands.js';
 
 type Props = {
   onClose: (result?: string, options?: { display?: CommandResultDisplay }) => void;
   context: LocalJSXCommandContext;
-  defaultTab: 'Status' | 'Config' | 'Usage';
+  defaultTab: 'Status' | 'Config' | 'Usage' | 'Stats';
 };
 
 export function Settings({ onClose, context, defaultTab }: Props): React.ReactNode {
@@ -49,16 +50,15 @@ export function Settings({ onClose, context, defaultTab }: Props): React.ReactNo
     if (tabsHidden) {
       return;
     }
-    // TODO: Update to "Settings" dialog once we define '/settings'.
-    onClose('Status dialog dismissed', { display: 'system' });
+    onClose('Settings dialog dismissed', { display: 'system' });
   };
 
   // Disable when submenu is open so the submenu's Dialog can handle ESC,
-  // and when Config's search mode is active so its useInput handler
-  // (clear query → exit search) processes Escape first.
+  // when Config's search mode is active so its useInput handler processes
+  // Escape first, and on Stats because it owns its close keybinding.
   useKeybinding('confirm:no', handleEscape, {
     context: 'Settings',
-    isActive: !tabsHidden && !(selectedTab === 'Config' && configOwnsEsc),
+    isActive: !tabsHidden && selectedTab !== 'Stats' && !(selectedTab === 'Config' && configOwnsEsc),
   });
 
   const tabs = [
@@ -79,6 +79,9 @@ export function Settings({ onClose, context, defaultTab }: Props): React.ReactNo
     <Tab key="usage" title="Usage">
       <Usage />
     </Tab>,
+    <Tab key="stats" title="Stats">
+      <Stats onClose={onClose} />
+    </Tab>,
   ];
 
   return (
@@ -94,7 +97,7 @@ export function Settings({ onClose, context, defaultTab }: Props): React.ReactNo
         // Inside a Modal, skip the Tabs-level cap so tall tabs (Status's
         // MCP list) flow to their natural height for the Modal's ScrollBox
         // to scroll. Config still gets contentHeight above — it
-        // paginate internally so this only affects Status/Usage.
+        // paginates internally so this only affects Status/Usage/Stats.
         contentHeight={tabsHidden || insideModal ? undefined : contentHeight}
       >
         {tabs}

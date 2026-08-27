@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import { ripgrepSidecarForTarget } from '../ripgrep-sidecar.ts'
+import {
+  allRipgrepSidecars,
+  ripgrepSidecarForTarget,
+} from '../ripgrep-sidecar.ts'
 
 describe('ripgrepSidecarForTarget', () => {
   test('maps compile targets to vendor subdirs', () => {
@@ -25,5 +28,17 @@ describe('ripgrepSidecarForTarget', () => {
     expect(
       ripgrepSidecarForTarget(undefined, { platform: 'freebsd', arch: 'x64' }),
     ).toEqual({ subdir: 'x64-freebsd', bin: 'rg', asset: '' })
+  })
+})
+
+describe('allRipgrepSidecars', () => {
+  test('collapses win32-x64 onto windows-x64 and keeps one of each layout', () => {
+    const sidecars = allRipgrepSidecars()
+    expect(sidecars.map(s => s.subdir).sort()).toEqual([
+      'arm64-darwin',
+      'x64-darwin',
+      'x64-linux',
+      'x64-win32',
+    ])
   })
 })

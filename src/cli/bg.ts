@@ -66,7 +66,9 @@ function formatTime(ts: number): string {
  * Backward-compatible: sessions without an `engine` field are inferred
  * from the presence of `tmuxSessionName`.
  */
-function resolveSessionEngine(session: SessionEntry): 'tmux' | 'detached' {
+function resolveSessionEngine(
+  session: SessionEntry,
+): 'tmux' | 'detached' | 'pty' {
   if (session.engine) return session.engine
   return session.tmuxSessionName ? 'tmux' : 'detached'
 }
@@ -165,7 +167,7 @@ export async function attachHandler(target: string | undefined): Promise<void> {
   if (!target) {
     // Find bg sessions (tmux or detached)
     const bgSessions = sessions.filter(
-      s => s.tmuxSessionName || s.engine === 'detached',
+      s => s.tmuxSessionName || s.engine === 'detached' || s.engine === 'pty',
     )
     if (bgSessions.length === 0) {
       console.log(
@@ -207,6 +209,10 @@ export async function attachHandler(target: string | undefined): Promise<void> {
         return
       }
       await tmux.attach(session)
+    } else if (engineType === 'pty') {
+      const { PtyEngine } = await import('./bg/engines/pty.js')
+      const pty = new PtyEngine()
+      await pty.attach(session)
     } else {
       const { DetachedEngine } = await import('./bg/engines/detached.js')
       const detached = new DetachedEngine()

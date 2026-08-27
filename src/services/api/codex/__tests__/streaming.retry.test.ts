@@ -125,4 +125,97 @@ describe('streamCodexAttempt retry gate', () => {
     expect((error as ProviderStreamError).retryable).toBe(true)
     expect(isTransientOpenAIError(error)).toBe(true)
   })
+
+  test('keeps interleaved parallel function call arguments separated', async () => {
+    const response = makeResponse('resp_parallel')
+    const stream = streamCodexAttempt({
+      client: clientFor(
+        hangingStream([
+          { type: 'response.created', response },
+          {
+            type: 'response.output_item.added',
+            output_index: 0,
+            item: {
+              type: 'function_call',
+              id: 'item_shell',
+              call_id: 'call_shell',
+              name: 'Bash',
+              arguments: '',
+            },
+          },
+          {
+            type: 'response.output_item.added',
+            output_index: 1,
+            item: {
+              type: 'function_call',
+              id: 'item_read',
+              call_id: 'call_read',
+              name: 'Read',
+              arguments: '',
+            },
+          },
+          {
+            type: 'response.function_call_arguments.delta',
+            output_index: 0,
+            item_id: 'item_shell',
+            delta: '{"command":"git ',
+          },
+          {
+            type: 'response.function_call_arguments.delta',
+            output_index: 1,
+            item_id: 'item_read',
+            delta: '{"file_path":"/tmp/',
+          },
+          {
+            type: 'response.function_call_arguments.delta',
+            output_index: 0,
+            item_id: 'item_shell',
+            delta: 'status"}',
+          },
+          {
+            type: 'response.function_call_arguments.delta',
+            output_index: 1,
+            item_id: 'item_read',
+            delta: 'a"}',
+          },
+          {
+            type: 'response.function_call_arguments.done',
+            output_index: 0,
+            item_id: 'item_shell',
+            name: 'Bash',
+            arguments: '{"command":"git status"}',
+          },
+          {
+            type: 'response.function_call_arguments.done',
+            output_index: 1,
+            item_id: 'item_read',
+            name: 'Read',
+            arguments: '{"file_path":"/tmp/a"}',
+          },
+          { type: 'response.completed', response },
+        ]),
+      ),
+      requestBody: { model: 'gpt-5.4', input: [] } as never,
+      signal: new AbortController().signal,
+      start: Date.now(),
+    })
+
+    const { error, value } = await drain(stream)
+
+    expect(error).toBeUndefined()
+    expect((value as { assistantBlocks: unknown[] }).assistantBlocks).toEqual([
+      {
+        type: 'tool_use',
+        id: 'call_shell',
+        name: 'Bash',
+        input: '{"command":"git status"}',
+      },
+      {
+        type: 'tool_use',
+        id: 'call_read',
+        name: 'Read',
+        input: '{"file_path":"/tmp/a"}',
+      },
+    ])
+  })
 })

@@ -82,6 +82,11 @@ function createAllTimeStatsPromise(): Promise<StatsResult> {
 }
 
 export function Stats({ onClose }: Props): React.ReactNode {
+  const handleClose = useCallback(() => {
+    onClose('Stats dialog dismissed', { display: 'system' });
+  }, [onClose]);
+  useKeybinding('confirm:no', handleClose, { context: 'Settings' });
+
   // Always load all-time stats first (for heatmap)
   const allTimePromise = useMemo(() => createAllTimeStatsPromise(), []);
 
@@ -158,12 +163,6 @@ function StatsContent({ allTimePromise, onClose }: StatsContentProps): React.Rea
 
   // All-time stats for the heatmap (always use all-time)
   const allTimeStats = allTimeResult.type === 'success' ? allTimeResult.data : null;
-
-  const handleClose = useCallback(() => {
-    onClose('Stats dialog dismissed', { display: 'system' });
-  }, [onClose]);
-
-  useKeybinding('confirm:no', handleClose, { context: 'Confirmation' });
 
   useInput((input, key) => {
     // Handle ctrl+c and ctrl+d for closing

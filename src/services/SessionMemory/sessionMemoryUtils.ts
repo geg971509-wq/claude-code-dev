@@ -45,6 +45,7 @@ let lastSummarizedMessageId: string | undefined
 
 // Track extraction state with timestamp (set by sessionMemory.ts)
 let extractionStartedAt: number | undefined
+let extractionInProgress = false
 
 // Track context size at last memory extraction (for minimumTokensBetweenUpdate)
 let tokensAtLastExtraction = 0
@@ -71,14 +72,18 @@ export function setLastSummarizedMessageId(
 /**
  * Mark extraction as started (called from sessionMemory.ts)
  */
-export function markExtractionStarted(): void {
+export function markExtractionStarted(): boolean {
+  if (extractionInProgress) return false
+  extractionInProgress = true
   extractionStartedAt = Date.now()
+  return true
 }
 
 /**
  * Mark extraction as completed (called from sessionMemory.ts)
  */
 export function markExtractionCompleted(): void {
+  extractionInProgress = false
   extractionStartedAt = undefined
 }
 
@@ -202,6 +207,7 @@ export function resetSessionMemoryState(): void {
   sessionMemoryConfig = { ...DEFAULT_SESSION_MEMORY_CONFIG }
   tokensAtLastExtraction = 0
   sessionMemoryInitialized = false
+  extractionInProgress = false
   lastSummarizedMessageId = undefined
   extractionStartedAt = undefined
 }

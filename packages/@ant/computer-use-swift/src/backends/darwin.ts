@@ -86,7 +86,16 @@ export const display: DisplayAPI = {
       const found = all.find(d => d.displayId === displayId)
       if (found) return found
     }
-    return all[0] ?? { width: 1920, height: 1080, scaleFactor: 2, displayId: 1 }
+    return (
+      all[0] ?? {
+        width: 1920,
+        height: 1080,
+        scaleFactor: 2,
+        displayId: 1,
+        originX: 0,
+        originY: 0,
+      }
+    )
   },
 
   listAll(): DisplayGeometry[] {
@@ -108,7 +117,8 @@ export const display: DisplayAPI = {
           var mode = $.CGDisplayCopyDisplayMode(did);
           var pw = $.CGDisplayModeGetPixelWidth(mode);
           var sf = pw > 0 && w > 0 ? pw / w : 2;
-          result.push({width: w, height: h, scaleFactor: sf, displayId: did});
+          var bounds = $.CGDisplayBounds(did);
+          result.push({width: w, height: h, scaleFactor: sf, displayId: did, originX: bounds.origin.x, originY: bounds.origin.y});
         }
         JSON.stringify(result);
       `)
@@ -117,6 +127,8 @@ export const display: DisplayAPI = {
         height: Number(d.height),
         scaleFactor: Number(d.scaleFactor),
         displayId: Number(d.displayId),
+        originX: Number(d.originX),
+        originY: Number(d.originY),
       }))
     } catch {
       try {
@@ -134,7 +146,9 @@ export const display: DisplayAPI = {
               width: Math.round(frame.size.width),
               height: Math.round(frame.size.height),
               scaleFactor: backingFactor,
-              displayId: screenNumber
+              displayId: screenNumber,
+              originX: frame.origin.x,
+              originY: frame.origin.y
             });
           }
           JSON.stringify(result);
@@ -144,9 +158,20 @@ export const display: DisplayAPI = {
           height: Number(d.height),
           scaleFactor: Number(d.scaleFactor),
           displayId: Number(d.displayId),
+          originX: Number(d.originX),
+          originY: Number(d.originY),
         }))
       } catch {
-        return [{ width: 1920, height: 1080, scaleFactor: 2, displayId: 1 }]
+        return [
+          {
+            width: 1920,
+            height: 1080,
+            scaleFactor: 2,
+            displayId: 1,
+            originX: 0,
+            originY: 0,
+          },
+        ]
       }
     }
   },

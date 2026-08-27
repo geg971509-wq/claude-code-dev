@@ -10,12 +10,13 @@ describe('sanitizeCodexRequest', () => {
       stream: true,
       tool_choice: 'auto',
       include: ['reasoning.encrypted_content'],
-      parallel_tool_calls: false,
+      parallel_tool_calls: true,
     } as never)
 
     expect(out.include).toEqual(['reasoning.encrypted_content'])
     expect(out.tool_choice).toBe('auto')
     expect(out.store).toBe(false)
     expect((out as { stream?: boolean }).stream).toBe(true)
+    expect(out.parallel_tool_calls).toBe(true)
   })
 })

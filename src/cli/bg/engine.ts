@@ -21,7 +21,9 @@ export interface SessionEntry {
   bridgeSessionId?: string
   agent?: string
   tmuxSessionName?: string
-  engine?: 'tmux' | 'detached'
+  engine?: 'tmux' | 'detached' | 'pty'
+  ptySocketPath?: string
+  ptyTokenPath?: string
 }
 
 export interface BgStartOptions {
@@ -36,11 +38,11 @@ export interface BgStartResult {
   pid: number
   sessionName: string
   logPath: string
-  engineUsed: 'tmux' | 'detached'
+  engineUsed: 'tmux' | 'detached' | 'pty'
 }
 
 export interface BgEngine {
-  readonly name: 'tmux' | 'detached'
+  readonly name: 'tmux' | 'detached' | 'pty'
   /** Whether the engine provides a TTY for interactive REPL input. */
   readonly supportsInteractiveInput: boolean
   available(): Promise<boolean>

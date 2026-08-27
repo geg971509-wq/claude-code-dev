@@ -19,6 +19,35 @@ import { logForDebugging } from '../utils/debug.js'
 import { fromSDKCompactMetadata } from '../utils/messages/mappers.js'
 import { createUserMessage } from '../utils/messages.js'
 
+export type AutoCompactViewState = {
+  revision: number
+  isCompacting: boolean
+}
+
+export function reduceAutoCompactState(
+  current: AutoCompactViewState,
+  frame: unknown,
+): AutoCompactViewState {
+  if (!frame || typeof frame !== 'object') return current
+  const { revision, state } = frame as {
+    revision?: unknown
+    state?: unknown
+  }
+  if (
+    typeof revision !== 'number' ||
+    !Number.isFinite(revision) ||
+    revision <= current.revision ||
+    typeof state !== 'string'
+  ) {
+    return current
+  }
+  return {
+    revision,
+    isCompacting:
+      state !== 'consumed' && state !== 'discarded' && state !== 'failed',
+  }
+}
+
 /**
  * Converts SDKMessage from CCR to REPL Message types.
  *

@@ -5,7 +5,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/colla
 import { cn } from '../../src/lib/utils';
 import { BrainIcon, ChevronDownIcon } from 'lucide-react';
 import type { ComponentProps, ReactNode } from 'react';
-import { createContext, memo, useCallback, useContext, useEffect, useState } from 'react';
+import { createContext, memo, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { Shimmer } from './shimmer';
 
 interface ReasoningContextValue {
@@ -36,12 +36,20 @@ export type ReasoningProps = ComponentProps<typeof Collapsible> & {
 const AUTO_CLOSE_DELAY = 1000;
 const MS_IN_S = 1000;
 
+export function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
 export const Reasoning = memo(
   ({
     className,
     isStreaming = false,
     open,
-    defaultOpen = true,
+    defaultOpen = false,
     onOpenChange,
     duration: durationProp,
     children,
@@ -57,8 +65,9 @@ export const Reasoning = memo(
       defaultProp: undefined,
     });
 
-    const [hasAutoClosed, setHasAutoClosed] = useState(false);
     const [startTime, setStartTime] = useState<number | null>(null);
+    const wasStreaming = useRef(false);
+    const manuallyToggled = useRef(false);
 
     // Track duration when streaming starts and ends
     useEffect(() => {
@@ -72,23 +81,29 @@ export const Reasoning = memo(
       }
     }, [isStreaming, startTime, setDuration]);
 
-    // Auto-open when streaming starts, auto-close when streaming ends (once only)
-    // Respect prefers-reduced-motion: skip animation auto-close
-    const prefersReducedMotion =
-      typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const reducedMotion = prefersReducedMotion();
 
     useEffect(() => {
-      if (!prefersReducedMotion && defaultOpen && !isStreaming && isOpen && !hasAutoClosed) {
+      const started = isStreaming && !wasStreaming.current;
+      const ended = !isStreaming && wasStreaming.current;
+      wasStreaming.current = isStreaming;
+
+      if (started) {
+        manuallyToggled.current = false;
+        setIsOpen(true);
+        return;
+      }
+      if (ended && isOpen && !manuallyToggled.current && !reducedMotion) {
         const timer = setTimeout(() => {
           setIsOpen(false);
-          setHasAutoClosed(true);
         }, AUTO_CLOSE_DELAY);
 
         return () => clearTimeout(timer);
       }
-    }, [isStreaming, isOpen, defaultOpen, setIsOpen, hasAutoClosed, prefersReducedMotion]);
+    }, [isStreaming, isOpen, setIsOpen, reducedMotion]);
 
     const handleOpenChange = (newOpen: boolean) => {
+      manuallyToggled.current = true;
       setIsOpen(newOpen);
     };
 

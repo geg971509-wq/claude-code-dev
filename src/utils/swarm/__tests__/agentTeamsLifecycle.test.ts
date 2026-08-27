@@ -276,4 +276,40 @@ describe('Agent Teams lifecycle', () => {
 
     expect(result.data.success).toBe(true)
   })
+
+  test('background agents can queue a message for the main conversation', async () => {
+    const [{ SendMessageTool }, queue] = await Promise.all([
+      import('src/tools/SendMessageTool/SendMessageTool.js'),
+      import('src/utils/messageQueueManager.js'),
+    ])
+    queue.resetCommandQueue()
+    const context = {
+      agentId: 'agent-background',
+      getAppState: () => state,
+      setAppState: setState,
+      abortController: new AbortController(),
+    } as any
+
+    const result = await SendMessageTool.call(
+      { to: 'main', message: 'Important result.', summary: 'Result' },
+      context,
+      async () => ({ behavior: 'allow' as const }),
+      undefined as any,
+    )
+
+    expect(result.data).toMatchObject({ success: true, status: 'queued' })
+    expect(queue.getCommandQueue()).toContainEqual(
+      expect.objectContaining({
+        mode: 'prompt',
+        priority: 'next',
+        isMeta: true,
+        skipSlashCommands: true,
+        origin: expect.objectContaining({
+          kind: 'peer',
+          senderTaskId: 'agent-background',
+        }),
+      }),
+    )
+    queue.resetCommandQueue()
+  })
 })

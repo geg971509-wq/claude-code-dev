@@ -66,6 +66,7 @@ export const DEFAULT_BUILD_FEATURES = [
   // 'FORK_SUBAGENT',            // 已禁用：通过 Agent tool 的特殊方式实现了等效功能，无需再开
   'KAIROS', // Kairos 定时任务系统核心
   'COORDINATOR_MODE', // 多 worker 编排模式（AgentSummary 泄露已在 52b61c2c 修复）
+  'CROSS_SESSION_MESSAGING', // ListAgents + 本地/Remote Control 跨会话消息
   // 'UDS_INBOX', // 进程间通信管道（inbox/pipe/peers 等命令）构建后 nodejs 环境卡住
   // 'LAN_PIPES', // 局域网管道，依赖 UDS_INBOX  构建后 nodejs 环境卡住
   'BG_SESSIONS', // 后台会话管理（ps/logs/attach/kill）
@@ -103,6 +104,7 @@ export const DEFAULT_BUILD_FEATURES = [
   'SUBAGENT_SUMMARY_GATE', // 子代理摘要质量门
   'COMPACT_PRESERVE_USER_MESSAGES', // compact 保留真实用户消息 HEAD+TAIL
   'COMPACT_TAIL_PRESERVATION', // compact 后逐字保留最近 N 个 API round（预算 = 上下文 25%，2k-8k）
+  'PRECOMPUTED_COMPACT', // precompute compaction state machine
   'REACTIVE_COMPACT', // 413/media-size 应急压缩（query withhold + tryReactiveCompact；非 reactive-only）
   'FILE_MUTATION_QUEUE', // 同文件 mutation 串行化
   'AGENT_LAUNCH_THROTTLE', // 子代理启动限速

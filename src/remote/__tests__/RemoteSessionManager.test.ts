@@ -21,6 +21,24 @@ async function runIsolated(source: string): Promise<{
 }
 
 describe('RemoteSessionManager', () => {
+  test('rejects stale autocompact state revisions', async () => {
+    const { code, output } = await runIsolated(`
+      const { reduceAutoCompactState } = await import(
+        'src/remote/sdkMessageAdapter.ts'
+      )
+      let state = { revision: 0, isCompacting: false }
+      state = reduceAutoCompactState(state, { state: 'started', revision: 4 })
+      state = reduceAutoCompactState(state, { state: 'consumed', revision: 6 })
+      state = reduceAutoCompactState(state, { state: 'started', revision: 5 })
+      console.log(JSON.stringify(state))
+    `)
+
+    expect(code).toBe(0)
+    expect(output).toContain(
+      JSON.stringify({ revision: 6, isCompacting: false }),
+    )
+  })
+
   test('retains a permission request until a response is accepted', async () => {
     const { code, output } = await runIsolated(`
       import { mock } from 'bun:test'

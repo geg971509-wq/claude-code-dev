@@ -2,16 +2,44 @@
 // Unified Chat Data Model — shared between ACP and RCS chat interfaces
 // =============================================================================
 
-import type { ToolCallContent, PermissionOption, PlanEntry } from '../acp/types'
+import type {
+  AudioContent,
+  EmbeddedResourceContent,
+  ImageContent,
+  PermissionOption,
+  PlanEntry,
+  ResourceLinkContent,
+  TextContent,
+  ToolCallContent,
+} from '../acp/types'
+
+export type RenderableAudioContent = AudioContent & { playable: boolean }
+
+export type RenderableContentBlock =
+  | TextContent
+  | ImageContent
+  | RenderableAudioContent
+  | ResourceLinkContent
+  | EmbeddedResourceContent
+
+export type ThreadPhase =
+  | 'idle'
+  | 'requesting'
+  | 'thinking'
+  | 'responding'
+  | 'using_tool'
+  | 'cancelling'
+  | 'error'
 
 // 工具调用状态
 export type ToolCallStatus =
-  | 'running'
-  | 'complete'
-  | 'error'
+  | 'queued'
+  | 'in_progress'
   | 'waiting_for_confirmation'
+  | 'completed'
   | 'rejected'
-  | 'canceled'
+  | 'error'
+  | 'cancelled'
 
 // 工具调用数据
 export interface ToolCallData {
@@ -32,10 +60,9 @@ export interface ToolCallData {
 
 // 助手消息块 — 普通消息或思考过程
 export type AssistantChunk =
-  | { type: 'message'; text: string }
-  | { type: 'thought'; text: string }
+  | { type: 'message'; content: RenderableContentBlock[] }
+  | { type: 'thought'; text: string; estimatedTokens?: number }
 
-// 用户消息中的图片
 export interface UserMessageImage {
   mimeType: string
   data: string // base64 encoded
@@ -45,8 +72,8 @@ export interface UserMessageImage {
 export interface UserMessageEntry {
   type: 'user_message'
   id: string
-  content: string
-  images?: UserMessageImage[]
+  content: RenderableContentBlock[]
+  deliveryState: 'sending' | 'sent' | 'failed'
 }
 
 // 助手消息条目
@@ -54,6 +81,7 @@ export interface AssistantMessageEntry {
   type: 'assistant_message'
   id: string
   chunks: AssistantChunk[]
+  state: 'streaming' | 'completed' | 'error' | 'cancelled'
 }
 
 // 工具调用条目
@@ -93,12 +121,4 @@ export interface PendingPermission {
   toolInput: Record<string, unknown>
   description?: string
   options?: PermissionOption[]
-}
-
-// 会话列表条目（用于 SessionSidebar）
-export interface SessionListItem {
-  id: string
-  title?: string | null
-  updatedAt?: string | null
-  isActive?: boolean
 }

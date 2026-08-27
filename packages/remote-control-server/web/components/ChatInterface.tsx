@@ -1,25 +1,24 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useReducer, useRef } from 'react';
 import imageCompression from 'browser-image-compression';
 import type { ACPClient } from '../src/acp/client';
-import type {
-  SessionUpdate,
-  PermissionRequestPayload,
-  PermissionOption,
-  ContentBlock,
-  ImageContent,
-} from '../src/acp/types';
-import type {
-  ThreadEntry,
-  ToolCallStatus,
-  ToolCallData,
-  UserMessageImage,
-  UserMessageEntry,
-  AssistantMessageEntry,
-  ToolCallEntry,
-  ChatInputMessage,
-  PendingPermission,
-  PlanDisplayEntry,
-} from '../src/lib/types';
+import type { PermissionRequestPayload, PermissionOption, ContentBlock, ImageContent } from '../src/acp/types';
+import type { ToolCallEntry, ChatInputMessage, PendingPermission } from '../src/lib/types';
+import {
+  acpErrorToThreadActions,
+  acpHistoryReplayCompletedActions,
+  acpPromptFailureMessage,
+  acpUpdateToThreadActionsForState,
+  permissionResponseToolStatus,
+  shouldHandleAcpError,
+  submitAcpPrompt,
+} from '../src/lib/acp-thread-events';
+import {
+  cancelThreadActions,
+  initialThreadState,
+  threadStateReducer,
+  type ThreadState,
+  type ThreadStateAction,
+} from '../src/lib/thread-state';
 import { ChatView } from './chat/ChatView';
 import { ChatInput } from './chat/ChatInput';
 import { PermissionPanel } from './chat/PermissionPanel';
@@ -127,38 +126,15 @@ function PermissionModeSelector({ mode, onModeChange }: { mode: string; onModeCh
 }
 
 // =============================================================================
-// Helper Functions
-// =============================================================================
-
-// Map ACP status string to our status type
-function mapToolStatus(status: string): ToolCallStatus {
-  if (status === 'completed') return 'complete';
-  if (status === 'failed') return 'error';
-  return 'running';
-}
-
-// Find tool call index in entries (search from end, like Zed)
-function findToolCallIndex(entries: ThreadEntry[], toolCallId: string): number {
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i];
-    if (entry && entry.type === 'tool_call' && entry.toolCall.id === toolCallId) {
-      return i;
-    }
-  }
-  return -1;
-}
-
-// =============================================================================
 // ChatInterface Component
 // =============================================================================
 
 export function ChatInterface({ client, agentId }: ChatInterfaceProps) {
-  // Flat list of entries (like Zed's entries: Vec<AgentThreadEntry>)
-  const [entries, setEntries] = useState<ThreadEntry[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [threadState, dispatch] = useReducer(threadStateReducer, null, initialThreadState);
+  const threadStateRef = useRef<ThreadState>(threadState);
+  const { entries, phase, activeAssistantId } = threadState;
+  const isLoading = phase !== 'idle' && phase !== 'error';
   const [sessionReady, setSessionReady] = useState(false);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const activeSessionIdRef = useRef<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [permissionMode, setPermissionMode] = useState(() => localStorage.getItem('acp_permission_mode') || 'default');
@@ -167,25 +143,30 @@ export function ChatInterface({ client, agentId }: ChatInterfaceProps) {
   const { commands: availableCommands } = useCommands(client);
 
   useEffect(() => {
-    activeSessionIdRef.current = activeSessionId;
-  }, [activeSessionId]);
+    threadStateRef.current = threadState;
+  }, [threadState]);
 
-  const resetThreadState = useCallback(() => {
-    setEntries([]);
-    setIsLoading(false);
-    setSessionReady(false);
+  const dispatchThread = useCallback((action: ThreadStateAction) => {
+    threadStateRef.current = threadStateReducer(threadStateRef.current, action);
+    dispatch(action);
   }, []);
+
+  const resetThreadState = useCallback(
+    (sessionId: string | null = null) => {
+      dispatchThread({ type: 'reset', sessionId });
+      setSessionReady(false);
+    },
+    [dispatchThread],
+  );
 
   const storageKey = agentId ? `acp_last_session_${agentId}` : null;
 
   const activateSession = useCallback(
     (sessionId: string, options?: { resetEntries?: boolean }) => {
       const shouldResetEntries = options?.resetEntries ?? true;
-      if (shouldResetEntries) {
-        setEntries([]);
-        setIsLoading(false);
+      if (shouldResetEntries || threadStateRef.current.sessionId !== sessionId) {
+        dispatchThread({ type: 'reset', sessionId });
       }
-      setActiveSessionId(sessionId);
       setSessionReady(true);
       setSupportsImages(client.supportsImages);
       // Persist session ID for restoration on remount
@@ -196,292 +177,34 @@ export function ChatInterface({ client, agentId }: ChatInterfaceProps) {
       }
       console.log('[ChatInterface] Active session:', sessionId, 'supportsImages:', client.supportsImages);
     },
-    [client, storageKey],
+    [client, dispatchThread, storageKey],
   );
 
   // =============================================================================
   // Permission Request Handler
   // =============================================================================
-  const handlePermissionRequest = useCallback((request: PermissionRequestPayload) => {
-    if (activeSessionIdRef.current && request.sessionId !== activeSessionIdRef.current) {
-      return;
-    }
-    console.log('[ChatInterface] Permission request:', request);
-
-    setEntries(prev => {
-      // Find matching tool call (search from end)
-      const toolCallIndex = findToolCallIndex(prev, request.toolCall.toolCallId);
-
-      if (toolCallIndex >= 0) {
-        // Update existing tool call's status
-        return prev.map((entry, index) => {
-          if (index !== toolCallIndex) return entry;
-          if (entry.type !== 'tool_call') return entry;
-          if (entry.toolCall.status !== 'running') return entry;
-
-          return {
-            type: 'tool_call',
-            toolCall: {
-              ...entry.toolCall,
-              status: 'waiting_for_confirmation' as const,
-              permissionRequest: {
-                requestId: request.requestId,
-                options: request.options,
-              },
-            },
-          };
-        });
-      } else {
-        // No matching tool call - create standalone permission request as new entry
-        console.log('[ChatInterface] No matching tool call, creating standalone permission request');
-
-        const permissionToolCall: ToolCallEntry = {
-          type: 'tool_call',
-          toolCall: {
-            id: request.toolCall.toolCallId,
-            title: request.toolCall.title || 'Permission Request',
-            status: 'waiting_for_confirmation',
-            permissionRequest: {
-              requestId: request.requestId,
-              options: request.options,
-            },
-            isStandalonePermission: true,
-          },
-        };
-
-        return [...prev, permissionToolCall];
-      }
-    });
-  }, []);
-
-  // =============================================================================
-  // Session Update Handler (Zed-style: check last entry type)
-  // =============================================================================
-  const handleSessionUpdate = useCallback((sessionId: string, update: SessionUpdate) => {
-    if (activeSessionIdRef.current && sessionId !== activeSessionIdRef.current) {
-      return;
-    }
-
-    // Handle agent message chunk
-    if (update.sessionUpdate === 'agent_message_chunk') {
-      const text = update.content.type === 'text' && update.content.text ? update.content.text : '';
-      if (!text) return;
-
-      setEntries(prev => {
-        const lastEntry = prev[prev.length - 1];
-
-        // If last entry is AssistantMessage, append to it
-        if (lastEntry?.type === 'assistant_message') {
-          const lastChunk = lastEntry.chunks[lastEntry.chunks.length - 1];
-
-          // If last chunk is same type (message), append text
-          if (lastChunk?.type === 'message') {
-            return [
-              ...prev.slice(0, -1),
-              {
-                ...lastEntry,
-                chunks: [...lastEntry.chunks.slice(0, -1), { type: 'message', text: lastChunk.text + text }],
-              },
-            ];
-          }
-
-          // Otherwise add new message chunk
-          return [
-            ...prev.slice(0, -1),
-            {
-              ...lastEntry,
-              chunks: [...lastEntry.chunks, { type: 'message', text }],
-            },
-          ];
-        }
-
-        // Create new AssistantMessage entry
-        const newEntry: AssistantMessageEntry = {
-          type: 'assistant_message',
-          id: `assistant-${Date.now()}`,
-          chunks: [{ type: 'message', text }],
-        };
-        return [...prev, newEntry];
+  const handlePermissionRequest = useCallback(
+    (request: PermissionRequestPayload) => {
+      if (request.sessionId !== threadStateRef.current.sessionId) return;
+      console.log('[ChatInterface] Permission request:', request);
+      const existing = threadStateRef.current.entries.find(
+        entry => entry.type === 'tool_call' && entry.toolCall.id === request.toolCall.toolCallId,
+      );
+      dispatchThread({
+        type: 'tool_upsert',
+        sessionId: request.sessionId,
+        toolCall: {
+          id: request.toolCall.toolCallId,
+          title: request.toolCall.title ?? 'Permission Request',
+          status: 'waiting_for_confirmation',
+          ...(request.toolCall.content === undefined ? {} : { content: request.toolCall.content }),
+          permissionRequest: { requestId: request.requestId, options: request.options },
+          ...(!existing ? { isStandalonePermission: true } : {}),
+        },
       });
-    }
-    // Handle agent thought chunk (NEW - was missing before)
-    else if (update.sessionUpdate === 'agent_thought_chunk') {
-      const text = update.content.type === 'text' && update.content.text ? update.content.text : '';
-      if (!text) return;
-
-      setEntries(prev => {
-        const lastEntry = prev[prev.length - 1];
-
-        // If last entry is AssistantMessage, append to it
-        if (lastEntry?.type === 'assistant_message') {
-          const lastChunk = lastEntry.chunks[lastEntry.chunks.length - 1];
-
-          // If last chunk is same type (thought), append text
-          if (lastChunk?.type === 'thought') {
-            return [
-              ...prev.slice(0, -1),
-              {
-                ...lastEntry,
-                chunks: [...lastEntry.chunks.slice(0, -1), { type: 'thought', text: lastChunk.text + text }],
-              },
-            ];
-          }
-
-          // Otherwise add new thought chunk
-          return [
-            ...prev.slice(0, -1),
-            {
-              ...lastEntry,
-              chunks: [...lastEntry.chunks, { type: 'thought', text }],
-            },
-          ];
-        }
-
-        // Create new AssistantMessage entry with thought
-        const newEntry: AssistantMessageEntry = {
-          type: 'assistant_message',
-          id: `assistant-${Date.now()}`,
-          chunks: [{ type: 'thought', text }],
-        };
-        return [...prev, newEntry];
-      });
-    }
-    // Handle user message chunk (NEW - was missing before)
-    else if (update.sessionUpdate === 'user_message_chunk') {
-      const text = update.content.type === 'text' && update.content.text ? update.content.text : '';
-      if (!text) return;
-
-      setEntries(prev => {
-        const lastEntry = prev[prev.length - 1];
-
-        // If last entry is UserMessage, append to it
-        if (lastEntry?.type === 'user_message') {
-          return [
-            ...prev.slice(0, -1),
-            {
-              ...lastEntry,
-              content: lastEntry.content + text,
-            },
-          ];
-        }
-
-        // Create new UserMessage entry
-        const newEntry: UserMessageEntry = {
-          type: 'user_message',
-          id: `user-${Date.now()}`,
-          content: text,
-        };
-        return [...prev, newEntry];
-      });
-    }
-    // Handle tool call (UPSERT - update if exists, create if not)
-    else if (update.sessionUpdate === 'tool_call') {
-      const toolCallData: ToolCallData = {
-        id: update.toolCallId,
-        title: update.title,
-        status: mapToolStatus(update.status),
-        content: update.content,
-        rawInput: update.rawInput,
-        rawOutput: update.rawOutput,
-      };
-
-      setEntries(prev => {
-        // UPSERT: Check if tool call already exists
-        const existingIndex = findToolCallIndex(prev, update.toolCallId);
-
-        if (existingIndex >= 0) {
-          // UPDATE existing tool call
-          return prev.map((entry, index) => {
-            if (index !== existingIndex) return entry;
-            if (entry.type !== 'tool_call') return entry;
-
-            return {
-              type: 'tool_call',
-              toolCall: {
-                ...entry.toolCall,
-                ...toolCallData,
-              },
-            };
-          });
-        }
-
-        // CREATE new tool call entry
-        const newEntry: ToolCallEntry = {
-          type: 'tool_call',
-          toolCall: toolCallData,
-        };
-        return [...prev, newEntry];
-      });
-    }
-    // Handle tool call update (partial update)
-    else if (update.sessionUpdate === 'tool_call_update') {
-      setEntries(prev => {
-        const existingIndex = findToolCallIndex(prev, update.toolCallId);
-
-        if (existingIndex < 0) {
-          // Tool call not found - create a failed tool call entry (like Zed)
-          console.warn(`[ChatInterface] Tool call not found for update: ${update.toolCallId}`);
-          const failedEntry: ToolCallEntry = {
-            type: 'tool_call',
-            toolCall: {
-              id: update.toolCallId,
-              title: update.title || 'Tool call not found',
-              status: 'error',
-              content: [{ type: 'content', content: { type: 'text', text: 'Tool call not found' } }],
-            },
-          };
-          return [...prev, failedEntry];
-        }
-
-        return prev.map((entry, index) => {
-          if (index !== existingIndex) return entry;
-          if (entry.type !== 'tool_call') return entry;
-
-          const newStatus = update.status ? mapToolStatus(update.status) : entry.toolCall.status;
-          const mergedContent = update.content
-            ? [...(entry.toolCall.content || []), ...update.content]
-            : entry.toolCall.content;
-
-          return {
-            type: 'tool_call',
-            toolCall: {
-              ...entry.toolCall,
-              status: newStatus,
-              ...(update.title && { title: update.title }),
-              content: mergedContent,
-              ...(update.rawInput && { rawInput: update.rawInput }),
-              ...(update.rawOutput && { rawOutput: update.rawOutput }),
-            },
-          };
-        });
-      });
-    }
-    // Handle plan update (replace entire plan)
-    else if (update.sessionUpdate === 'plan') {
-      setEntries(prev => {
-        // Empty entries → remove existing plan
-        if (update.entries.length === 0) {
-          return prev.filter(e => e.type !== 'plan');
-        }
-
-        // Find last plan entry
-        const lastPlanIndex = prev.reduce((acc, entry, i) => (entry.type === 'plan' ? i : acc), -1);
-
-        if (lastPlanIndex >= 0) {
-          // Update existing plan in place
-          return prev.map((entry, index) => (index === lastPlanIndex ? { ...entry, entries: update.entries } : entry));
-        }
-
-        // Create new plan entry
-        const newPlanEntry: PlanDisplayEntry = {
-          type: 'plan',
-          id: `plan-${Date.now()}`,
-          entries: update.entries,
-        };
-        return [...prev, newPlanEntry];
-      });
-    }
-  }, []);
+    },
+    [dispatchThread],
+  );
 
   // =============================================================================
   // Setup Effect
@@ -494,32 +217,40 @@ export function ChatInterface({ client, agentId }: ChatInterfaceProps) {
 
     client.setSessionLoadedHandler(sessionId => {
       console.log('[ChatInterface] Session loaded/resumed:', sessionId);
+      for (const action of acpHistoryReplayCompletedActions(threadStateRef.current, sessionId)) {
+        dispatchThread(action);
+      }
       activateSession(sessionId, { resetEntries: false });
     });
 
     client.setSessionSwitchingHandler(sessionId => {
       console.log('[ChatInterface] Switching to session:', sessionId);
-      setActiveSessionId(sessionId);
-      resetThreadState();
+      resetThreadState(sessionId);
     });
 
-    client.setSessionUpdateHandler((sessionId: string, update: SessionUpdate) => {
-      handleSessionUpdate(sessionId, update);
+    client.setSessionUpdateHandler((sessionId, update) => {
+      for (const action of acpUpdateToThreadActionsForState(threadStateRef.current, sessionId, update)) {
+        dispatchThread(action);
+      }
     });
 
-    client.setPromptCompleteHandler(stopReason => {
+    client.setPromptCompleteHandler((sessionId, stopReason) => {
       console.log('[ChatInterface] Prompt complete:', stopReason);
-      // Always set isLoading=false when prompt completes
-      // This includes stopReason="cancelled" (which is the expected response after client.cancel())
-      // Note: Tool calls are already marked as "canceled" in handleCancel before this fires
-      setIsLoading(false);
+      dispatchThread({
+        type: /cancel|interrupt|abort|stop/i.test(stopReason) ? 'turn_cancelled' : 'turn_completed',
+        sessionId,
+      });
     });
 
     client.setPermissionRequestHandler(handlePermissionRequest);
 
-    client.setErrorMessageHandler(msg => {
+    client.setErrorMessageHandler((msg, sessionId) => {
+      if (!shouldHandleAcpError(threadStateRef.current.sessionId, sessionId)) return;
       console.error('[ChatInterface] Agent error:', msg);
       setErrorMessage(msg);
+      for (const action of acpErrorToThreadActions(sessionId)) {
+        dispatchThread(action);
+      }
       // Clear any existing timer
       if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
       // Auto-clear after 5 seconds
@@ -556,7 +287,7 @@ export function ChatInterface({ client, agentId }: ChatInterfaceProps) {
       client.setPermissionRequestHandler(() => {});
       client.setErrorMessageHandler(() => {});
     };
-  }, [activateSession, client, handlePermissionRequest, handleSessionUpdate, resetThreadState]);
+  }, [activateSession, client, dispatchThread, handlePermissionRequest, resetThreadState]);
 
   // =============================================================================
   // User Actions
@@ -576,7 +307,6 @@ export function ChatInterface({ client, agentId }: ChatInterfaceProps) {
 
     // 1. Clear all entries (like Zed's set_server_state which creates new view)
     resetThreadState();
-    setActiveSessionId(null);
 
     // 3. Create new session (like Zed's initial_state -> connection.new_session())
     // The session_created handler will set sessionReady=true when ready
@@ -589,34 +319,10 @@ export function ChatInterface({ client, agentId }: ChatInterfaceProps) {
   // 3. Do NOT set isLoading=false here - wait for prompt_complete with stopReason="cancelled"
   const handleCancel = () => {
     console.log('[ChatInterface] Cancel requested');
-
-    // Like Zed: iterate all entries, mark Pending/WaitingForConfirmation/InProgress tool calls as Canceled
-    setEntries(prev =>
-      prev.map(entry => {
-        if (entry.type !== 'tool_call') return entry;
-
-        // Check if status should be canceled (matches Zed's logic)
-        const shouldCancel =
-          entry.toolCall.status === 'running' || entry.toolCall.status === 'waiting_for_confirmation';
-
-        if (!shouldCancel) return entry;
-
-        console.log('[ChatInterface] Marking tool call as canceled:', entry.toolCall.id);
-        return {
-          type: 'tool_call',
-          toolCall: {
-            ...entry.toolCall,
-            status: 'canceled' as ToolCallStatus,
-            permissionRequest: undefined, // Clear any pending permission request
-          },
-        };
-      }),
-    );
-
-    // Send cancel notification to server (which forwards to agent)
+    const current = threadStateRef.current;
+    if (!current.sessionId) return;
+    for (const action of cancelThreadActions(current)) dispatchThread(action);
     client.cancel();
-    // Note: Do NOT set isLoading=false here!
-    // Wait for prompt_complete with stopReason="cancelled" from the agent
   };
 
   const handlePermissionResponse = useCallback(
@@ -624,39 +330,23 @@ export function ChatInterface({ client, agentId }: ChatInterfaceProps) {
       console.log('[ChatInterface] Permission response:', { requestId, optionId, optionKind });
       client.respondToPermission(requestId, optionId);
 
-      // Determine new status based on option kind
-      const isRejected = optionKind === 'reject_once' || optionKind === 'reject_always' || optionId === null;
-
-      // Update the tool call status in entries
-      setEntries(prev =>
-        prev.map(entry => {
-          if (entry.type !== 'tool_call') return entry;
-          if (entry.toolCall.permissionRequest?.requestId !== requestId) return entry;
-
-          // For standalone permission requests, mark as complete immediately when approved
-          // For regular tool calls, mark as running (agent will update to complete later)
-          let newStatus: ToolCallStatus;
-          if (isRejected) {
-            newStatus = 'rejected';
-          } else if (entry.toolCall.isStandalonePermission) {
-            newStatus = 'complete';
-          } else {
-            newStatus = 'running';
-          }
-
-          return {
-            type: 'tool_call',
-            toolCall: {
-              ...entry.toolCall,
-              status: newStatus,
-              permissionRequest: undefined,
-              isStandalonePermission: undefined,
-            },
-          };
-        }),
+      const current = threadStateRef.current;
+      const entry = current.entries.find(
+        candidate => candidate.type === 'tool_call' && candidate.toolCall.permissionRequest?.requestId === requestId,
       );
+      if (!current.sessionId || entry?.type !== 'tool_call') return;
+      dispatchThread({
+        type: 'tool_upsert',
+        sessionId: current.sessionId,
+        toolCall: {
+          id: entry.toolCall.id,
+          status: permissionResponseToolStatus(optionId, optionKind, entry.toolCall.isStandalonePermission === true),
+          permissionRequest: undefined,
+          isStandalonePermission: undefined,
+        },
+      });
     },
-    [client],
+    [client, dispatchThread],
   );
 
   // =============================================================================
@@ -721,84 +411,59 @@ export function ChatInterface({ client, agentId }: ChatInterfaceProps) {
       const text = message.text.trim();
       const images = message.images || [];
 
-      if ((!text && images.length === 0) || isLoading || !sessionReady) return;
-
-      const contentBlocks: ContentBlock[] = [];
-
-      if (text) {
-        contentBlocks.push({ type: 'text', text });
+      const current = threadStateRef.current;
+      if ((!text && images.length === 0) || !sessionReady || (current.phase !== 'idle' && current.phase !== 'error')) {
+        return;
       }
 
-      // Convert images to ContentBlock
-      const userImages: UserMessageImage[] = [];
-
-      for (const img of images) {
-        try {
-          const dataUrl = `data:${img.mimeType};base64,${img.data}`;
-          let blob: Blob;
-          if (dataUrl.startsWith('data:')) {
-            blob = dataUrlToBlob(dataUrl);
-          } else {
-            const response = await fetch(dataUrl);
-            blob = await response.blob();
-          }
-
+      const sessionId = current.sessionId;
+      if (!sessionId) return;
+      const contentBlocks: ContentBlock[] = [
+        ...(text ? [{ type: 'text' as const, text }] : []),
+        ...images.map(image => ({
+          type: 'image' as const,
+          mimeType: image.mimeType,
+          data: image.data,
+        })),
+      ];
+      const result = await submitAcpPrompt({
+        sessionId,
+        content: contentBlocks,
+        dispatch: dispatchThread,
+        sendPrompt: blocks => client.sendPrompt(blocks, sessionId),
+        prepareImage: async image => {
+          const blob = dataUrlToBlob(`data:${image.mimeType};base64,${image.data}`);
           let finalBlob: Blob = blob;
-          let finalMimeType = img.mimeType;
-
+          let finalMimeType = image.mimeType;
           if (blob.size > 2 * 1024 * 1024) {
             const imageFile = new File([blob], 'image.jpg', { type: blob.type });
             finalBlob = await imageCompression(imageFile, IMAGE_COMPRESSION_OPTIONS);
             finalMimeType = 'image/jpeg';
           }
-
           const base64Data = await new Promise<string>((resolve, reject) => {
             const reader = new FileReader();
             reader.onloadend = () => {
-              const result = reader.result as string;
-              const commaIndex = result.indexOf(',');
-              resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
+              const value = reader.result as string;
+              const commaIndex = value.indexOf(',');
+              resolve(commaIndex >= 0 ? value.slice(commaIndex + 1) : value);
             };
             reader.onerror = () => reject(new Error('FileReader error: ' + reader.error?.message));
             reader.readAsDataURL(finalBlob);
           });
-
-          const imageContent: ImageContent = {
-            type: 'image',
-            mimeType: finalMimeType,
-            data: base64Data,
-          };
-          contentBlocks.push(imageContent);
-
-          userImages.push({
-            mimeType: finalMimeType,
-            data: base64Data,
-          });
-        } catch (error) {
-          console.error('[ChatInterface] Failed to process image:', error);
+          return { type: 'image', mimeType: finalMimeType, data: base64Data } satisfies ImageContent;
+        },
+      });
+      const failureMessage = acpPromptFailureMessage(result);
+      if (failureMessage && threadStateRef.current.sessionId === sessionId) {
+        if (result.status !== 'sent') {
+          console.error(`[ChatInterface] Prompt ${result.status}:`, result.error);
         }
-      }
-
-      if (contentBlocks.length === 0) return;
-
-      // Add user message entry
-      const userEntry: UserMessageEntry = {
-        type: 'user_message',
-        id: `user-${Date.now()}`,
-        content: text,
-        images: userImages.length > 0 ? userImages : undefined,
-      };
-      setEntries(prev => [...prev, userEntry]);
-      setIsLoading(true);
-
-      try {
-        await client.sendPrompt(contentBlocks);
-      } catch (error) {
-        console.error('[ChatInterface] Failed to send prompt:', error);
-        setIsLoading(false);
+        setErrorMessage(failureMessage);
+        if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+        errorTimerRef.current = setTimeout(() => setErrorMessage(null), 5000);
       }
     },
-    [isLoading, sessionReady, client],
+    [sessionReady, client, dispatchThread],
   );
 
   return (
@@ -806,7 +471,8 @@ export function ChatInterface({ client, agentId }: ChatInterfaceProps) {
       {/* Chat messages — unified ChatView */}
       <ChatView
         entries={entries}
-        isLoading={isLoading && !sessionReady ? false : isLoading}
+        phase={sessionReady ? phase : 'idle'}
+        activeAssistantId={sessionReady ? activeAssistantId : null}
         onPermissionRespond={(requestId, optionId, optionKind) => {
           handlePermissionResponse(requestId, optionId, optionKind as PermissionOption['kind'] | null);
         }}
@@ -870,6 +536,7 @@ export function ChatInterface({ client, agentId }: ChatInterfaceProps) {
           disabled={!sessionReady}
           placeholder={sessionReady ? '给 Claude 发送消息…' : '等待会话...'}
           supportsImages={supportsImages}
+          onError={setErrorMessage}
           commands={availableCommands.length > 0 ? availableCommands : undefined}
         />
       </div>

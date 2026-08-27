@@ -10,6 +10,9 @@ const terminalSetup = {
       return 'Enable Option+Enter key binding for newlines and visual bell'
     }
     const native = nativeCsiuDisplayName(env.terminal)
+    if (native === 'iTerm2') {
+      return 'Check terminal setup (Shift+Enter is native; enables clipboard access in iTerm2)'
+    }
     if (native) {
       return `Check terminal setup (Shift+Enter is natively supported in ${native})`
     }

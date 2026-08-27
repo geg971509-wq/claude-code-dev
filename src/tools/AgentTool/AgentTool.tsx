@@ -669,6 +669,7 @@ export const AgentTool = buildTool({
       agentDefinition: selectedAgent,
       promptMessages,
       toolUseContext,
+      effectiveContextWindow: toolUseContext.effectiveContextWindow,
       canUseTool,
       isAsync: shouldRunAsync,
       querySource:

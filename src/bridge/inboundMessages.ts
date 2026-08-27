@@ -6,6 +6,59 @@ import type {
 import type { UUID } from 'crypto'
 import type { SDKMessage } from '../entrypoints/agentSdkTypes.js'
 import { detectImageFormatFromBase64 } from '../utils/imageResizer.js'
+import {
+  parsePeerMessageEnvelope,
+  parsePeerReceipt,
+  type ParsedPeerEnvelope,
+  type PeerReceipt,
+} from '../utils/peerMessageEnvelope.js'
+
+export type InboundMessageFields =
+  | {
+      kind: 'human'
+      content: string | Array<ContentBlockParam>
+      uuid: UUID | undefined
+    }
+  | {
+      kind: 'peer'
+      content: string
+      peer: ParsedPeerEnvelope
+      uuid: UUID | undefined
+    }
+  | { kind: 'receipt'; receipt: PeerReceipt; uuid: UUID | undefined }
+
+export async function handleCrossSessionInbound(
+  msg: SDKMessage,
+  fields: InboundMessageFields,
+): Promise<boolean> {
+  const { receiveCrossSessionMessage, receiveCrossSessionReceipt } =
+    await import('../utils/crossSessionMessaging.js')
+  if (fields.kind === 'receipt') {
+    receiveCrossSessionReceipt(fields.receipt)
+    return true
+  }
+  if (fields.kind !== 'peer') return false
+
+  const [{ extractInboundAttachments }, { parseAddress }] = await Promise.all([
+    import('./inboundAttachments.js'),
+    import('../utils/peerAddress.js'),
+  ])
+  const address = parseAddress(fields.peer.from)
+  const transport = address.scheme === 'cloud' ? 'cloud' : 'bridge'
+  await receiveCrossSessionMessage({
+    msgId: fields.peer.msgId,
+    uuid: fields.uuid ?? fields.peer.msgId,
+    from: fields.peer.from,
+    name: fields.peer.name,
+    content: fields.content,
+    priority: 'next',
+    transport,
+    fromMode: fields.peer.fromMode,
+    selfSent: false,
+    attachments: extractInboundAttachments(msg),
+  })
+  return true
+}
 
 /**
  * Process an inbound user message from the bridge, extracting content
@@ -20,9 +73,7 @@ import { detectImageFormatFromBase64 } from '../utils/imageResizer.js'
  */
 export function extractInboundMessageFields(
   msg: SDKMessage,
-):
-  | { content: string | Array<ContentBlockParam>; uuid: UUID | undefined }
-  | undefined {
+): InboundMessageFields | undefined {
   if (msg.type !== 'user') return undefined
   const content = (
     msg.message as { content?: string | Array<ContentBlockParam> } | undefined
@@ -35,7 +86,15 @@ export function extractInboundMessageFields(
       ? (msg.uuid as UUID)
       : undefined
 
+  if (typeof content === 'string') {
+    const receipt = parsePeerReceipt(content)
+    if (receipt) return { kind: 'receipt', receipt, uuid }
+    const peer = parsePeerMessageEnvelope(content)
+    if (peer) return { kind: 'peer', content: peer.content, peer, uuid }
+  }
+
   return {
+    kind: 'human',
     content: Array.isArray(content) ? normalizeImageBlocks(content) : content,
     uuid,
   }

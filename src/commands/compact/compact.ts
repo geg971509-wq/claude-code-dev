@@ -13,6 +13,7 @@ import {
 import { suppressCompactWarning } from '../../services/compact/compactWarningState.js'
 import { microcompactMessages } from '../../services/compact/microCompact.js'
 import { runPostCompactCleanup } from '../../services/compact/postCompactCleanup.js'
+import { mergePrecomputedResult } from '../../services/compact/precomputedCompact.js'
 import { trySessionMemoryCompaction } from '../../services/compact/sessionMemoryCompact.js'
 import { setLastSummarizedMessageId } from '../../services/SessionMemory/sessionMemoryUtils.js'
 import type { ToolUseContext } from '../../Tool.js'
@@ -51,6 +52,9 @@ export const call: LocalCommandCall = async (args, context) => {
         context.agentId,
       )
       if (sessionMemoryResult) {
+        await context.precomputedCompactManager?.discard(
+          context.agentId ?? 'main',
+        )
         getUserContext.cache.clear?.()
         runPostCompactCleanup()
         // Reset cache read baseline so the post-compact drop isn't flagged
@@ -88,6 +92,22 @@ export const call: LocalCommandCall = async (args, context) => {
       getCacheSharingParams(context, []),
     ])
     const messagesForCompact = microcompactResult.messages
+    const precomputeKey = context.agentId ?? 'main'
+    let precomputed
+    if (!customInstructions && context.precomputedCompactManager) {
+      const entry = await context.precomputedCompactManager.consume(
+        precomputeKey,
+        context.options.mainLoopModel,
+        messagesForCompact,
+        Date.now(),
+        context.abortController.signal,
+      )
+      if (entry) {
+        precomputed = mergePrecomputedResult(entry, messagesForCompact)
+      }
+    } else {
+      await context.precomputedCompactManager?.discard(precomputeKey)
+    }
 
     const result = await compactConversation(
       messagesForCompact,
@@ -96,6 +116,8 @@ export const call: LocalCommandCall = async (args, context) => {
       false,
       customInstructions,
       false,
+      undefined,
+      precomputed ? { precomputed } : undefined,
     )
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages

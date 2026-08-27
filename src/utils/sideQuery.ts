@@ -72,6 +72,7 @@ type BetaJSONOutputFormat = Anthropic.Beta.Messages.BetaJSONOutputFormat
 type BetaThinkingConfigParam = Anthropic.Beta.Messages.BetaThinkingConfigParam
 
 export type SideQueryOptions = {
+  effectiveContextWindow?: number
   /** Model to use for the query */
   model: string
   /**

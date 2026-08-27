@@ -69,6 +69,7 @@ export type CacheSafeParams = {
   toolUseContext: ToolUseContext
   /** Parent context messages for prompt cache sharing */
   forkContextMessages: Message[]
+  effectiveContextWindow?: number
 }
 
 // The post-turn snapshot slot (saveCacheSafeParams/getLastCacheSafeParams)
@@ -127,6 +128,7 @@ export function createCacheSafeParams(
   context: REPLHookContext,
 ): CacheSafeParams {
   return {
+    effectiveContextWindow: context.toolUseContext.effectiveContextWindow,
     systemPrompt: context.systemPrompt,
     userContext: context.userContext,
     systemContext: context.systemContext,
@@ -371,6 +373,7 @@ export function createSubagentContext(
         }
 
   return {
+    effectiveContextWindow: parentContext.effectiveContextWindow,
     // Preserve the parent Langfuse trace separately so nested side queries
     // like auto_mode can attach to the main agent trace instead of the
     // subagent's own trace.
@@ -568,6 +571,7 @@ export async function runForkedAgent({
       systemContext,
       canUseTool,
       toolUseContext: isolatedToolUseContext,
+      effectiveContextWindow: cacheSafeParams.effectiveContextWindow,
       querySource,
       maxOutputTokensOverride: maxOutputTokens,
       maxTurns,

@@ -14,6 +14,7 @@ import { isProcessRunning } from './genericProcessUtils.js'
 import { getPlatform } from './platform.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
 import { getAgentId } from './teammate.js'
+import { getUdsMessagingSocketPath } from './udsMessaging.js'
 
 export type SessionKind = 'interactive' | 'bg' | 'daemon' | 'daemon-worker'
 export type SessionStatus = 'busy' | 'idle' | 'waiting'
@@ -83,11 +84,17 @@ export async function registerSession(): Promise<boolean> {
         startedAt: Date.now(),
         kind,
         entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT,
+        ...(feature('CROSS_SESSION_MESSAGING')
+          ? { messagingSocketPath: getUdsMessagingSocketPath() }
+          : {}),
         ...(feature('BG_SESSIONS')
           ? {
               name: process.env.CLAUDE_CODE_SESSION_NAME,
               logPath: process.env.CLAUDE_CODE_SESSION_LOG,
               agent: process.env.CLAUDE_CODE_AGENT,
+              engine: process.env.CLAUDE_CODE_SESSION_ENGINE,
+              ptySocketPath: process.env.CLAUDE_CODE_PTY_SOCKET,
+              ptyTokenPath: process.env.CLAUDE_CODE_PTY_TOKEN,
             }
           : {}),
       }),

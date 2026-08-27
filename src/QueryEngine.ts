@@ -37,7 +37,12 @@ import { query } from './query.js'
 import { categorizeRetryableAPIError } from './services/api/errors.js'
 import type { MCPServerConnection } from './services/mcp/types.js'
 import type { AppState } from './state/AppState.js'
-import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
+import {
+  type CompactionStateEvent,
+  type Tools,
+  type ToolUseContext,
+  toolMatchesName,
+} from './Tool.js'
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from 'src/tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import { getProviderErrorStatus } from '@ant/model-provider'
@@ -152,6 +157,7 @@ export type QueryEngineConfig = {
   maxTurns?: number
   maxBudgetUsd?: number
   taskBudget?: { total: number }
+  effectiveContextWindow?: number
   jsonSchema?: Record<string, unknown>
   verbose?: boolean
   replayUserMessages?: boolean
@@ -159,6 +165,7 @@ export type QueryEngineConfig = {
   handleElicitation?: ToolUseContext['handleElicitation']
   includePartialMessages?: boolean
   setSDKStatus?: (status: SDKStatus) => void
+  onCompactionState?: (event: CompactionStateEvent) => void
   abortController?: AbortController
   orphanedPermission?: OrphanedPermission
   /**
@@ -244,6 +251,7 @@ export class QueryEngine {
       includePartialMessages = false,
       agents = [],
       setSDKStatus,
+      onCompactionState,
       orphanedPermission,
     } = this.config
 
@@ -347,6 +355,7 @@ export class QueryEngine {
     }
 
     let processUserInputContext: ProcessUserInputContext = {
+      effectiveContextWindow: this.config.effectiveContextWindow,
       messages: this.mutableMessages,
       // Slash commands that mutate the message array (e.g. /force-snip)
       // call setMessages(fn).  In interactive mode this writes back to
@@ -406,6 +415,7 @@ export class QueryEngine {
         })
       },
       setSDKStatus,
+      onCompactionState,
       contentReplacementState: this.contentReplacementState,
     }
 
@@ -506,6 +516,7 @@ export class QueryEngine {
     // Recreate after processing the prompt to pick up updated messages and
     // model (from slash commands).
     processUserInputContext = {
+      effectiveContextWindow: this.config.effectiveContextWindow,
       messages,
       setMessages: () => {},
       onChangeAPIKey: () => {},
@@ -540,6 +551,7 @@ export class QueryEngine {
       updateFileHistoryState: processUserInputContext.updateFileHistoryState,
       updateAttributionState: processUserInputContext.updateAttributionState,
       setSDKStatus,
+      onCompactionState,
       contentReplacementState: this.contentReplacementState,
     }
 
@@ -698,6 +710,7 @@ export class QueryEngine {
       systemContext,
       canUseTool: wrappedCanUseTool,
       toolUseContext: processUserInputContext,
+      effectiveContextWindow: this.config.effectiveContextWindow,
       fallbackModel,
       querySource: 'sdk',
       maxTurns,
@@ -1272,6 +1285,7 @@ export async function* ask({
   maxTurns,
   maxBudgetUsd,
   taskBudget,
+  effectiveContextWindow,
   canUseTool,
   mutableMessages = [],
   getReadFileCache,
@@ -1289,6 +1303,7 @@ export async function* ask({
   handleElicitation,
   agents = [],
   setSDKStatus,
+  onCompactionState,
   orphanedPermission,
 }: {
   commands: Command[]
@@ -1303,6 +1318,7 @@ export async function* ask({
   maxTurns?: number
   maxBudgetUsd?: number
   taskBudget?: { total: number }
+  effectiveContextWindow?: number
   canUseTool: CanUseToolFn
   mutableMessages?: Message[]
   customSystemPrompt?: string
@@ -1320,6 +1336,7 @@ export async function* ask({
   handleElicitation?: ToolUseContext['handleElicitation']
   agents?: AgentDefinition[]
   setSDKStatus?: (status: SDKStatus) => void
+  onCompactionState?: (event: CompactionStateEvent) => void
   orphanedPermission?: OrphanedPermission
 }): AsyncGenerator<SDKMessage, void, unknown> {
   const engine = new QueryEngine({
@@ -1341,12 +1358,14 @@ export async function* ask({
     maxTurns,
     maxBudgetUsd,
     taskBudget,
+    effectiveContextWindow,
     jsonSchema,
     verbose,
     handleElicitation,
     replayUserMessages,
     includePartialMessages,
     setSDKStatus,
+    onCompactionState,
     abortController,
     orphanedPermission,
     ...(feature('HISTORY_SNIP')

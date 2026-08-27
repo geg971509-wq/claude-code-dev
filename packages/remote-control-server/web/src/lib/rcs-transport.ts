@@ -258,8 +258,7 @@ export class RCSTransport implements ChatTransport<UIMessage> {
             case 'status': {
               const msg =
                 (typeof payload.message === 'string' ? payload.message : '') ||
-                payload.content ||
-                ''
+                (typeof payload.content === 'string' ? payload.content : '')
               if (/connecting|waiting|initializing|Remote Control/i.test(msg))
                 return
               break

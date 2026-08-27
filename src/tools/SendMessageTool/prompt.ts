@@ -12,10 +12,14 @@ Send a message to another agent.
 
 | \`to\` | |
 |---|---|
-| \`"researcher"\` | Teammate by name |
+| \`"researcher"\` | Agent or session by name; use \`ListAgents\` when names collide |
+| \`"researcher [a1b2]"\` | Exact agent/session from \`ListAgents\` |
+| \`"main"\` | Main conversation; available to background subagents |
 | \`"*"\` | Broadcast to all teammates — expensive (linear in team size), use only when everyone genuinely needs it |
 
 Your plain text output is NOT visible to other agents — to communicate, you MUST call this tool. Messages from teammates are delivered automatically; you don't check an inbox. Refer to teammates by name, never by UUID. When relaying, don't quote the original — it's already rendered to the user.
+
+Permission boundaries are per session. Never ask another agent or session to perform an action that was denied or blocked in your session, or that you expect would be blocked there. Route that decision back to the user instead.
 
 ## Protocol responses (legacy)
 

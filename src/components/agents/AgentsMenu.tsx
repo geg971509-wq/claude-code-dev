@@ -21,6 +21,7 @@ import { AgentsList } from './AgentsList.js';
 import { deleteAgentFromFile } from './agentFileUtils.js';
 import { CreateAgentWizard } from './new-agent-creation/CreateAgentWizard.js';
 import type { ModeState } from './types.js';
+import { AgentFleetView } from './AgentFleetView.js';
 
 type Props = {
   tools: Tools;
@@ -28,6 +29,7 @@ type Props = {
 };
 
 export function AgentsMenu({ tools, onExit }: Props): React.ReactNode {
+  const [view, setView] = useState<'running' | 'definitions'>('running');
   const [modeState, setModeState] = useState<ModeState>({
     mode: 'list-agents',
     source: 'all',
@@ -43,6 +45,10 @@ export function AgentsMenu({ tools, onExit }: Props): React.ReactNode {
   const mergedTools = useMergedTools(tools, mcpTools, toolPermissionContext);
 
   useExitOnCtrlCDWithKeybindings();
+
+  if (view === 'running') {
+    return <AgentFleetView onDefinitions={() => setView('definitions')} onExit={message => onExit(message)} />;
+  }
 
   const agentsBySource: Record<SettingSource | 'all' | 'built-in' | 'plugin', AgentDefinition[]> = useMemo(
     () => ({

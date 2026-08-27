@@ -1187,6 +1187,7 @@ export async function runInProcessTeammate(
             agentDefinition: iterationAgentDefinition,
             promptMessages,
             toolUseContext,
+            effectiveContextWindow: toolUseContext.effectiveContextWindow,
             canUseTool: createInProcessCanUseTool(
               identity,
               currentWorkAbortController,

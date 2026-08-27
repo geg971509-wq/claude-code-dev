@@ -53,14 +53,17 @@ export type SessionUpdateHandler = (
   update: SessionUpdate,
 ) => void
 export type SessionCreatedHandler = (sessionId: string) => void
-export type PromptCompleteHandler = (stopReason: string) => void
+export type PromptCompleteHandler = (
+  sessionId: string,
+  stopReason: string,
+) => void
 export type PermissionRequestHandler = (
   request: PermissionRequestPayload,
 ) => void
 export type BrowserToolCallHandler = (
   params: BrowserToolParams,
 ) => Promise<BrowserToolResult>
-export type ErrorMessageHandler = (message: string) => void
+export type ErrorMessageHandler = (message: string, sessionId?: string) => void
 export type ModelChangedHandler = (modelId: string) => void
 export type ModelStateChangedHandler = (state: SessionModelState | null) => void
 export type AvailableCommandsChangedHandler = (
@@ -416,6 +419,11 @@ export class ACPClient {
         console.error('[ACPClient] Error:', response.payload)
         const errorMsg =
           response.payload?.message || JSON.stringify(response.payload)
+        if (response.payload.sessionId !== undefined) {
+          console.error('[ACPClient] Agent error:', errorMsg)
+          this.onErrorMessage?.(errorMsg, response.payload.sessionId)
+          break
+        }
         this.pendingSessionTarget = null
         // Reject pending session operations if any (clear their timers)
         if (this.pendingSessionList) {
@@ -441,7 +449,7 @@ export class ACPClient {
         } else {
           // After connected, notify UI about the error
           console.error('[ACPClient] Agent error:', errorMsg)
-          this.onErrorMessage?.(errorMsg)
+          this.onErrorMessage?.(errorMsg, response.payload.sessionId)
         }
         break
 
@@ -532,7 +540,10 @@ export class ACPClient {
         break
 
       case 'prompt_complete':
-        this.onPromptComplete?.(response.payload.stopReason)
+        this.onPromptComplete?.(
+          response.payload.sessionId,
+          response.payload.stopReason,
+        )
         break
 
       case 'permission_request':
@@ -653,7 +664,16 @@ export class ACPClient {
   // Reference: Zed's MessageEditor.contents() builds Vec<acp::ContentBlock>
   // and sends via AcpThread.send()
   // Accepts either a string (for backward compatibility) or ContentBlock[]
-  async sendPrompt(content: string | ContentBlock[]): Promise<void> {
+  async sendPrompt(
+    content: string | ContentBlock[],
+    expectedSessionId?: string,
+  ): Promise<void> {
+    if (
+      expectedSessionId !== undefined &&
+      this.sessionId !== expectedSessionId
+    ) {
+      throw new Error('Session changed before prompt send')
+    }
     if (!this.sessionId) {
       throw new Error('No active session')
     }

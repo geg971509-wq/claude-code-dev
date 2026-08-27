@@ -2,11 +2,13 @@ import chalk from 'chalk';
 import * as React from 'react';
 import type { CommandResultDisplay } from '../../commands.js';
 import { ModelPicker } from '../../components/ModelPicker.js';
+import { getSessionId } from '../../bootstrap/state.js';
 import { COMMON_HELP_ARGS, COMMON_INFO_ARGS } from '../../constants/xml.js';
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../../services/analytics/index.js';
+import { discardPrecomputedCompactForSession } from '../../services/compact/precomputedCompact.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
 import type { EffortLevel } from '../../utils/effort.js';
@@ -53,6 +55,7 @@ function ModelPickerWrapper({
       from_model: mainLoopModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       to_model: model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     });
+    void discardPrecomputedCompactForSession(getSessionId());
     setAppState(prev => ({
       ...prev,
       mainLoopModel: model,
@@ -177,6 +180,7 @@ function SetModelAndClose({
     }
 
     function setModel(modelValue: string | null): void {
+      void discardPrecomputedCompactForSession(getSessionId());
       setAppState(prev => ({
         ...prev,
         mainLoopModel: modelValue,

@@ -1,5 +1,5 @@
 export interface FrontmostAppInfo {
-  bundleId: string // macOS: bundle ID, Windows: exe path
+  bundleId: string
   appName: string
 }
 

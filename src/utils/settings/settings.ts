@@ -316,6 +316,12 @@ export function getSettingsForSource(
   return result
 }
 
+export function hasIsolatePeerMachines(): boolean {
+  return getEnabledSettingSources().some(
+    source => getSettingsForSource(source)?.isolatePeerMachines === true,
+  )
+}
+
 function getSettingsForSourceUncached(
   source: SettingSource,
 ): SettingsJson | null {

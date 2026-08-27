@@ -7,6 +7,7 @@
  * its socket accepts a ping/pong round-trip.
  */
 
+import { randomUUID } from 'node:crypto'
 import { createConnection, type Socket } from 'net'
 import { readdir, readFile } from 'fs/promises'
 import { join } from 'path'
@@ -18,6 +19,27 @@ import { jsonParse, jsonStringify } from './slowOperations.js'
 import type { SessionKind } from './concurrentSessions.js'
 import { MAX_UDS_FRAME_BYTES, type UdsMessage } from './udsMessaging.js'
 import { attachUdsResponseReader, getChunkBytes } from './udsResponseReader.js'
+import type {
+  PeerEnvelopeMetadata,
+  PeerReceipt,
+} from './peerMessageEnvelope.js'
+import {
+  buildUdsPeerReceipt,
+  buildUdsPeerUserMessage,
+  isUdsFleetActionResponse,
+  isUdsFleetSnapshotResponse,
+} from './peerMessageEnvelope.js'
+import type {
+  AgentFleetAction,
+  AgentFleetActionResult,
+  AgentFleetSnapshot,
+} from '../services/agentFleet/types.js'
+import type { LocalPeerFile } from './peerFileTransfer.js'
+import {
+  cancelOutstandingPeerSend,
+  registerOutstandingPeerSend,
+} from './peerMessaging.js'
+import type { QueuePriority } from '../types/textInputTypes.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -33,6 +55,13 @@ export type PeerSession = {
   messagingSocketPath?: string
   entrypoint?: string
   bridgeSessionId?: string | null
+  status?: string
+  waitingFor?: string
+  logPath?: string
+  engine?: 'tmux' | 'detached' | 'pty'
+  ptySocketPath?: string
+  ptyTokenPath?: string
+  updatedAt?: number
   alive: boolean
 }
 
@@ -48,6 +77,28 @@ export class UdsPeerConnectionError extends Error {
     this.socketPath = socketPath
   }
 }
+
+type UdsPeerSendInput = {
+  content: string
+  msg_id?: string
+  summary?: string
+  fromMode?: PeerEnvelopeMetadata['fromMode']
+  priority?: QueuePriority
+  attachments?: LocalPeerFile[]
+  sessionId?: string
+}
+
+type UdsPeerSendResult = {
+  msgId: string
+  status: PeerReceipt['status']
+}
+
+export type AgentFleetUdsRequestOptions = {
+  readonly requestId?: string
+  readonly timeoutMs?: number
+}
+
+export const AGENT_FLEET_UDS_TIMEOUT_MS = 1_500
 
 // ---------------------------------------------------------------------------
 // Session directory
@@ -102,6 +153,11 @@ export async function listAllLiveSessions(): Promise<PeerSession[]> {
         messagingSocketPath: data.messagingSocketPath as string | undefined,
         entrypoint: data.entrypoint as string | undefined,
         bridgeSessionId: data.bridgeSessionId as string | null | undefined,
+        status: data.status as string | undefined,
+        waitingFor: data.waitingFor as string | undefined,
+        logPath: data.logPath as string | undefined,
+        engine: data.engine as PeerSession['engine'],
+        updatedAt: data.updatedAt as number | undefined,
         alive: true,
       })
     } catch {
@@ -203,11 +259,12 @@ export async function isPeerAlive(
  * Send a text message to a peer's UDS socket. This is the high-level helper
  * used by SendMessageTool for `uds:<path>` addresses.
  */
-export async function sendToUdsSocket(
+async function sendAuthenticatedMessage(
   targetSocketPath: string,
-  message: string | Record<string, unknown>,
+  message: UdsMessage,
   timeoutMs = 5000,
-): Promise<void> {
+  acceptResponse?: (response: UdsMessage) => boolean,
+): Promise<UdsMessage> {
   const { parseUdsTarget } = await import('./udsMessaging.js')
   const target = parseUdsTarget(targetSocketPath)
   const authToken = await findAuthTokenForSocketPath(target.socketPath)
@@ -215,21 +272,10 @@ export async function sendToUdsSocket(
     throw new Error(`No auth token found for peer at ${target.socketPath}`)
   }
 
-  const data = typeof message === 'string' ? message : jsonStringify(message)
-  const udsMsg: UdsMessage = {
-    type: 'text',
-    data,
-    ts: new Date().toISOString(),
-  }
-
-  // Lazily import to avoid circular dep at module-load time
-  const { getUdsMessagingSocketPath } = await import('./udsMessaging.js')
-  udsMsg.from = getUdsMessagingSocketPath()
-
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<UdsMessage>((resolve, reject) => {
     let settled = false
     let conn: ReturnType<typeof createConnection>
-    const finish = (error?: Error): void => {
+    const finish = (error?: Error, response?: UdsMessage): void => {
       if (settled) return
       settled = true
       if (error) {
@@ -237,19 +283,27 @@ export async function sendToUdsSocket(
         reject(error)
       } else {
         conn.end()
-        resolve()
+        if (!response) {
+          reject(new Error('UDS receiver returned no response'))
+          return
+        }
+        resolve(response)
       }
     }
 
     conn = createConnection(target.socketPath, () => {
-      udsMsg.meta = { ...udsMsg.meta, authToken }
-      conn.write(jsonStringify(udsMsg) + '\n', err => {
+      const outbound = {
+        ...message,
+        meta: { ...message.meta, authToken },
+      }
+      conn.write(jsonStringify(outbound) + '\n', err => {
         if (err) finish(err)
       })
     })
     attachUdsResponseReader(conn, {
       maxFrameBytes: MAX_UDS_FRAME_BYTES,
       onSettled: finish,
+      acceptResponse,
       formatSocketError: err =>
         new UdsPeerConnectionError(target.socketPath, err),
     })
@@ -262,6 +316,140 @@ export async function sendToUdsSocket(
       )
     })
   })
+}
+
+function isFleetResponseFor(
+  response: UdsMessage,
+  requestId: string,
+  responseType: 'fleet_snapshot_response' | 'fleet_action_response',
+): boolean {
+  if (response.type === 'error') {
+    return response.meta?.request_id === requestId
+  }
+  return response.type === responseType && response.request_id === requestId
+}
+
+export async function requestAgentFleetSnapshot(
+  targetSocketPath: string,
+  options: AgentFleetUdsRequestOptions = {},
+): Promise<AgentFleetSnapshot> {
+  const requestId = options.requestId ?? randomUUID()
+  const response = await sendAuthenticatedMessage(
+    targetSocketPath,
+    { type: 'fleet_snapshot', request_id: requestId },
+    options.timeoutMs ?? AGENT_FLEET_UDS_TIMEOUT_MS,
+    value => isFleetResponseFor(value, requestId, 'fleet_snapshot_response'),
+  )
+  if (!isUdsFleetSnapshotResponse(response)) {
+    throw new Error('UDS owner returned an invalid fleet snapshot')
+  }
+  return response.snapshot
+}
+
+export async function requestAgentFleetAction(
+  targetSocketPath: string,
+  action: AgentFleetAction,
+  options: AgentFleetUdsRequestOptions = {},
+): Promise<AgentFleetActionResult> {
+  const requestId = options.requestId ?? randomUUID()
+  const response = await sendAuthenticatedMessage(
+    targetSocketPath,
+    { type: 'fleet_action', request_id: requestId, action },
+    options.timeoutMs ?? AGENT_FLEET_UDS_TIMEOUT_MS,
+    value => isFleetResponseFor(value, requestId, 'fleet_action_response'),
+  )
+  if (!isUdsFleetActionResponse(response)) {
+    throw new Error('UDS owner returned an invalid fleet action result')
+  }
+  return response.result
+}
+
+export function sendToUdsSocket(
+  targetSocketPath: string,
+  message: string,
+  timeoutMs?: number,
+): Promise<undefined>
+export function sendToUdsSocket(
+  targetSocketPath: string,
+  message: UdsPeerSendInput,
+  timeoutMs?: number,
+): Promise<UdsPeerSendResult>
+export async function sendToUdsSocket(
+  targetSocketPath: string,
+  message: string | UdsPeerSendInput,
+  timeoutMs = 5000,
+): Promise<undefined | UdsPeerSendResult> {
+  if (typeof message === 'string') {
+    const { getUdsMessagingSocketPath } = await import('./udsMessaging.js')
+    await sendAuthenticatedMessage(
+      targetSocketPath,
+      {
+        type: 'text',
+        data: message,
+        from: getUdsMessagingSocketPath(),
+        ts: new Date().toISOString(),
+      },
+      timeoutMs,
+    )
+    return
+  }
+
+  const { getUdsMessagingSocketPath, parseUdsTarget } = await import(
+    './udsMessaging.js'
+  )
+  const senderSocket = getUdsMessagingSocketPath()
+  if (!senderSocket) throw new Error('Peer messaging server is not running')
+  const msgId = message.msg_id ?? randomUUID()
+  const target = parseUdsTarget(targetSocketPath)
+  registerOutstandingPeerSend(msgId, {
+    transport: 'uds',
+    address: `uds:${target.socketPath}`,
+    id: target.socketPath,
+  })
+  let response: UdsMessage
+  try {
+    response = await sendAuthenticatedMessage(
+      targetSocketPath,
+      {
+        ...buildUdsPeerUserMessage({
+          content: message.content,
+          from: `uds:${senderSocket}`,
+          fromMode: message.fromMode,
+          msgId,
+          sessionId: message.sessionId,
+          priority: message.priority,
+          attachments: message.attachments,
+        }),
+        ...(message.summary ? { meta: { summary: message.summary } } : {}),
+      },
+      timeoutMs,
+    )
+  } catch (error) {
+    cancelOutstandingPeerSend(msgId)
+    throw error
+  }
+  const status = response.meta?.status
+  if (
+    status !== 'held' &&
+    status !== 'denied' &&
+    status !== 'expired' &&
+    status !== 'delivered'
+  ) {
+    throw new Error('UDS receiver returned an invalid peer status')
+  }
+  return { msgId, status }
+}
+
+export async function sendUdsPeerReceipt(
+  targetSocketPath: string,
+  receipt: PeerReceipt,
+  timeoutMs = 5000,
+): Promise<void> {
+  await sendAuthenticatedMessage(
+    targetSocketPath,
+    buildUdsPeerReceipt(receipt),
+    timeoutMs,
+  )
 }
 
 /**

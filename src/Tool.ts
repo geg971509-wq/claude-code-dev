@@ -12,6 +12,7 @@ import type { z } from 'zod/v4'
 import type { Command } from './commands.js'
 import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import type { ThinkingConfig } from './utils/thinking.js'
+import type { PrecomputedCompactManager } from './services/compact/precomputedCompact.js'
 
 export type ToolInputJSONSchema = {
   [x: string]: unknown
@@ -146,7 +147,27 @@ export type CompactProgressEvent =
   | { type: 'compact_start' }
   | { type: 'compact_end' }
 
+export type CompactionStateEvent = {
+  state:
+    | 'started'
+    | 'ready'
+    | 'consumed'
+    | 'discarded'
+    | 'rehydrated'
+    | 'failed'
+  revision: number
+  timestamp: string
+  agentId?: AgentId
+  source?: QuerySource
+  reason?: string
+  preCompactTokens?: number
+  postCompactTokens?: number
+}
+
 export type ToolUseContext = {
+  effectiveContextWindow?: number
+  precomputedCompactManager?: PrecomputedCompactManager
+  onCompactionState?: (event: CompactionStateEvent) => void
   options: {
     commands: Command[]
     debug: boolean

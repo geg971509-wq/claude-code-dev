@@ -1518,8 +1518,15 @@ export const SDKCompactBoundaryMessageSchema = lazySchema(() =>
     type: z.literal('system'),
     subtype: z.literal('compact_boundary'),
     compact_metadata: z.object({
-      trigger: z.enum(['manual', 'auto']),
-      pre_tokens: z.number(),
+      trigger: z.enum(['manual', 'auto']).optional(),
+      pre_tokens: z.number().optional(),
+      post_tokens: z.number().optional(),
+      cumulative_dropped_tokens: z.number().optional(),
+      duration_ms: z.number().optional(),
+      user_context: z.string().optional(),
+      messages_summarized: z.number().optional(),
+      precomputed: z.boolean().optional(),
+      pre_compact_discovered_tools: z.array(z.string()).optional(),
       preserved_segment: z
         .object({
           head_uuid: UUIDPlaceholder(),
@@ -1546,6 +1553,33 @@ export const SDKStatusMessageSchema = lazySchema(() =>
     subtype: z.literal('status'),
     status: SDKStatusSchema(),
     permissionMode: PermissionModeSchema().optional(),
+    compact_result: z.enum(['success', 'failed']).optional(),
+    compact_error: z.string().optional(),
+    autocompact_state: z
+      .object({
+        state: z.enum([
+          'started',
+          'ready',
+          'consumed',
+          'discarded',
+          'rehydrated',
+          'failed',
+        ]),
+        revision: z.number().int().nonnegative(),
+        timestamp: z.string(),
+        agent_id: z.string().optional(),
+        source: z.string().optional(),
+        reason: z.string().optional(),
+        pre_compact_tokens: z.number().optional(),
+        post_compact_tokens: z.number().optional(),
+      })
+      .optional(),
+    peerMessageStatus: z
+      .enum(['held', 'delivered', 'denied', 'expired'])
+      .optional(),
+    peerMessageId: z.string().optional(),
+    peerMessageFrom: z.string().optional(),
+    peerMessageReason: z.string().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),

@@ -77,6 +77,32 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (process.env.CLAUDE_CODE_MEMORY_DEBUG === '1') {
+    const { startMemoryDebugMonitor } = await import('../utils/memoryDebug.js');
+    startMemoryDebugMonitor();
+  }
+
+  if (args[0] === '--bg-pty-host') {
+    const configPath = args[1];
+    if (!configPath) throw new Error('--bg-pty-host requires a config path.');
+    const { runPtyHostFromConfig } = await import('../cli/bg/ptyHost.js');
+    process.exitCode = await runPtyHostFromConfig(configPath);
+    return;
+  }
+
+  const agentsNeedsFullSettings = args.some(
+    arg =>
+      arg === '--settings' ||
+      arg.startsWith('--settings=') ||
+      arg === '--setting-sources' ||
+      arg.startsWith('--setting-sources='),
+  );
+  if (args[0] === 'agents' && !agentsNeedsFullSettings) {
+    const { agentsCliMain } = await import('../cli/handlers/agents.js');
+    await agentsCliMain(args.slice(1));
+    return;
+  }
+
   // For all other paths, load the startup profiler
   const { profileCheckpoint } = await import('../utils/startupProfiler.js');
   profileCheckpoint('cli_entry');

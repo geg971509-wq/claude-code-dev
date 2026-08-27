@@ -80,6 +80,11 @@ import { getBranch } from './git.js'
 import { gracefulShutdownSync, isShuttingDown } from './gracefulShutdown.js'
 import { parseJSONL } from './json.js'
 import { logError } from './log.js'
+import {
+  memoryDebugAdd,
+  memoryDebugEvent,
+  memoryDebugMax,
+} from './memoryDebug.js'
 import { extractTag, isCompactBoundaryMessage } from './messages.js'
 import { sanitizePath } from './path.js'
 import {
@@ -631,6 +636,8 @@ class Project {
         return
       }
       queue.push({ entry, resolve })
+      memoryDebugAdd('transcriptQueuedEntries')
+      memoryDebugAdd('transcriptQueueEntries')
       this.scheduleDrain()
     })
   }
@@ -668,6 +675,9 @@ class Project {
         continue
       }
       const batch = queue.splice(0)
+      memoryDebugAdd('transcriptQueueEntries', -batch.length)
+      memoryDebugAdd('transcriptQueueBatchEntries', batch.length)
+      memoryDebugEvent('transcript_queue_batch', { entries: batch.length })
 
       let content = ''
       const resolvers: Array<() => void> = []
@@ -683,6 +693,8 @@ class Project {
       try {
         for (const { entry, resolve } of batch) {
           const line = jsonStringify(entry) + '\n'
+          memoryDebugAdd('transcriptSerializedBytes', line.length)
+          memoryDebugMax('transcriptMaxSerializedEntryBytes', line.length)
 
           if (content.length + line.length >= this.MAX_CHUNK_BYTES) {
             // Flush chunk and resolve its entries before starting a new one
@@ -1474,7 +1486,14 @@ export async function recordTranscript(
   startingParentUuidHint?: UUID,
   allMessages?: readonly Message[],
 ): Promise<UUID | null> {
+  memoryDebugEvent('record_transcript_start', {
+    messagesLength: messages.length,
+    allMessagesLength: allMessages?.length ?? messages.length,
+  })
   const cleanedMessages = cleanMessagesForLogging(messages, allMessages)
+  memoryDebugEvent('record_transcript_cleaned', {
+    cleanedLength: cleanedMessages.length,
+  })
   const sessionId = getSessionId() as UUID
   const messageSet = await getSessionMessages(sessionId)
   const newMessages: typeof cleanedMessages = []
@@ -1492,6 +1511,9 @@ export async function recordTranscript(
       seenNewMessage = true
     }
   }
+  memoryDebugEvent('record_transcript_filtered', {
+    newMessagesLength: newMessages.length,
+  })
   if (newMessages.length > 0) {
     await getProject().insertMessageChain(
       newMessages,

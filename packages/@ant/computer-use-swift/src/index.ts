@@ -14,28 +14,87 @@ export type {
   ScreenshotResult,
   ResolvePrepareCaptureResult,
   WindowDisplayInfo,
-} from './backends/darwin.js'
+} from './types.js'
 
-import type { ResolvePrepareCaptureResult } from './backends/darwin.js'
+import { createRequire } from 'node:module'
+import { dirname, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import type { ResolvePrepareCaptureResult, SwiftBackend } from './types.js'
 
-function loadBackend() {
-  try {
-    if (process.platform === 'darwin') {
-      return require('./backends/darwin.js')
-    } else if (process.platform === 'win32') {
-      return require('./backends/win32.js')
-    } else if (process.platform === 'linux') {
-      return require('./backends/linux.js')
+const nodeRequire = createRequire(import.meta.url)
+
+function vendorRoot(): string {
+  const dir = dirname(fileURLToPath(import.meta.url))
+  const parts = dir.split(sep)
+  const distIndex = parts.lastIndexOf('dist')
+  return distIndex === -1
+    ? resolve(dir, '..', '..', '..', '..', 'vendor')
+    : `${parts.slice(0, distIndex + 1).join(sep)}${sep}vendor`
+}
+
+function loadNativeBackend(): SwiftBackend | null {
+  const binary = 'computer-use-swift.node'
+  const candidates = new Set([
+    process.env.COMPUTER_USE_SWIFT_NODE_PATH,
+    resolve(vendorRoot(), 'computer-use', binary),
+    resolve(dirname(process.execPath), 'vendor', 'computer-use', binary),
+    resolve(process.cwd(), 'vendor', 'computer-use', binary),
+  ])
+  for (const path of candidates) {
+    if (!path) continue
+    try {
+      const candidate = nodeRequire(path) as { computerUse?: SwiftBackend }
+      if (
+        candidate.computerUse?.apps &&
+        candidate.computerUse.display &&
+        candidate.computerUse.screenshot &&
+        typeof candidate.computerUse.resolvePrepareCapture === 'function'
+      ) {
+        return candidate.computerUse
+      }
+    } catch {
+      // Try the next packaged/runtime location before using the script fallback.
     }
-  } catch {
-    return null
   }
   return null
 }
 
+function loadBackend(): SwiftBackend | null {
+  if (process.platform !== 'darwin') return null
+  const native = loadNativeBackend()
+  if (native) return native
+  try {
+    const fallback = require('./backends/darwin.js') as Omit<
+      SwiftBackend,
+      'resolvePrepareCapture'
+    >
+    return {
+      ...fallback,
+      resolvePrepareCapture(
+        allowedBundleIds,
+        _surrogateHost,
+        quality,
+        targetW,
+        targetH,
+        displayId,
+      ) {
+        return fallback.screenshot.captureExcluding(
+          allowedBundleIds,
+          quality,
+          targetW,
+          targetH,
+          displayId,
+        )
+      },
+    }
+  } catch {
+    return null
+  }
+}
+
 const backend = loadBackend()
 
-export class ComputerUseAPI {
+class UnsupportedComputerUseAPI implements SwiftBackend {
   apps = backend?.apps ?? {
     async prepareDisplay() {
       return { activated: '', hidden: [] }
@@ -85,20 +144,17 @@ export class ComputerUseAPI {
     },
   }
 
-  async resolvePrepareCapture(
-    allowedBundleIds: string[],
-    _surrogateHost: string,
-    quality: number,
-    targetW: number,
-    targetH: number,
-    displayId?: number,
-  ): Promise<ResolvePrepareCaptureResult> {
-    return this.screenshot.captureExcluding(
-      allowedBundleIds,
-      quality,
-      targetW,
-      targetH,
-      displayId,
-    )
-  }
+  resolvePrepareCapture: SwiftBackend['resolvePrepareCapture'] =
+    backend?.resolvePrepareCapture ??
+    (async () => {
+      throw new Error('@ant/computer-use-swift: macOS only')
+    })
+
+  hotkey = backend?.hotkey
+  tcc = backend?.tcc
+  _drainMainRunLoop = backend?._drainMainRunLoop
 }
+
+export type ComputerUseAPI = SwiftBackend
+export const computerUse: ComputerUseAPI =
+  backend ?? new UnsupportedComputerUseAPI()

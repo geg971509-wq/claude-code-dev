@@ -308,6 +308,121 @@ describe('Heartbeat constants', () => {
   })
 })
 
+describe('Legacy prompt dispatch', () => {
+  test('includes the active session id in prompt_complete', async () => {
+    const sent: unknown[] = []
+    const ws = makeTestWs(sent)
+    process.env.ACP_LINK_TEST_INTERNALS = '1'
+    const unregister = __testing.registerClient(ws, {
+      connection: { prompt: mock(async () => ({ stopReason: 'end_turn' })) },
+      sessionId: 'session-1',
+    })
+    try {
+      await __testing.dispatchClientMessage(ws, {
+        type: 'prompt',
+        payload: { content: [{ type: 'text', text: 'hi' }] },
+      })
+      expect(sent).toContainEqual({
+        type: 'prompt_complete',
+        payload: { sessionId: 'session-1', stopReason: 'end_turn' },
+      })
+    } finally {
+      unregister()
+      delete process.env.ACP_LINK_TEST_INTERNALS
+    }
+  })
+
+  test('keeps prompt completion correlated when a new session starts while prompting', async () => {
+    const sent: unknown[] = []
+    const ws = makeTestWs(sent)
+    let resolvePrompt: (result: { stopReason: string }) => void = () => {}
+    const prompt = mock(
+      () =>
+        new Promise<{ stopReason: string }>(resolve => {
+          resolvePrompt = resolve
+        }),
+    )
+    process.env.ACP_LINK_TEST_INTERNALS = '1'
+    const unregister = __testing.registerClient(ws, {
+      connection: {
+        prompt,
+        newSession: mock(async () => ({ sessionId: 'session-new' })),
+      },
+      sessionId: 'session-old',
+    })
+    try {
+      const pendingPrompt = __testing.dispatchClientMessage(ws, {
+        type: 'prompt',
+        payload: { content: [{ type: 'text', text: 'hi' }] },
+      })
+      await Promise.resolve()
+      await __testing.dispatchClientMessage(ws, {
+        type: 'new_session',
+        payload: {},
+      })
+      resolvePrompt({ stopReason: 'end_turn' })
+      await pendingPrompt
+
+      expect(prompt).toHaveBeenCalledWith({
+        sessionId: 'session-old',
+        prompt: [{ type: 'text', text: 'hi' }],
+      })
+      expect(sent).toContainEqual({
+        type: 'prompt_complete',
+        payload: { sessionId: 'session-old', stopReason: 'end_turn' },
+      })
+    } finally {
+      unregister()
+      delete process.env.ACP_LINK_TEST_INTERNALS
+    }
+  })
+
+  test('keeps prompt errors correlated when a new session starts while prompting', async () => {
+    const sent: unknown[] = []
+    const ws = makeTestWs(sent)
+    let rejectPrompt: (error: Error) => void = () => {}
+    process.env.ACP_LINK_TEST_INTERNALS = '1'
+    const unregister = __testing.registerClient(ws, {
+      connection: {
+        prompt: mock(
+          () =>
+            new Promise((_resolve, reject) => {
+              rejectPrompt = reject
+            }),
+        ),
+        newSession: mock(async () => ({ sessionId: 'session-new' })),
+      },
+      sessionId: 'session-old',
+    })
+    try {
+      const pendingPrompt = __testing.dispatchClientMessage(ws, {
+        type: 'prompt',
+        payload: { content: [{ type: 'text', text: 'hi' }] },
+      })
+      await Promise.resolve()
+      await __testing.dispatchClientMessage(ws, {
+        type: 'new_session',
+        payload: {},
+      })
+      rejectPrompt(new Error('old prompt failed'))
+      await pendingPrompt
+
+      expect(sent).toContainEqual({
+        type: 'error',
+        payload: {
+          message: 'Prompt failed: old prompt failed',
+          code: '-32603',
+          type: 'internal',
+          sessionId: 'session-old',
+        },
+      })
+    } finally {
+      unregister()
+      delete process.env.ACP_LINK_TEST_INTERNALS
+    }
+  })
+})
+
 describe('JSON-RPC 2.0 routing (audit §8.1-8.5)', () => {
   // Helper to register a JSON-RPC-capable client and capture sent frames.
   function setupJsonRpcClient(

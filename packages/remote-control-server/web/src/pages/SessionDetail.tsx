@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { apiFetchSession, apiSendControl, apiInterrupt } from '../api/client';
+import { apiFetchSession, apiSendControl } from '../api/client';
 import type { Session, SessionEvent } from '../types';
 import { isClosedSessionStatus, formatTime, cn } from '../lib/utils';
 import { Info } from 'lucide-react';
 import { RCSChatAdapter } from '../lib/rcs-chat-adapter';
-import type { ThreadEntry, PendingPermission } from '../lib/types';
+import type { PendingPermission } from '../lib/types';
+import { initialThreadState, threadStateReducer, type ThreadStateAction } from '../lib/thread-state';
 import { StatusBadge } from '../components/Navbar';
 import { TaskPanel } from '../components/TaskPanel';
 import { PermissionPromptView, AskUserPanelView, PlanPanelView } from '../components/PermissionViews';
@@ -29,20 +30,31 @@ export function SessionDetail({ sessionId }: SessionDetailProps) {
   const [error, setError] = useState('');
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
   const [showMeta, setShowMeta] = useState(false);
-  const [entries, setEntries] = useState<ThreadEntry[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [chatError, setChatError] = useState('');
+  const [threadState, setThreadState] = useState(() => initialThreadState(sessionId));
+  const threadStateRef = useRef(threadState);
   const [pendingPermissions, setPendingPermissions] = useState<PendingPermission[]>([]);
-  const adapterRef = useRef<RCSChatAdapter | null>(null);
+  const dispatchThread = useCallback((action: ThreadStateAction) => {
+    const next = threadStateReducer(threadStateRef.current, action);
+    if (next === threadStateRef.current) return;
+    threadStateRef.current = next;
+    setThreadState(next);
+  }, []);
+  const getThreadState = useCallback(() => threadStateRef.current, []);
+
+  useEffect(() => {
+    dispatchThread({ type: 'reset', sessionId });
+  }, [dispatchThread, sessionId]);
 
   // Create RCSChatAdapter
   const adapter = useMemo(
     () =>
-      new RCSChatAdapter(sessionId, setEntries, {
+      new RCSChatAdapter(sessionId, dispatchThread, getThreadState, {
         onStatusChange: status => {
           setSessionStatus(status);
         },
         onError: err => {
-          console.error('[RCSChatAdapter] error:', err);
+          setChatError(err);
         },
         onPermissionRequest: permission => {
           setPendingPermissions(prev => {
@@ -50,12 +62,14 @@ export function SessionDetail({ sessionId }: SessionDetailProps) {
             return [...prev, permission];
           });
         },
+        onPermissionCancelled: requestId => {
+          setPendingPermissions(prev => prev.filter(p => p.requestId !== requestId));
+        },
       }),
-    [sessionId],
+    [dispatchThread, getThreadState, sessionId],
   );
 
   useEffect(() => {
-    adapterRef.current = adapter;
     return () => {
       adapter.disconnect();
     };
@@ -82,7 +96,8 @@ export function SessionDetail({ sessionId }: SessionDetailProps) {
       try {
         await adapter.init();
       } catch (err) {
-        console.warn('Failed to init adapter:', err);
+        if (cancelled) return;
+        setChatError(err instanceof Error ? err.message : 'Failed to initialize session');
       }
     }
 
@@ -93,13 +108,15 @@ export function SessionDetail({ sessionId }: SessionDetailProps) {
   }, [sessionId, adapter]);
 
   const closed = isClosedSessionStatus(sessionStatus);
+  const entries = threadState.entries;
+  const isLoading = threadState.phase !== 'idle' && threadState.phase !== 'error';
 
   // Send message via ChatInput
   const handleSubmit = useCallback(
     async (message: import('../../src/lib/types').ChatInputMessage) => {
       const text = message.text.trim();
-      if (!text || closed) return;
-      setIsLoading(true);
+      if ((!text && !message.images?.length) || closed) return;
+      setChatError('');
       try {
         await adapter.sendMessage(text, message.images);
       } catch (err) {
@@ -111,35 +128,23 @@ export function SessionDetail({ sessionId }: SessionDetailProps) {
 
   // Interrupt
   const handleInterrupt = useCallback(async () => {
+    setChatError('');
     try {
       await adapter.interrupt();
     } catch (err) {
       console.error('Interrupt failed:', err);
-    } finally {
-      setIsLoading(false);
     }
   }, [adapter]);
-
-  // Mark loading done when last assistant message stops streaming
-  useEffect(() => {
-    if (entries.length === 0) return;
-    const last = entries[entries.length - 1];
-    if (last?.type === 'assistant_message' || last?.type === 'tool_call') {
-      // If the last entry is no longer a streaming tool, consider loading done
-      if (last.type === 'tool_call' && last.toolCall.status === 'running') return;
-      setIsLoading(false);
-    }
-  }, [entries]);
 
   // Permission actions
   const handleApprovePermission = useCallback(
     async (requestId: string) => {
       try {
         await adapter.respondPermission(requestId, true);
+        setPendingPermissions(prev => prev.filter(p => p.requestId !== requestId));
       } catch (err) {
-        console.error('Failed to approve:', err);
+        setChatError(err instanceof Error ? err.message : 'Failed to approve permission');
       }
-      setPendingPermissions(prev => prev.filter(p => p.requestId !== requestId));
     },
     [adapter],
   );
@@ -148,10 +153,10 @@ export function SessionDetail({ sessionId }: SessionDetailProps) {
     async (requestId: string) => {
       try {
         await adapter.respondPermission(requestId, false);
+        setPendingPermissions(prev => prev.filter(p => p.requestId !== requestId));
       } catch (err) {
-        console.error('Failed to reject:', err);
+        setChatError(err instanceof Error ? err.message : 'Failed to reject permission');
       }
-      setPendingPermissions(prev => prev.filter(p => p.requestId !== requestId));
     },
     [adapter],
   );
@@ -165,10 +170,10 @@ export function SessionDetail({ sessionId }: SessionDetailProps) {
           request_id: requestId,
           updated_input: { questions, answers },
         });
+        setPendingPermissions(prev => prev.filter(p => p.requestId !== requestId));
       } catch (err) {
-        console.error('Failed to submit answers:', err);
+        setChatError(err instanceof Error ? err.message : 'Failed to submit answers');
       }
-      setPendingPermissions(prev => prev.filter(p => p.requestId !== requestId));
     },
     [sessionId],
   );
@@ -195,10 +200,10 @@ export function SessionDetail({ sessionId }: SessionDetailProps) {
             updated_permissions: [{ type: 'setMode', mode: modeMap[value] || 'default', destination: 'session' }],
           });
         }
+        setPendingPermissions(prev => prev.filter(p => p.requestId !== requestId));
       } catch (err) {
-        console.error('Failed to submit plan response:', err);
+        setChatError(err instanceof Error ? err.message : 'Failed to submit plan response');
       }
-      setPendingPermissions(prev => prev.filter(p => p.requestId !== requestId));
     },
     [sessionId],
   );
@@ -284,8 +289,20 @@ export function SessionDetail({ sessionId }: SessionDetailProps) {
           </div>
         </div>
 
+        {chatError && (
+          <div className="border-b border-status-error/30 bg-status-error/10 px-4 py-2 text-sm text-status-error">
+            <div className="mx-auto max-w-3xl">{chatError}</div>
+          </div>
+        )}
+
         {/* Chat messages — unified ChatView */}
-        <ChatView entries={entries} isLoading={isLoading} emptyTitle="开始对话" emptyDescription="输入消息开始聊天" />
+        <ChatView
+          activeAssistantId={threadState.activeAssistantId}
+          emptyDescription="输入消息开始聊天"
+          emptyTitle="开始对话"
+          entries={entries}
+          phase={threadState.phase}
+        />
 
         {/* Unified Permission Panel — above input */}
         {pendingPermissions.length > 0 && (
@@ -311,6 +328,8 @@ export function SessionDetail({ sessionId }: SessionDetailProps) {
           isLoading={isLoading}
           onInterrupt={handleInterrupt}
           disabled={closed}
+          supportsImages={true}
+          onError={setChatError}
           placeholder={closed ? '会话已关闭' : '输入消息...'}
         />
 

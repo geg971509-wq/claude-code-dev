@@ -4,8 +4,12 @@ import { logMock } from '../../../../tests/mocks/log'
 // Mock log.ts to cut the heavy dependency chain
 mock.module('src/utils/log.ts', logMock)
 
-const { stripTrailingWhitespace, findActualString, applyEditToFile } =
-  await import('../utils')
+const {
+  stripTrailingWhitespace,
+  findActualString,
+  getEditApplicability,
+  applyEditToFile,
+} = await import('../utils')
 
 // ─── stripTrailingWhitespace ────────────────────────────────────────────
 
@@ -70,6 +74,23 @@ describe('findActualString', () => {
     const fileContent = 'input int x = 620; // 止盈点数(点) — 32个pip=320点'
     const result = findActualString(fileContent, fileContent)
     expect(result).toBe(fileContent)
+  })
+})
+
+// ─── getEditApplicability ───────────────────────────────────────────────
+
+describe('getEditApplicability', () => {
+  test('classifies missing, ambiguous, and uniquely applicable edits', () => {
+    expect(getEditApplicability('hello world', '', false)).toBe('no_match')
+    expect(getEditApplicability('hello world', 'missing', false)).toBe(
+      'no_match',
+    )
+    expect(getEditApplicability('foo bar foo', 'foo', false)).toBe('ambiguous')
+    expect(getEditApplicability('foo bar', 'foo', false)).toBe('applies')
+  })
+
+  test('allows multiple matches only for replace_all', () => {
+    expect(getEditApplicability('foo bar foo', 'foo', true)).toBe('applies')
   })
 })
 

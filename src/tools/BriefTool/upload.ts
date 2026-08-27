@@ -94,19 +94,21 @@ export async function uploadBriefAttachment(
   size: number,
   ctx: BriefUploadContext,
 ): Promise<string | undefined> {
+  if (!ctx.replBridgeEnabled) return undefined
+  return uploadPeerAttachment(fullPath, size, ctx)
+}
+
+/** Upload for cross-session transfer, which also supports cloud-only sessions. */
+export async function uploadPeerAttachment(
+  fullPath: string,
+  size: number,
+  ctx: Pick<BriefUploadContext, 'signal'>,
+): Promise<string | undefined> {
   // Positive pattern so bun:bundle eliminates the entire body from
   // non-BRIDGE_MODE builds (negative `if (!feature(...)) return` does not).
   if (feature('BRIDGE_MODE')) {
-    if (!ctx.replBridgeEnabled) return undefined
-
     if (size > MAX_UPLOAD_BYTES) {
       debug(`skip ${fullPath}: ${size} bytes exceeds ${MAX_UPLOAD_BYTES} limit`)
-      return undefined
-    }
-
-    const token = getBridgeAccessToken()
-    if (!token) {
-      debug('skip: no oauth token')
       return undefined
     }
 
@@ -118,11 +120,34 @@ export async function uploadBriefAttachment(
       return undefined
     }
 
+    return uploadBytesToBridgeStore(content, basename(fullPath), ctx)
+  }
+  return undefined
+}
+
+export async function uploadBytesToBridgeStore(
+  content: Buffer,
+  filename: string,
+  ctx: Pick<BriefUploadContext, 'signal'>,
+): Promise<string | undefined> {
+  if (feature('BRIDGE_MODE')) {
+    if (content.length > MAX_UPLOAD_BYTES) {
+      debug(
+        `skip ${filename}: ${content.length} bytes exceeds ${MAX_UPLOAD_BYTES} limit`,
+      )
+      return undefined
+    }
+
     const baseUrl = getBridgeBaseUrl()
     const url = `${baseUrl}/api/oauth/file_upload`
-    const filename = basename(fullPath)
     const mimeType = guessMimeType(filename)
     const boundary = `----FormBoundary${randomUUID()}`
+
+    const token = getBridgeAccessToken()
+    if (!token) {
+      debug('skip: no oauth token')
+      return undefined
+    }
 
     // Manual multipart — same pattern as filesApi.ts. The oauth endpoint takes
     // a single "file" part (no "purpose" field like the public Files API).
@@ -150,7 +175,7 @@ export async function uploadBriefAttachment(
 
       if (response.status !== 201) {
         debug(
-          `upload failed for ${fullPath}: status=${response.status} body=${jsonStringify(response.data).slice(0, 200)}`,
+          `upload failed for ${filename}: status=${response.status} body=${jsonStringify(response.data).slice(0, 200)}`,
         )
         return undefined
       }
@@ -158,15 +183,17 @@ export async function uploadBriefAttachment(
       const parsed = uploadResponseSchema().safeParse(response.data)
       if (!parsed.success) {
         debug(
-          `unexpected response shape for ${fullPath}: ${parsed.error.message}`,
+          `unexpected response shape for ${filename}: ${parsed.error.message}`,
         )
         return undefined
       }
 
-      debug(`uploaded ${fullPath} → ${parsed.data.file_uuid} (${size} bytes)`)
+      debug(
+        `uploaded ${filename} → ${parsed.data.file_uuid} (${content.length} bytes)`,
+      )
       return parsed.data.file_uuid
     } catch (e) {
-      debug(`upload threw for ${fullPath}: ${e}`)
+      debug(`upload threw for ${filename}: ${e}`)
       return undefined
     }
   }

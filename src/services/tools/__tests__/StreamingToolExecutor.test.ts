@@ -50,18 +50,18 @@ describe('StreamingToolExecutor.discard()', () => {
     expect(toolsAfter).toHaveLength(0)
   })
 
-  test('aborts the sibling abort controller', () => {
+  test('aborts the batch abort controller', () => {
     const ctx = makeMinimalContext()
     const executor = new StreamingToolExecutor([], () => true as any, ctx)
 
-    const siblingController = (
-      executor as unknown as { siblingAbortController: AbortController }
-    ).siblingAbortController
-    expect(siblingController.signal.aborted).toBe(false)
+    const batchController = (
+      executor as unknown as { batchAbortController: AbortController }
+    ).batchAbortController
+    expect(batchController.signal.aborted).toBe(false)
 
     executor.discard()
 
-    expect(siblingController.signal.aborted).toBe(true)
+    expect(batchController.signal.aborted).toBe(true)
   })
 
   test('sets discarded flag so getCompletedResults yields nothing', () => {

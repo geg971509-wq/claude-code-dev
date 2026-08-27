@@ -51,9 +51,8 @@ export function toInternalMessages(
             isMeta: message.isSynthetic,
           } as unknown as Message,
         ]
-        // Handle compact boundary messages
+      case 'system':
         if (message.subtype === 'compact_boundary') {
-          const compactMsg = message
           return [
             {
               type: 'system',
@@ -61,7 +60,7 @@ export function toInternalMessages(
               level: 'info',
               subtype: 'compact_boundary',
               compactMetadata: fromSDKCompactMetadata(
-                compactMsg.compact_metadata as SDKCompactMetadata,
+                message.compact_metadata as SDKCompactMetadata,
               ),
               uuid: message.uuid,
               timestamp: new Date().toISOString(),
@@ -80,12 +79,36 @@ type SDKCompactMetadata = SDKCompactBoundaryMessage['compact_metadata']
 export function toSDKCompactMetadata(
   meta: CompactMetadata,
 ): SDKCompactMetadata {
-  const seg = meta.preservedSegment as
-    | { headUuid: UUID; anchorUuid: UUID; tailUuid: UUID }
-    | undefined
+  const {
+    trigger,
+    preTokens,
+    postTokens,
+    cumulativeDroppedTokens,
+    durationMs,
+    userContext,
+    messagesSummarized,
+    precomputed,
+    preCompactDiscoveredTools,
+    preservedSegment: seg,
+    ...extra
+  } = meta
   return {
-    trigger: meta.trigger,
-    pre_tokens: meta.preTokens,
+    ...extra,
+    ...(trigger !== undefined && { trigger }),
+    ...(preTokens !== undefined && { pre_tokens: preTokens }),
+    ...(postTokens !== undefined && { post_tokens: postTokens }),
+    ...(cumulativeDroppedTokens !== undefined && {
+      cumulative_dropped_tokens: cumulativeDroppedTokens,
+    }),
+    ...(durationMs !== undefined && { duration_ms: durationMs }),
+    ...(userContext !== undefined && { user_context: userContext }),
+    ...(messagesSummarized !== undefined && {
+      messages_summarized: messagesSummarized,
+    }),
+    ...(precomputed !== undefined && { precomputed }),
+    ...(preCompactDiscoveredTools !== undefined && {
+      pre_compact_discovered_tools: preCompactDiscoveredTools,
+    }),
     ...(seg && {
       preserved_segment: {
         head_uuid: seg.headUuid,
@@ -102,20 +125,50 @@ export function toSDKCompactMetadata(
 export function fromSDKCompactMetadata(
   meta: SDKCompactMetadata,
 ): CompactMetadata {
-  const m = meta as {
+  const {
+    preserved_segment: seg,
+    trigger,
+    pre_tokens: preTokens,
+    post_tokens: postTokens,
+    cumulative_dropped_tokens: cumulativeDroppedTokens,
+    duration_ms: durationMs,
+    user_context: userContext,
+    messages_summarized: messagesSummarized,
+    precomputed,
+    pre_compact_discovered_tools: preCompactDiscoveredTools,
+    ...extra
+  } = meta as {
     preserved_segment?: {
-      head_uuid: string
-      anchor_uuid: string
-      tail_uuid: string
+      head_uuid: UUID
+      anchor_uuid: UUID
+      tail_uuid: UUID
     }
-    trigger?: string
+    trigger?: 'manual' | 'auto'
     pre_tokens?: number
+    post_tokens?: number
+    cumulative_dropped_tokens?: number
+    duration_ms?: number
+    user_context?: string
+    messages_summarized?: number
+    precomputed?: boolean
+    pre_compact_discovered_tools?: string[]
     [key: string]: unknown
   }
-  const seg = m.preserved_segment
   return {
-    trigger: m.trigger,
-    preTokens: m.pre_tokens,
+    ...extra,
+    ...(trigger !== undefined && { trigger }),
+    ...(preTokens !== undefined && { preTokens }),
+    ...(postTokens !== undefined && { postTokens }),
+    ...(cumulativeDroppedTokens !== undefined && {
+      cumulativeDroppedTokens,
+    }),
+    ...(durationMs !== undefined && { durationMs }),
+    ...(userContext !== undefined && { userContext }),
+    ...(messagesSummarized !== undefined && { messagesSummarized }),
+    ...(precomputed !== undefined && { precomputed }),
+    ...(preCompactDiscoveredTools !== undefined && {
+      preCompactDiscoveredTools,
+    }),
     ...(seg && {
       preservedSegment: {
         headUuid: seg.head_uuid,

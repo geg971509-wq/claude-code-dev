@@ -178,6 +178,7 @@ import {
   shouldEnableClaudeInChrome,
 } from './utils/claudeInChrome/setup.js';
 import { getContextWindowForModel } from './utils/context.js';
+import { getEffectiveContextWindowSize } from './services/compact/effectiveWindow.js';
 import { loadConversationForResume } from './utils/conversationRecovery.js';
 import { buildDeepLinkBanner } from './utils/deepLink/banner.js';
 import { hasNodeOption, isBareMode, isEnvTruthy, isInProtectedNamespace } from './utils/envUtils.js';
@@ -1063,6 +1064,12 @@ async function run(): Promise<CommanderCommand> {
   // not when displaying help. This avoids the need for env variable signaling.
   program.hook('preAction', async thisCommand => {
     profileCheckpoint('preAction_start');
+    const isAgentsCommand = thisCommand.name() === 'agents' || thisCommand.parent?.name() === 'agents';
+    if (isAgentsCommand) {
+      const { enableConfigs } = await import('./utils/config.js');
+      enableConfigs();
+      return;
+    }
     // Await async subprocess loads started at module evaluation (lines 12-20).
     // Nearly free — subprocesses complete during the ~135ms of imports above.
     // Must resolve before init() which triggers the first settings read
@@ -1254,6 +1261,13 @@ async function run(): Promise<CommanderCommand> {
       '--replay-user-messages',
       'Re-emit user messages from stdin back on stdout for acknowledgment (only works with --input-format=stream-json and --output-format=stream-json)',
       () => true,
+    )
+    .option('--autocompact <window>', 'Override the auto-compact context window for this session')
+    .addOption(
+      new Option(
+        '--messaging-socket-path <path>',
+        'Unix socket or Windows named pipe used for cross-session messaging',
+      ).hideHelp(),
     )
     .addOption(new Option('--enable-auth-status', 'Enable auth status messages in SDK mode').default(false).hideHelp())
     .option(
@@ -2354,10 +2368,8 @@ async function run(): Promise<CommanderCommand> {
       logForDebugging('[STARTUP] Running setup()...');
       const setupStart = Date.now();
       const { setup } = await import('./setup.js');
-      // Parallelize setup() with commands+agents loading. setup()'s ~28ms is
-      // mostly startUdsMessaging (socket bind, ~20ms) — not disk-bound, so it
-      // doesn't contend with getCommands' file reads. Gated on !worktreeEnabled
-      // since --worktree makes setup() process.chdir() (setup.ts:203), and
+      // Parallelize setup() with commands+agents loading. Gated on
+      // !worktreeEnabled since --worktree makes setup() process.chdir(), and
       // commands/agents need the post-chdir cwd.
       const preSetupCwd = getCwd();
       // Register bundled skills/plugins before kicking getCommands() — they're
@@ -2388,12 +2400,31 @@ async function run(): Promise<CommanderCommand> {
       logForDebugging(`[STARTUP] setup() completed in ${Date.now() - setupStart}ms`);
       profileCheckpoint('action_after_setup');
 
-      // Replay user messages into stream-json only when the socket was
-      // explicitly requested. The auto-generated socket is passive — it
-      // lets tools inject if they want to, but turning it on by default
-      // shouldn't reshape stream-json for SDK consumers who never touch it.
+      if (feature('CROSS_SESSION_MESSAGING') && getTeammateUtils().getAgentId() == null) {
+        const { configureCrossSessionMessaging } = await import('./utils/crossSessionMessaging.js');
+        const { getDefaultUdsSocketPath, startUdsMessaging } = await import('./utils/udsMessaging.js');
+        configureCrossSessionMessaging({ permissionMode });
+        // A child process must never publish its parent's socket as its own.
+        delete process.env.CLAUDE_CODE_MESSAGING_SOCKET;
+        const explicitSocketPath = options.messagingSocketPath;
+        try {
+          await startUdsMessaging(explicitSocketPath ?? getDefaultUdsSocketPath(), {
+            isExplicit: explicitSocketPath !== undefined,
+            sessionId: getSessionId(),
+          });
+        } catch (error) {
+          if (explicitSocketPath) throw error;
+          logForDebugging(`[cross-session] local messaging unavailable: ${errorMessage(error)}`, {
+            level: 'error',
+          });
+        }
+      }
+
+      // Replay user messages into stream-json only when explicitly requested.
+      // The auto-generated socket is passive: it lets tools inject if they
+      // want to, but enabling it should not reshape stream-json for SDK users.
       // Callers who inject and also want those injections visible in the
-      // stream pass --messaging-socket-path explicitly (or --replay-user-messages).
+      // stream pass --replay-user-messages.
       let effectiveReplayUserMessages = !!options.replayUserMessages;
 
       if (getIsNonInteractiveSession()) {
@@ -2584,6 +2615,7 @@ async function run(): Promise<CommanderCommand> {
       setInitialMainLoopModel(getUserSpecifiedModelSetting() || null);
       const initialMainLoopModel = getInitialMainLoopModel();
       const resolvedInitialModel = parseUserSpecifiedModel(initialMainLoopModel ?? getDefaultMainLoopModel());
+      let effectiveContextWindow = getEffectiveContextWindowSize(resolvedInitialModel, options.autocompact);
 
       let advisorModel: string | undefined;
       if (isAdvisorEnabled()) {
@@ -3190,6 +3222,7 @@ async function run(): Promise<CommanderCommand> {
         // Store SDK betas in global state for context window calculation
         // Only store allowed betas (filters by allowlist and subscriber status)
         setSdkBetas(filterAllowedSdkBetas(betas));
+        effectiveContextWindow = getEffectiveContextWindowSize(resolvedInitialModel, options.autocompact);
 
         // Print-mode MCP: per-server incremental push into headlessStore.
         // Mirrors useManageMCPConnections — push pending first (so SearchExtraTools's
@@ -3353,6 +3386,7 @@ async function run(): Promise<CommanderCommand> {
             maxTurns: options.maxTurns,
             maxBudgetUsd: options.maxBudgetUsd,
             taskBudget: options.taskBudget ? { total: options.taskBudget } : undefined,
+            effectiveContextWindow,
             systemPrompt,
             appendSystemPrompt,
             userSpecifiedModel: effectiveModel,
@@ -3444,6 +3478,7 @@ async function run(): Promise<CommanderCommand> {
         settings: getInitialSettings(),
         tasks: {},
         agentNameRegistry: new Map(),
+        sendMessagePins: new Map(),
         verbose: verbose ?? getGlobalConfig().verbose ?? false,
         mainLoopModel: initialMainLoopModel,
         mainLoopModelForSession: null,
@@ -3597,6 +3632,7 @@ async function run(): Promise<CommanderCommand> {
         : null;
 
       const sessionConfig = {
+        effectiveContextWindow,
         debug: debug || debugToStderr,
         commands: [...commands, ...mcpCommands],
         initialTools,
@@ -5038,16 +5074,9 @@ async function run(): Promise<CommanderCommand> {
       await setupTokenHandler(root);
     });
 
-  // Agents command - list configured agents
-  program
-    .command('agents')
-    .description('List configured agents')
-    .option('--setting-sources <sources>', 'Comma-separated list of setting sources to load (user, project, local).')
-    .action(async () => {
-      const { agentsHandler } = await import('./cli/handlers/agents.js');
-      await agentsHandler();
-      process.exit(0);
-    });
+  // Agents command - unified running Fleet; definitions remains available as a child command.
+  const { registerAgentsCommand } = await import('./cli/handlers/agents.js');
+  await registerAgentsCommand(program);
 
   if (feature('TRANSCRIPT_CLASSIFIER')) {
     // Skip when tengu_auto_mode_config.enabled === 'disabled' (circuit breaker).

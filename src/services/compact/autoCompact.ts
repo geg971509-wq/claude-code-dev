@@ -1,5 +1,5 @@
 import { feature } from 'bun:bundle'
-import { markPostCompaction } from 'src/bootstrap/state.js'
+import { getSessionId, markPostCompaction } from 'src/bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
@@ -22,12 +22,19 @@ import {
   type CompactionResult,
   compactConversation,
   COMPACT_BLOCKED_BY_HOOK_PREFIX,
+  emitCompactionState,
   ERROR_MESSAGE_USER_ABORT,
+  prepareCompactSummary,
   type RecompactionInfo,
 } from './compact.js'
 import { getEffectiveContextWindowSize } from './effectiveWindow.js'
 import { runPostCompactCleanup } from './postCompactCleanup.js'
 import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
+import {
+  getPrecomputedCompactManager,
+  mergePrecomputedResult,
+  type PrecomputedCompactTransition,
+} from './precomputedCompact.js'
 
 export type AutoCompactTrackingState = {
   compacted: boolean
@@ -89,8 +96,10 @@ export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
  * headroom because a single turn can produce proportionally more tokens
  * (longer model outputs + larger tool results).
  */
-export function getAutocompactBufferTokens(model: string): number {
-  const effectiveWindow = getEffectiveContextWindowSize(model)
+export function getAutocompactBufferTokens(
+  model: string,
+  effectiveWindow = getEffectiveContextWindowSize(model),
+): number {
   if (effectiveWindow >= 800_000) return 50_000
   if (effectiveWindow >= 400_000) return 30_000
   return AUTOCOMPACT_BUFFER_TOKENS
@@ -214,11 +223,13 @@ export function getAutocompactPctOverride(): number | null {
   return parsed
 }
 
-export function getAutoCompactThreshold(model: string): number {
-  const effectiveContextWindow = getEffectiveContextWindowSize(model)
-
+export function getAutoCompactThreshold(
+  model: string,
+  effectiveContextWindow = getEffectiveContextWindowSize(model),
+): number {
   const autocompactThreshold =
-    effectiveContextWindow - getAutocompactBufferTokens(model)
+    effectiveContextWindow -
+    getAutocompactBufferTokens(model, effectiveContextWindow)
 
   // Override for easier testing of autocompact
   const parsed = getAutocompactPctOverride()
@@ -307,6 +318,7 @@ export async function shouldAutoCompact(
   // pre-snip context, so tokenCountWithEstimation can't see the savings.
   // Subtract the rough-delta that snip already computed.
   snipTokensFreed = 0,
+  effectiveContextWindow = getEffectiveContextWindowSize(model),
 ): Promise<boolean> {
   // Recursion guards. session_memory and compact are forked agents that
   // would deadlock.
@@ -346,19 +358,37 @@ export async function shouldAutoCompact(
   // sessionMemory + manual /compact working.
 
   const tokenCount = tokenCountWithEstimation(messages) - snipTokensFreed
-  const threshold = getAutoCompactThreshold(model)
-  const effectiveWindow = getEffectiveContextWindowSize(model)
+  const threshold = getAutoCompactThreshold(model, effectiveContextWindow)
 
   logForDebugging(
-    `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''}`,
+    `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveContextWindow}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''}`,
   )
 
-  const { isAboveAutoCompactThreshold } = calculateTokenWarningState(
-    tokenCount,
-    model,
-  )
+  return tokenCount >= threshold
+}
 
-  return isAboveAutoCompactThreshold
+function autoCompactFailure(
+  error: unknown,
+  tracking?: AutoCompactTrackingState,
+): Extract<AutoCompactResult, { kind: 'failed' | 'hook_blocked' }> {
+  if (isCompactBlockedByHookError(error)) {
+    logForDebugging(
+      `autocompact: blocked by PreCompact hook — ${error instanceof Error ? error.message : String(error)}`,
+      { level: 'warn' },
+    )
+    return { kind: 'hook_blocked' }
+  }
+  if (!hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)) {
+    logError(error)
+  }
+  const consecutiveFailures = (tracking?.consecutiveFailures ?? 0) + 1
+  if (consecutiveFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES) {
+    logForDebugging(
+      `autocompact: circuit breaker tripped after ${consecutiveFailures} consecutive failures — skipping future attempts this session`,
+      { level: 'warn' },
+    )
+  }
+  return { kind: 'failed', consecutiveFailures }
 }
 
 export async function autoCompactIfNeeded(
@@ -373,6 +403,10 @@ export async function autoCompactIfNeeded(
     return { kind: 'not_needed' }
   }
 
+  if (querySource === 'session_memory' || querySource === 'compact') {
+    return { kind: 'not_needed' }
+  }
+
   // Circuit breaker: stop retrying after N consecutive failures.
   // Without this, sessions where context is irrecoverably over the limit
   // hammer the API with doomed compaction attempts on every turn.
@@ -384,15 +418,131 @@ export async function autoCompactIfNeeded(
   }
 
   const model = toolUseContext.options.mainLoopModel
+  const effectiveContextWindow =
+    toolUseContext.effectiveContextWindow ??
+    getEffectiveContextWindowSize(model)
+  const threshold = getAutoCompactThreshold(model, effectiveContextWindow)
+  const precomputed =
+    toolUseContext.precomputedCompactManager ??
+    (feature('PRECOMPUTED_COMPACT')
+      ? getPrecomputedCompactManager(getSessionId())
+      : undefined)
+  const precomputeKey = toolUseContext.agentId ?? 'main'
+  const onPrecomputedTransition = (event: PrecomputedCompactTransition) =>
+    emitCompactionState(toolUseContext, event)
+
+  if (precomputed) {
+    await precomputed.rehydrate(model, messages, {
+      onTransition: onPrecomputedTransition,
+    })
+    const ready = precomputed.get(precomputeKey)
+    const usage = getCurrentUsage(messages)
+    const estimatedTokens = usage
+      ? usage.input_tokens +
+        (usage.cache_creation_input_tokens ?? 0) +
+        (usage.cache_read_input_tokens ?? 0)
+      : 0
+    if (
+      estimatedTokens > 0 &&
+      estimatedTokens < threshold &&
+      estimatedTokens >=
+        threshold -
+          getAutocompactBufferTokens(model, effectiveContextWindow) * 2 &&
+      !ready
+    ) {
+      await precomputed.arm(
+        precomputeKey,
+        async signal => {
+          const result = await prepareCompactSummary(
+            messages,
+            toolUseContext,
+            cacheSafeParams,
+            signal,
+          )
+          if (signal.aborted) throw new Error('precomputed compact aborted')
+          const anchor = messages.at(-1)?.uuid
+          if (!anchor)
+            throw new Error('precomputed compact requires a message anchor')
+          return {
+            key: precomputeKey,
+            status: 'ready',
+            sessionId: toolUseContext.agentId ?? 'main',
+            model,
+            precomputedAtUuid: anchor,
+            preservedUuids: result.messagesToKeep
+              .map(message => String(message.uuid))
+              .filter(Boolean),
+            preCompactTokens: roughTokenCountEstimationForMessages(
+              messages as Parameters<
+                typeof roughTokenCountEstimationForMessages
+              >[0],
+            ),
+            createdAt: Date.now(),
+            result,
+          }
+        },
+        onPrecomputedTransition,
+      )
+    }
+  }
   const shouldCompact = await shouldAutoCompact(
     messages,
     model,
     querySource,
     snipTokensFreed,
+    effectiveContextWindow,
   )
 
   if (!shouldCompact) {
     return { kind: 'not_needed' }
+  }
+
+  const recompactionInfo: RecompactionInfo = {
+    isRecompactionInChain: tracking?.compacted === true,
+    turnsSincePreviousCompact: tracking?.turnCounter ?? -1,
+    previousCompactTurnId: tracking?.turnId,
+    autoCompactThreshold: threshold,
+    querySource,
+  }
+
+  if (precomputed) {
+    const borrowed = await precomputed.borrow(
+      precomputeKey,
+      toolUseContext.abortController.signal,
+    )
+    if (toolUseContext.abortController.signal.aborted) {
+      return { kind: 'not_needed' }
+    }
+    if (borrowed) {
+      const consumed = await precomputed.consume(precomputeKey, model, messages)
+      const result = consumed
+        ? mergePrecomputedResult(consumed, messages)
+        : undefined
+      if (result) {
+        try {
+          const compactionResult = await compactConversation(
+            messages,
+            toolUseContext,
+            cacheSafeParams,
+            true,
+            undefined,
+            true,
+            recompactionInfo,
+            { precomputed: result },
+          )
+          setLastSummarizedMessageId(undefined)
+          runPostCompactCleanup(querySource)
+          return {
+            kind: 'compacted',
+            result: compactionResult,
+            consecutiveRapidRefills: tracking?.consecutiveRapidRefills ?? 0,
+            routedThroughReactive: false,
+          }
+        } catch (error) {
+          return autoCompactFailure(error, tracking)
+        }
+      }
+    }
   }
 
   // Fixed-prefix overflow: system/tools/media already exceed the threshold.
@@ -427,14 +577,6 @@ export async function autoCompactIfNeeded(
     return { kind: 'rapid_refill_breaker_tripped' }
   }
 
-  const recompactionInfo: RecompactionInfo = {
-    isRecompactionInChain: tracking?.compacted === true,
-    turnsSincePreviousCompact: tracking?.turnCounter ?? -1,
-    previousCompactTurnId: tracking?.turnId,
-    autoCompactThreshold: getAutoCompactThreshold(model),
-    querySource,
-  }
-
   // EXPERIMENT: Try session memory compaction first
   const sessionMemoryResult = await trySessionMemoryCompaction(
     messages,
@@ -442,6 +584,7 @@ export async function autoCompactIfNeeded(
     recompactionInfo.autoCompactThreshold,
   )
   if (sessionMemoryResult) {
+    await precomputed?.discard(precomputeKey)
     // Reset lastSummarizedMessageId since session memory compaction prunes messages
     // and the old message UUID will no longer exist after the REPL replaces messages
     setLastSummarizedMessageId(undefined)
@@ -491,28 +634,6 @@ export async function autoCompactIfNeeded(
       routedThroughReactive: false,
     }
   } catch (error) {
-    // PreCompact decision=block — not a compact failure; do not trip breaker.
-    if (isCompactBlockedByHookError(error)) {
-      logForDebugging(
-        `autocompact: blocked by PreCompact hook — ${error instanceof Error ? error.message : String(error)}`,
-        { level: 'warn' },
-      )
-      return { kind: 'hook_blocked' }
-    }
-    if (!hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)) {
-      logError(error)
-    }
-    // Increment consecutive failure count for circuit breaker.
-    // The caller threads this through autoCompactTracking so the
-    // next query loop iteration can skip futile retry attempts.
-    const prevFailures = tracking?.consecutiveFailures ?? 0
-    const nextFailures = prevFailures + 1
-    if (nextFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES) {
-      logForDebugging(
-        `autocompact: circuit breaker tripped after ${nextFailures} consecutive failures — skipping future attempts this session`,
-        { level: 'warn' },
-      )
-    }
-    return { kind: 'failed', consecutiveFailures: nextFailures }
+    return autoCompactFailure(error, tracking)
   }
 }

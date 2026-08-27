@@ -135,12 +135,22 @@ test('WorkflowsPanel mount triggers loadPersistedRuns once', async () => {
   __resetWorkflowServiceForTests();
   const svc = getWorkflowService();
   let calls = 0;
+  const reactErrors: unknown[][] = [];
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]) => reactErrors.push(args);
   const orig = svc.loadPersistedRuns.bind(svc);
   svc.loadPersistedRuns = async () => {
     calls++;
   };
 
   const stdout = new PassThrough();
+  const stdin = new PassThrough() as PassThrough & NodeJS.ReadStream;
+  Object.assign(stdin, {
+    isTTY: true,
+    setRawMode() {},
+    ref() {},
+    unref() {},
+  });
   // consume data to avoid buffer overflow (render writes multiple frames)
   stdout.on('data', () => {});
   let instance: { unmount: () => void; waitUntilExit: () => Promise<void> } | undefined;
@@ -150,14 +160,20 @@ test('WorkflowsPanel mount triggers loadPersistedRuns once', async () => {
         onDone: () => {},
         context: { canUseTool: undefined } as never,
       }),
-      { stdout: stdout as unknown as NodeJS.WriteStream, patchConsole: false },
+      {
+        stdin,
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        patchConsole: false,
+      },
     );
     // after mount useEffect triggers asynchronously; wait a tick for React commit + effect to complete
     await new Promise(r => setTimeout(r, 30));
 
     expect(calls).toBe(1);
+    expect(reactErrors).toEqual([]);
   } finally {
     instance?.unmount();
+    console.error = originalConsoleError;
     svc.loadPersistedRuns = orig;
     __resetWorkflowServiceForTests();
   }

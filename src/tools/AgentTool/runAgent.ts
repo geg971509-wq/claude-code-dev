@@ -264,6 +264,7 @@ export async function* runAgent({
   agentDefinition,
   promptMessages,
   toolUseContext,
+  effectiveContextWindow,
   canUseTool,
   isAsync,
   canShowPermissionPrompts,
@@ -286,6 +287,7 @@ export async function* runAgent({
   agentDefinition: AgentDefinition
   promptMessages: Message[]
   toolUseContext: ToolUseContext
+  effectiveContextWindow?: number
   canUseTool: CanUseToolFn
   isAsync: boolean
   /** Whether this agent can show permission prompts. Defaults to !isAsync.
@@ -800,6 +802,8 @@ export async function* runAgent({
       systemContext: resolvedSystemContext,
       canUseTool,
       toolUseContext: agentToolUseContext,
+      effectiveContextWindow:
+        effectiveContextWindow ?? toolUseContext.effectiveContextWindow,
       querySource,
       maxTurns: maxTurns ?? agentDefinition.maxTurns,
     })) {
@@ -893,6 +897,8 @@ export async function* runAgent({
             ...agentToolUseContext,
             options: { ...agentToolUseContext.options, tools: [] },
           },
+          effectiveContextWindow:
+            effectiveContextWindow ?? toolUseContext.effectiveContextWindow,
           querySource,
           maxTurns: 1,
         })) {
@@ -927,6 +933,7 @@ export async function* runAgent({
       agentDefinition.callback()
     }
   } finally {
+    await agentToolUseContext.precomputedCompactManager?.discard(agentId)
     // End Langfuse sub-agent trace (no-op if not configured)
     endTrace(subTrace)
     // Clean up agent-specific MCP servers (runs on normal completion, abort, or error)

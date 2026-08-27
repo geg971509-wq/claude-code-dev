@@ -260,9 +260,7 @@ export async function setup(
   // Background jobs - only critical registrations that must happen before first query
   logForDiagnosticsNoPII('info', 'setup_background_jobs_starting')
   // Bundled skills/plugins are registered in main.tsx before the parallel
-  // getCommands() kick — see comment there. Moved out of setup() because
-  // the await points above (startUdsMessaging, ~20ms) meant getCommands()
-  // raced ahead and memoized an empty bundledSkills list.
+  // getCommands() kick — see comment there.
   if (!isBareMode()) {
     initSessionMemory() // Synchronous - registers hook, gate check happens lazily
     initSkillLearning() // Synchronous - registers hook, gate check happens lazily

@@ -75,6 +75,7 @@ const outputSchema = lazySchema(() =>
       .boolean()
       .describe('Whether the user modified the proposed changes'),
     replaceAll: z.boolean().describe('Whether all occurrences were replaced'),
+    staleRecovered: z.boolean().optional(),
     gitDiff: gitDiffSchema().optional(),
   }),
 )

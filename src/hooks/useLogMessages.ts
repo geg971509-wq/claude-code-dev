@@ -5,10 +5,24 @@ import type { Message } from '../types/message.js'
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js'
 import { logError } from '../utils/log.js'
 import {
+  memoryDebugAdd,
+  memoryDebugEvent,
+  memoryDebugSet,
+} from '../utils/memoryDebug.js'
+import {
   cleanMessagesForLogging,
   isChainParticipant,
   recordTranscript,
 } from '../utils/sessionStorage.js'
+
+type TranscriptWriteRequest = {
+  slice: Message[]
+  allMessages: readonly Message[]
+  teamInfo: { teamName?: string; agentName?: string }
+  parentHint?: UUID
+  isIncremental: boolean
+  sequence: number
+}
 
 /**
  * Hook that logs messages to the transcript
@@ -31,6 +45,58 @@ export function useLogMessages(messages: Message[], ignore: boolean = false) {
   // Guard against stale async .then() overwriting a fresher sync update when
   // an incremental render fires before the compaction .then() resolves.
   const callSeqRef = useRef(0)
+  // A resumed transcript can contain megabytes of tool results per message.
+  // Keep at most one active write and one latest pending snapshot; starting a
+  // write for every streaming state update retains the whole history per call.
+  const pendingWriteRef = useRef<TranscriptWriteRequest | null>(null)
+  const writeActiveRef = useRef(false)
+
+  function drainTranscriptWrites(): void {
+    if (writeActiveRef.current) return
+    writeActiveRef.current = true
+    memoryDebugSet('transcriptWriteActive', 1)
+    void (async () => {
+      try {
+        while (pendingWriteRef.current !== null) {
+          const request = pendingWriteRef.current
+          pendingWriteRef.current = null
+          memoryDebugSet('transcriptPending', 0)
+          memoryDebugAdd('transcriptWriteStarts')
+          memoryDebugEvent('transcript_write_start', {
+            sliceLength: request.slice.length,
+            allMessagesLength: request.allMessages.length,
+            incremental: request.isIncremental,
+          })
+          try {
+            const lastRecordedUuid = await recordTranscript(
+              request.slice,
+              request.teamInfo,
+              request.parentHint ?? lastParentUuidRef.current,
+              request.allMessages,
+            )
+            if (
+              request.sequence === callSeqRef.current &&
+              lastRecordedUuid &&
+              !request.isIncremental
+            ) {
+              lastParentUuidRef.current = lastRecordedUuid
+            }
+            memoryDebugEvent('transcript_write_done', {
+              sliceLength: request.slice.length,
+              incremental: request.isIncremental,
+            })
+          } catch (error) {
+            logError(error)
+            memoryDebugEvent('transcript_write_error')
+          }
+        }
+      } finally {
+        writeActiveRef.current = false
+        memoryDebugSet('transcriptWriteActive', 0)
+        if (pendingWriteRef.current !== null) drainTranscriptWrites()
+      }
+    })()
+  }
 
   useEffect(() => {
     if (ignore) return
@@ -65,36 +131,25 @@ export function useLogMessages(messages: Message[], ignore: boolean = false) {
     const slice = startIndex === 0 ? messages : messages.slice(startIndex)
     const parentHint = isIncremental ? lastParentUuidRef.current : undefined
 
-    // Fire and forget - we don't want to block the UI.
     const seq = ++callSeqRef.current
-    void recordTranscript(
+    memoryDebugAdd('transcriptEffectCount')
+    memoryDebugSet('transcriptLastMessagesLength', messages.length)
+    memoryDebugSet('transcriptLastSliceLength', slice.length)
+    pendingWriteRef.current = {
       slice,
-      isAgentSwarmsEnabled()
+      allMessages: messages,
+      teamInfo: isAgentSwarmsEnabled()
         ? {
             teamName: teamContext?.teamName,
             agentName: teamContext?.selfAgentName,
           }
         : {},
       parentHint,
-      messages,
-    )
-      .then(lastRecordedUuid => {
-        // For compaction/full array case (!isIncremental): use the async return
-        // value. After compaction, messagesToKeep in the array are skipped
-        // (already in transcript), so the sync loop would find a wrong UUID.
-        // Skip if a newer effect already ran (stale closure would overwrite the
-        // fresher sync update from the subsequent incremental render).
-        if (seq !== callSeqRef.current) return
-        if (lastRecordedUuid && !isIncremental) {
-          lastParentUuidRef.current = lastRecordedUuid
-        }
-      })
-      .catch(error => {
-        // Runs ~20x per turn. appendEntryToFile's fallback write is unguarded, so a
-        // full disk or read-only ~/.claude rejects here — and an unhandled rejection
-        // exits the CLI mid-turn instead of just losing the transcript append.
-        logError(error)
-      })
+      isIncremental,
+      sequence: seq,
+    }
+    memoryDebugSet('transcriptPending', 1)
+    drainTranscriptWrites()
 
     // Sync-walk safe for: incremental (pure new-tail slice), first-render
     // (no messagesToKeep interleaving), and same-head shrink. Shrink is the

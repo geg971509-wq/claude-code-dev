@@ -46,10 +46,7 @@ export default defineConfig({
           ) {
             return 'ai-sdk'
           }
-          if (
-            id.includes('node_modules/qrcode') ||
-            id.includes('node_modules/jsqr')
-          ) {
+          if (id.includes('node_modules/qrcode')) {
             return 'qr'
           }
         },

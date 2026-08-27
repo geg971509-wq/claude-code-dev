@@ -241,6 +241,7 @@ export type QueryParams = {
   systemContext: { [k: string]: string }
   canUseTool: CanUseToolFn
   toolUseContext: ToolUseContext
+  effectiveContextWindow?: number
   fallbackModel?: string
   querySource: QuerySource
   maxOutputTokensOverride?: number
@@ -429,13 +430,20 @@ async function* queryLoop(
     skipCacheWrite,
   } = params
   const deps = params.deps ?? productionDeps()
+  const effectiveContextWindow =
+    params.effectiveContextWindow ??
+    params.toolUseContext.effectiveContextWindow
+  const initialToolUseContext =
+    effectiveContextWindow === params.toolUseContext.effectiveContextWindow
+      ? params.toolUseContext
+      : { ...params.toolUseContext, effectiveContextWindow }
 
   // Mutable cross-iteration state. The loop body destructures this at the top
   // of each iteration so reads stay bare-name (`messages`, `toolUseContext`).
   // Continue sites write `state = { ... }` instead of 9 separate assignments.
   let state: State = {
     messages: params.messages,
-    toolUseContext: params.toolUseContext,
+    toolUseContext: initialToolUseContext,
     maxOutputTokensOverride: params.maxOutputTokensOverride,
     autoCompactTracking: undefined,
     stopHookActive: undefined,
@@ -516,8 +524,6 @@ async function* queryLoop(
 
     yield { type: 'stream_request_start' }
 
-    queryCheckpoint('query_fn_entry')
-
     // Record query start for headless latency tracking (skip for subagents)
     if (!toolUseContext.agentId) {
       headlessProfilerCheckpoint('query_started')
@@ -537,12 +543,23 @@ async function* queryLoop(
     const queryChainIdForAnalytics =
       queryTracking.chainId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
 
+    queryCheckpoint('query_fn_entry', {
+      querySource,
+      chainId: queryTracking.chainId,
+      depth: queryTracking.depth,
+      messageCount: messages.length,
+      transition: state.transition?.reason ?? null,
+      agentId: toolUseContext.agentId ?? null,
+    })
+
     toolUseContext = {
       ...toolUseContext,
       queryTracking,
     }
 
+    queryCheckpoint('query_messages_boundary_start')
     let messagesForQuery = getMessagesAfterCompactBoundary(messages)
+    queryCheckpoint('query_messages_boundary_end')
 
     // Release toolUseResult payloads from previous turns — the next API call
     // only needs message.message.content (tool_result blocks), not the raw
@@ -561,6 +578,7 @@ async function* queryLoop(
     // copy so mutableMessages keeps the original for the UI; downstream API
     // transformations (applyToolResultBudget, snip, microcompact) already
     // build new arrays via .map(), so they compose cleanly with this copy.
+    queryCheckpoint('query_strip_tool_results_start')
     messagesForQuery = messagesForQuery.map(msg => {
       if (
         msg.type !== 'user' ||
@@ -573,6 +591,7 @@ async function* queryLoop(
       delete (copy as Message & { toolUseResult?: unknown }).toolUseResult
       return copy
     })
+    queryCheckpoint('query_strip_tool_results_end')
 
     let tracking = autoCompactTracking
 
@@ -586,6 +605,7 @@ async function* queryLoop(
     const persistReplacements =
       querySource.startsWith('agent:') ||
       querySource.startsWith('repl_main_thread')
+    queryCheckpoint('query_tool_result_budget_start')
     messagesForQuery = await applyToolResultBudget(
       messagesForQuery,
       toolUseContext.contentReplacementState,
@@ -602,6 +622,7 @@ async function* queryLoop(
           .map(t => t.name),
       ),
     )
+    queryCheckpoint('query_tool_result_budget_end')
 
     // Apply snip before microcompact (both may run — they are not mutually exclusive).
     // snipTokensFreed is plumbed to autocompact so its threshold check reflects
@@ -659,6 +680,7 @@ async function* queryLoop(
         systemContext,
         toolUseContext,
         forkContextMessages: messagesForQuery,
+        effectiveContextWindow,
       },
       querySource,
       tracking,
@@ -1329,6 +1351,7 @@ async function* queryLoop(
             systemContext,
             toolUseContext,
             forkContextMessages: messagesForQuery,
+            effectiveContextWindow: toolUseContext.effectiveContextWindow,
           },
         })
 
@@ -1346,7 +1369,7 @@ async function* queryLoop(
             )
           }
 
-          const postCompactMessages = buildPostCompactMessages(compacted)
+          const postCompactMessages = buildPostCompactMessages(compacted.result)
           for (const msg of postCompactMessages) {
             yield msg
           }
@@ -1355,12 +1378,16 @@ async function* queryLoop(
             toolUseContext,
             autoCompactTracking: undefined,
             maxOutputTokensRecoveryCount,
-            hasAttemptedReactiveCompact: true,
+            hasAttemptedReactiveCompact: !compacted.precomputed,
             maxOutputTokensOverride: undefined,
             pendingToolUseSummary: undefined,
             stopHookActive: undefined,
             turnCount,
-            transition: { reason: 'reactive_compact_retry' },
+            transition: {
+              reason: compacted.precomputed
+                ? 'precomputed_compact_swap'
+                : 'reactive_compact_retry',
+            },
           }
           state = next
           continue

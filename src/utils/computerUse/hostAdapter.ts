@@ -67,10 +67,11 @@ function checkScreenRecordingJXA(): boolean {
 let cached: ComputerUseHostAdapter | undefined
 
 /**
- * Process-lifetime singleton. Built once on first CU tool call; native modules
- * (both `@ant/computer-use-input` and `@ant/computer-use-swift`) are loaded
- * here via the executor factory, which throws on load failure — there is no
- * degraded mode.
+ * Process-lifetime singleton. Built once on first CU tool call.
+ * Native modules load first; each package falls back to AppleScript/JXA when
+ * the `.node` is missing. `requireComputerUseInput()` still throws if the
+ * platform is unsupported or both native and script backends fail. TCC probes
+ * use the Swift module when present, otherwise JXA.
  */
 export function getComputerUseHostAdapter(): ComputerUseHostAdapter {
   if (cached) return cached
@@ -84,7 +85,7 @@ export function getComputerUseHostAdapter(): ComputerUseHostAdapter {
     ensureOsPermissions: async () => {
       if (process.platform !== 'darwin') return { granted: true }
       const cu = requireComputerUseSwift()
-      const tcc = (cu as any).tcc
+      const { tcc } = cu
       // Native Swift .node module provides tcc.checkAccessibility/checkScreenRecording.
       // When absent (decompiled/reverse-engineered build), fall back to JXA probes.
       if (tcc) {

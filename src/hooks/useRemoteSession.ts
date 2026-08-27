@@ -14,6 +14,7 @@ import {
 import {
   convertSDKMessage,
   isSessionEndMessage,
+  reduceAutoCompactState,
 } from '../remote/sdkMessageAdapter.js'
 import { useSetAppState } from '../state/AppState.js'
 import type { AppState } from '../state/AppStateStore.js'
@@ -120,6 +121,7 @@ export function useRemoteSession({
   // CLI worker is busy with an API call and won't emit messages for a while;
   // use a longer timeout and suppress spurious "unresponsive" warnings.
   const isCompactingRef = useRef(false)
+  const autoCompactStateRef = useRef({ revision: 0, isCompacting: false })
 
   const managerRef = useRef<RemoteSessionManager | null>(null)
 
@@ -230,6 +232,18 @@ export function useRemoteSession({
           // signals completion. Repeated 'compacting' status messages
           // (keep-alive ticks) update the ref but don't append to messages.
           if (sdkMessage.subtype === 'status') {
+            const frame = sdkMessage.autocompact_state
+            if (frame !== undefined) {
+              const next = reduceAutoCompactState(
+                autoCompactStateRef.current,
+                frame,
+              )
+              if (next === autoCompactStateRef.current) return
+              autoCompactStateRef.current = next
+              isCompactingRef.current = next.isCompacting
+              return
+            }
+            if (autoCompactStateRef.current.revision > 0) return
             const wasCompacting = isCompactingRef.current
             isCompactingRef.current = sdkMessage.status === 'compacting'
             if (wasCompacting && isCompactingRef.current) {
@@ -237,7 +251,9 @@ export function useRemoteSession({
             }
           }
           if (sdkMessage.subtype === 'compact_boundary') {
-            isCompactingRef.current = false
+            if (autoCompactStateRef.current.revision === 0) {
+              isCompactingRef.current = false
+            }
           }
         }
 

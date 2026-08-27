@@ -119,7 +119,7 @@ export interface ProxyStatusMessage {
 
 export interface ProxyErrorMessage {
   type: 'error'
-  payload: { message: string }
+  payload: { message: string; sessionId?: string }
 }
 
 // Reference: Zed's session/initialize response includes promptCapabilities and models
@@ -142,7 +142,7 @@ export interface ProxySessionUpdateMessage {
 
 export interface ProxyPromptCompleteMessage {
   type: 'prompt_complete'
-  payload: { stopReason: string }
+  payload: { sessionId: string; stopReason: string }
 }
 
 export interface ProxyPermissionRequestMessage {
@@ -224,37 +224,87 @@ export type ProxyResponse =
 
 // Content block types (matches @agentclientprotocol/sdk ContentBlock)
 // Reference: Zed's acp::ContentBlock in agent-client-protocol crate
-export interface TextContent {
+export type ContentMeta = Record<string, unknown>
+
+export interface ContentAnnotations {
+  _meta?: ContentMeta | null
+  audience?: Array<'assistant' | 'user'> | null
+  lastModified?: string | null
+  priority?: number | null
+}
+
+interface ContentMetadata {
+  annotations?: ContentAnnotations | null
+  _meta?: ContentMeta | null
+}
+
+export interface TextContent extends ContentMetadata {
   type: 'text'
   text: string
 }
 
-export interface ImageContent {
+export interface ImageContent extends ContentMetadata {
   type: 'image'
   mimeType: string
   data: string // base64 encoded image data
-  uri?: string // optional URI for the image source
+  uri?: string | null // optional URI for the image source
 }
 
-export interface ResourceLinkContent {
+export interface AudioContent extends ContentMetadata {
+  type: 'audio'
+  mimeType: string
+  data: string
+}
+
+export interface ResourceIcon {
+  src: string
+  mimeType?: string
+  sizes?: string[]
+  theme?: 'light' | 'dark'
+}
+
+export interface ResourceLinkContent extends ContentMetadata {
   type: 'resource_link'
   uri: string
   name: string
-  title?: string
-  description?: string
-  mimeType?: string
-  size?: number
+  title?: string | null
+  description?: string | null
+  mimeType?: string | null
+  size?: number | null
+  icons?: ResourceIcon[]
+}
+
+export interface EmbeddedTextResource {
+  uri: string
+  mimeType?: string | null
+  text: string
+  _meta?: ContentMeta | null
+}
+
+export interface EmbeddedBlobResource {
+  uri: string
+  mimeType?: string | null
+  blob: string
+  _meta?: ContentMeta | null
+}
+
+export interface EmbeddedResourceContent extends ContentMetadata {
+  type: 'resource'
+  resource: EmbeddedTextResource | EmbeddedBlobResource
 }
 
 export type ContentBlock =
   | TextContent
   | ImageContent
+  | AudioContent
   | ResourceLinkContent
+  | EmbeddedResourceContent
   | { type: string; text?: string }
 
 // Session update types from ACP
 export interface AgentMessageChunkUpdate {
   sessionUpdate: 'agent_message_chunk'
+  messageId?: string
   content: ContentBlock
 }
 
@@ -303,6 +353,7 @@ export interface ToolCallStatusUpdate {
 
 export interface AgentThoughtChunkUpdate {
   sessionUpdate: 'agent_thought_chunk'
+  messageId?: string
   content: ContentBlock
 }
 
@@ -324,6 +375,7 @@ export interface PlanUpdate {
 
 export interface UserMessageChunkUpdate {
   sessionUpdate: 'user_message_chunk'
+  messageId?: string
   content: ContentBlock
 }
 

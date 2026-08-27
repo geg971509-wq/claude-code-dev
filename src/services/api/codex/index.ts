@@ -44,7 +44,6 @@ import {
 } from '@ant/model-provider'
 import { getCodexClient } from './client.js'
 import { resolveCodexRequestContext } from './credentials.js'
-import { uploadCodexBase64Image } from './imageUpload.js'
 import { getCodexConfigurationError, normalizeCodexError } from './errors.js'
 import { sanitizeCodexRequest } from './preflight.js'
 import {
@@ -166,9 +165,7 @@ export async function* queryModelCodex(
     let terminalIncompleteResponse: Response | undefined
 
     for (let attempt = 0; attempt <= MAX_CODEX_CONTINUATIONS; attempt += 1) {
-      const input = await anthropicMessagesToCodexInput(replayMessages, {
-        resolveBase64ImageUrl: uploadCodexBase64Image,
-      })
+      const input = anthropicMessagesToCodexInput(replayMessages)
       const requestBody = sanitizeCodexRequest({
         model,
         input,
@@ -176,7 +173,7 @@ export async function* queryModelCodex(
         stream: true,
         tool_choice: 'auto',
         include: ['reasoning.encrypted_content'],
-        parallel_tool_calls: false,
+        parallel_tool_calls: true,
         max_output_tokens: maxTokens,
         ...(systemPrompt.length > 0 && {
           instructions: systemPrompt.join('\n\n'),

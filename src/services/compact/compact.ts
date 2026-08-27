@@ -48,7 +48,7 @@ import {
   tokenStatsToStatsigMetrics,
 } from '../../utils/contextAnalysis.js'
 import { logForDebugging } from '../../utils/debug.js'
-import { hasExactErrorMessage } from '../../utils/errors.js'
+import { errorMessage, hasExactErrorMessage } from '../../utils/errors.js'
 import { cacheToObject } from '../../utils/fileStateCache.js'
 import {
   type CacheSafeParams,
@@ -416,6 +416,48 @@ export interface CompactionResult {
   compactionUsage?: ReturnType<typeof getTokenUsage>
 }
 
+export interface PreparedCompactSummary {
+  summaryResponse: AssistantMessage
+  summary: string
+  messagesToKeep: Message[]
+  preservedUserSection: string
+}
+
+let lastCompactionRevision = 0
+
+export function emitCompactionState(
+  context: ToolUseContext,
+  event: Omit<
+    import('../../Tool.js').CompactionStateEvent,
+    'revision' | 'timestamp' | 'agentId' | 'source'
+  >,
+): void {
+  if (!context.onCompactionState) return
+  const now = Date.now()
+  lastCompactionRevision = Math.max(now, lastCompactionRevision + 1)
+  context.onCompactionState({
+    ...event,
+    revision: lastCompactionRevision,
+    timestamp: new Date(now).toISOString(),
+    ...(context.agentId ? { agentId: context.agentId } : {}),
+    ...(context.options.querySource
+      ? { source: context.options.querySource }
+      : {}),
+  })
+}
+
+export function getMaxCumulativeDroppedTokens(messages: Message[]): number {
+  let maximum = 0
+  for (const message of messages) {
+    if (!isCompactBoundaryMessage(message)) continue
+    const value = message.compactMetadata?.cumulativeDroppedTokens
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      maximum = Math.max(maximum, value)
+    }
+  }
+  return maximum
+}
+
 /**
  * Diagnosis context passed from autoCompactIfNeeded into compactConversation.
  * Lets the tengu_compact event disambiguate same-chain loops (H2) from
@@ -516,6 +558,202 @@ function mergeHookInstructions(
   return `${userInstructions}\n\n${hookInstructions}`
 }
 
+type CompactInputSelection = {
+  messagesToSummarize: Message[]
+  messagesToKeep: Message[]
+  recentTailPreserved: boolean
+  tailPreservedTokens: number
+  preservedUserSection: string
+}
+
+function selectCompactInput(
+  messages: Message[],
+  context: ToolUseContext,
+  customInstructions?: string,
+): CompactInputSelection {
+  const preserveBudget = allocatePostCompactBudget(
+    context.effectiveContextWindow ??
+      getEffectiveContextWindowSize(context.options.mainLoopModel),
+  )
+  let tailSelection: TailSelection = { head: messages, tail: [] }
+  if (feature('COMPACT_TAIL_PRESERVATION')) {
+    if (!customInstructions?.trim()) {
+      tailSelection = selectPreservedTail(
+        messages,
+        preserveBudget.tail,
+        tailMaxRounds(),
+        round =>
+          roughTokenCountEstimationForMessages(
+            round as Parameters<typeof roughTokenCountEstimationForMessages>[0],
+          ),
+      )
+    }
+  }
+  const messagesToKeep = tailSelection.tail.filter(
+    message =>
+      message.type !== 'progress' &&
+      !isCompactBoundaryMessage(message) &&
+      !(message.type === 'user' && message.isCompactSummary),
+  )
+  const recentTailPreserved = messagesToKeep.length > 0
+  const tailPreservedTokens = recentTailPreserved
+    ? roughTokenCountEstimationForMessages(
+        messagesToKeep as Parameters<
+          typeof roughTokenCountEstimationForMessages
+        >[0],
+      )
+    : 0
+  let preservedUserSection = ''
+  if (feature('COMPACT_PRESERVE_USER_MESSAGES')) {
+    preservedUserSection = formatPreservedSection(
+      selectPreservedUserMessages(
+        tailSelection.head,
+        preserveBudget.preservedUser,
+      ),
+    )
+  }
+  return {
+    messagesToSummarize: tailSelection.head,
+    messagesToKeep,
+    recentTailPreserved,
+    tailPreservedTokens,
+    preservedUserSection,
+  }
+}
+
+async function generateCompactSummary({
+  selection,
+  customInstructions,
+  appState,
+  context,
+  preCompactTokenCount,
+  cacheSafeParams,
+  reportProgress,
+}: {
+  selection: CompactInputSelection
+  customInstructions?: string
+  appState: Awaited<ReturnType<ToolUseContext['getAppState']>>
+  context: ToolUseContext
+  preCompactTokenCount: number
+  cacheSafeParams: CacheSafeParams
+  reportProgress: boolean
+}): Promise<Pick<PreparedCompactSummary, 'summaryResponse' | 'summary'>> {
+  const compactPrompt = getCompactPrompt(customInstructions, {
+    recentTailPreserved: selection.recentTailPreserved,
+    userMessagesPreservedVerbatim: selection.preservedUserSection.length > 0,
+  })
+  const summaryRequest = createUserMessage({ content: compactPrompt })
+  let messagesToSummarize = selection.messagesToSummarize
+  let retryCacheSafeParams = selection.recentTailPreserved
+    ? { ...cacheSafeParams, forkContextMessages: messagesToSummarize }
+    : cacheSafeParams
+  const promptCacheSharingEnabled = getFeatureValue_CACHED_MAY_BE_STALE(
+    'tengu_compact_cache_prefix',
+    true,
+  )
+  let ptlAttempts = 0
+
+  for (;;) {
+    const summaryResponse = await streamCompactSummary({
+      messages: messagesToSummarize,
+      summaryRequest,
+      appState,
+      context,
+      preCompactTokenCount,
+      cacheSafeParams: retryCacheSafeParams,
+      reportProgress,
+    })
+    const summary = getAssistantMessageText(summaryResponse)
+    if (!summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) {
+      if (!summary) {
+        logForDebugging(
+          `Compact failed: no summary text in response. Response: ${jsonStringify(summaryResponse)}`,
+          { level: 'error' },
+        )
+        logEvent('tengu_compact_failed', {
+          reason:
+            'no_summary' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          preCompactTokenCount,
+          promptCacheSharingEnabled,
+        })
+        throw new Error(
+          'Failed to generate conversation summary - response did not contain valid text content',
+        )
+      }
+      if (startsWithApiErrorPrefix(summary)) {
+        logEvent('tengu_compact_failed', {
+          reason:
+            'api_error' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          preCompactTokenCount,
+          promptCacheSharingEnabled,
+        })
+        throw new Error(summary)
+      }
+      return { summaryResponse, summary }
+    }
+
+    ptlAttempts++
+    const truncated =
+      ptlAttempts <= MAX_PTL_RETRIES
+        ? truncateHeadForPTLRetry(messagesToSummarize, summaryResponse)
+        : null
+    if (!truncated) {
+      logEvent('tengu_compact_failed', {
+        reason:
+          'prompt_too_long' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        preCompactTokenCount,
+        promptCacheSharingEnabled,
+        ptlAttempts,
+      })
+      throw new Error(ERROR_MESSAGE_PROMPT_TOO_LONG)
+    }
+    logEvent('tengu_compact_ptl_retry', {
+      attempt: ptlAttempts,
+      droppedMessages: messagesToSummarize.length - truncated.length,
+      remainingMessages: truncated.length,
+    })
+    messagesToSummarize = truncated
+    retryCacheSafeParams = {
+      ...retryCacheSafeParams,
+      forkContextMessages: truncated,
+    }
+  }
+}
+
+export async function prepareCompactSummary(
+  messages: Message[],
+  context: ToolUseContext,
+  cacheSafeParams: CacheSafeParams,
+  signal: AbortSignal,
+): Promise<PreparedCompactSummary> {
+  if (messages.length === 0) {
+    throw new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
+  }
+  const controller = new AbortController()
+  const abort = () => controller.abort(signal.reason)
+  if (signal.aborted) abort()
+  else signal.addEventListener('abort', abort, { once: true })
+  const backgroundContext = { ...context, abortController: controller }
+  try {
+    const selection = selectCompactInput(messages, backgroundContext)
+    const prepared = await generateCompactSummary({
+      selection,
+      appState: backgroundContext.getAppState(),
+      context: backgroundContext,
+      preCompactTokenCount: tokenCountWithEstimation(messages),
+      cacheSafeParams,
+      reportProgress: false,
+    })
+    return {
+      ...prepared,
+      messagesToKeep: selection.messagesToKeep,
+      preservedUserSection: selection.preservedUserSection,
+    }
+  } finally {
+    signal.removeEventListener('abort', abort)
+  }
+}
+
 /**
  * Creates a compact version of a conversation by summarizing older messages
  * and preserving recent conversation history.
@@ -528,8 +766,14 @@ export async function compactConversation(
   customInstructions?: string,
   isAutoCompact: boolean = false,
   recompactionInfo?: RecompactionInfo,
-  options?: { stripNonEssential?: boolean },
+  options?: {
+    stripNonEssential?: boolean
+    precomputed?: PreparedCompactSummary
+    compactStartAlreadyEmitted?: boolean
+  },
 ): Promise<CompactionResult> {
+  let stateStarted = false
+  let completed = false
   try {
     if (messages.length === 0) {
       throw new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
@@ -542,55 +786,35 @@ export async function compactConversation(
     }
 
     const preCompactTokenCount = tokenCountWithEstimation(messages)
+    emitCompactionState(context, {
+      state: 'started',
+      preCompactTokens: preCompactTokenCount,
+    })
+    stateStarted = true
 
-    // Tail preservation: keep the most recent API rounds verbatim after the
-    // summary instead of replacing the whole history. Skipped when the user
-    // passed custom instructions — an explicit manual compact may intend to
-    // compress everything away. feature() must sit alone in the if condition
-    // (Bun compiler restriction), hence the nested form.
-    const hasUserCustomInstructions = Boolean(customInstructions?.trim())
-    // Single arbitration point: tail preservation and preserved user messages
-    // both keep verbatim text in the post-compact context, so they split one
-    // ceiling instead of each clamping against its own constant.
-    const preserveBudget = allocatePostCompactBudget(
-      getEffectiveContextWindowSize(context.options.mainLoopModel),
-    )
-    let tailSelection: TailSelection = { head: messages, tail: [] }
-    if (feature('COMPACT_TAIL_PRESERVATION')) {
-      if (!hasUserCustomInstructions) {
-        tailSelection = selectPreservedTail(
-          messages,
-          preserveBudget.tail,
-          tailMaxRounds(),
-          round =>
-            roughTokenCountEstimationForMessages(
-              round as Parameters<
-                typeof roughTokenCountEstimationForMessages
-              >[0],
-            ),
-        )
-      }
+    let selection = options?.precomputed
+      ? {
+          messagesToSummarize: messages,
+          messagesToKeep: options.precomputed.messagesToKeep,
+          recentTailPreserved: options.precomputed.messagesToKeep.length > 0,
+          tailPreservedTokens: roughTokenCountEstimationForMessages(
+            options.precomputed.messagesToKeep as Parameters<
+              typeof roughTokenCountEstimationForMessages
+            >[0],
+          ),
+          preservedUserSection: options.precomputed.preservedUserSection,
+        }
+      : selectCompactInput(messages, context, customInstructions)
+    if (options?.precomputed) {
+      const firstPreservedUuid = options.precomputed.messagesToKeep[0]?.uuid
+      const firstPreservedIndex = firstPreservedUuid
+        ? messages.findIndex(message => message.uuid === firstPreservedUuid)
+        : -1
+      selection.messagesToSummarize =
+        firstPreservedIndex >= 0
+          ? messages.slice(0, firstPreservedIndex)
+          : messages
     }
-    // Same predicate as partial compact 'up_to': kept messages must not
-    // carry progress entries, stale boundaries, or old summaries.
-    const messagesToKeep = tailSelection.tail.filter(
-      m =>
-        m.type !== 'progress' &&
-        !isCompactBoundaryMessage(m) &&
-        !(m.type === 'user' && m.isCompactSummary),
-    )
-    // Single source of truth for "is a tail actually preserved" — the prompt
-    // note, the fork's context override, the summary message and the token
-    // accounting must all agree, or the summarizer is told one thing and fed
-    // another.
-    const recentTailPreserved = messagesToKeep.length > 0
-    const tailPreservedTokens = recentTailPreserved
-      ? roughTokenCountEstimationForMessages(
-          messagesToKeep as Parameters<
-            typeof roughTokenCountEstimationForMessages
-          >[0],
-        )
-      : 0
 
     const appState = context.getAppState()
     void logPermissionContextForAnts(appState.toolPermissionContext, 'summary')
@@ -599,9 +823,14 @@ export async function compactConversation(
       type: 'hooks_start',
       hookType: 'pre_compact',
     })
+    if (!options?.compactStartAlreadyEmitted) {
+      context.onCompactProgress?.({ type: 'compact_start' })
+    }
 
     // Execute PreCompact hooks
-    context.setSDKStatus?.('compacting')
+    if (!options?.compactStartAlreadyEmitted) {
+      context.setSDKStatus?.('compacting')
+    }
     const hookResult = await executePreCompactHooks(
       {
         trigger: isAutoCompact ? 'auto' : 'manual',
@@ -619,119 +848,35 @@ export async function compactConversation(
     // Show requesting mode with up arrow and custom message
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
-    context.onCompactProgress?.({ type: 'compact_start' })
-
-    // 3P default: true — forked-agent path reuses main conversation's prompt cache.
-    // Experiment (Jan 2026) confirmed: false path is 98% cache miss, costs ~0.76% of
-    // fleet cache_creation (~38B tok/day), concentrated in ephemeral envs (CCR/GHA/SDK)
-    // with cold GB cache and 3P providers where GB is disabled. GB gate kept as kill-switch.
+    const usePrecomputed =
+      options?.precomputed !== undefined && !customInstructions?.trim()
+    if (options?.precomputed && !usePrecomputed) {
+      selection = selectCompactInput(messages, context, customInstructions)
+    }
+    const prepared =
+      usePrecomputed && options?.precomputed
+        ? options.precomputed
+        : await generateCompactSummary({
+            selection,
+            customInstructions,
+            appState,
+            context,
+            preCompactTokenCount,
+            cacheSafeParams,
+            reportProgress: true,
+          })
+    let summaryResponse = prepared.summaryResponse
+    const summary = prepared.summary
+    const {
+      messagesToKeep,
+      recentTailPreserved,
+      tailPreservedTokens,
+      preservedUserSection,
+    } = selection
     const promptCacheSharingEnabled = getFeatureValue_CACHED_MAY_BE_STALE(
       'tengu_compact_cache_prefix',
       true,
     )
-
-    // Built here, not at its append site further down, because the prompt has
-    // to know whether the verbatim block will actually be present. The feature
-    // flag being on is NOT the same thing: formatPreservedSection returns ''
-    // whenever the head has no text-only user messages (a user turn carrying
-    // an image is dropped whole by isRealUserMessage). Promising the summarizer
-    // "the originals are appended below" when they are not would drop the
-    // user's own words from the summary AND the verbatim section at once.
-    // Same single-source-of-truth rule as recentTailPreserved above.
-    let preservedUserSection = ''
-    if (feature('COMPACT_PRESERVE_USER_MESSAGES')) {
-      preservedUserSection = formatPreservedSection(
-        selectPreservedUserMessages(
-          tailSelection.head,
-          preserveBudget.preservedUser,
-        ),
-      )
-    }
-
-    const compactPrompt = getCompactPrompt(customInstructions, {
-      recentTailPreserved,
-      userMessagesPreservedVerbatim: preservedUserSection.length > 0,
-    })
-    const summaryRequest = createUserMessage({
-      content: compactPrompt,
-    })
-
-    let messagesToSummarize = tailSelection.head
-    // The forked path summarizes forkContextMessages, not the messages param —
-    // override it or the tail gets summarized too, contradicting the prompt's
-    // "not shown above" note. Same predicate as that note so they can't disagree.
-    let retryCacheSafeParams = recentTailPreserved
-      ? { ...cacheSafeParams, forkContextMessages: messagesToSummarize }
-      : cacheSafeParams
-    let summaryResponse: AssistantMessage
-    let summary: string | null
-    let ptlAttempts = 0
-    for (;;) {
-      summaryResponse = await streamCompactSummary({
-        messages: messagesToSummarize,
-        summaryRequest,
-        appState,
-        context,
-        preCompactTokenCount,
-        cacheSafeParams: retryCacheSafeParams,
-      })
-      summary = getAssistantMessageText(summaryResponse)
-      if (!summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
-
-      // CC-1180: compact request itself hit prompt-too-long. Truncate the
-      // oldest API-round groups and retry rather than leaving the user stuck.
-      ptlAttempts++
-      const truncated =
-        ptlAttempts <= MAX_PTL_RETRIES
-          ? truncateHeadForPTLRetry(messagesToSummarize, summaryResponse)
-          : null
-      if (!truncated) {
-        logEvent('tengu_compact_failed', {
-          reason:
-            'prompt_too_long' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          preCompactTokenCount,
-          promptCacheSharingEnabled,
-          ptlAttempts,
-        })
-        throw new Error(ERROR_MESSAGE_PROMPT_TOO_LONG)
-      }
-      logEvent('tengu_compact_ptl_retry', {
-        attempt: ptlAttempts,
-        droppedMessages: messagesToSummarize.length - truncated.length,
-        remainingMessages: truncated.length,
-      })
-      messagesToSummarize = truncated
-      // The forked-agent path reads from cacheSafeParams.forkContextMessages,
-      // not the messages param — thread the truncated set through both paths.
-      retryCacheSafeParams = {
-        ...retryCacheSafeParams,
-        forkContextMessages: truncated,
-      }
-    }
-
-    if (!summary) {
-      logForDebugging(
-        `Compact failed: no summary text in response. Response: ${jsonStringify(summaryResponse)}`,
-        { level: 'error' },
-      )
-      logEvent('tengu_compact_failed', {
-        reason:
-          'no_summary' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        preCompactTokenCount,
-        promptCacheSharingEnabled,
-      })
-      throw new Error(
-        `Failed to generate conversation summary - response did not contain valid text content`,
-      )
-    } else if (startsWithApiErrorPrefix(summary)) {
-      logEvent('tengu_compact_failed', {
-        reason:
-          'api_error' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        preCompactTokenCount,
-        promptCacheSharingEnabled,
-      })
-      throw new Error(summary)
-    }
 
     const { postCompactFileAttachments: builtAttachments, hookMessages } =
       await buildPostCompactAttachments(
@@ -752,6 +897,7 @@ export async function compactConversation(
       preCompactTokenCount ?? 0,
       messages.at(-1)?.uuid,
     )
+    if (usePrecomputed) boundaryMarker.compactMetadata.precomputed = true
     // Carry loaded-tool state — the summary doesn't preserve tool_reference
     // blocks, so the post-compact schema filter needs this to keep sending
     // already-loaded deferred tool schemas to the API.
@@ -800,6 +946,16 @@ export async function compactConversation(
       ...postCompactFileAttachments,
       ...hookMessages,
     ] as Parameters<typeof roughTokenCountEstimationForMessages>[0])
+
+    const priorDropped = getMaxCumulativeDroppedTokens(messages)
+    boundaryMarker.compactMetadata.cumulativeDroppedTokens =
+      priorDropped +
+      Math.max(0, preCompactTokenCount - truePostCompactTokenCount)
+    emitCompactionState(context, {
+      state: 'ready',
+      preCompactTokens: preCompactTokenCount,
+      postCompactTokens: truePostCompactTokenCount,
+    })
 
     // Extract compaction API usage metrics
     const compactionUsage = getTokenUsage(summaryResponse)
@@ -880,7 +1036,7 @@ export async function compactConversation(
     // active chain, so writing it here too would duplicate it next compact.
     if (feature('KAIROS')) {
       void sessionTranscriptModule?.writeSessionTranscriptSegment(
-        tailSelection.head,
+        selection.messagesToSummarize,
       )
     }
 
@@ -903,7 +1059,7 @@ export async function compactConversation(
       .filter(Boolean)
       .join('\n')
 
-    return {
+    const result = {
       // Suffix-preserving anchor: the last summary message sits immediately
       // before messagesToKeep in buildPostCompactMessages' ordering.
       boundaryMarker: annotateBoundaryWithPreservedSegment(
@@ -921,7 +1077,15 @@ export async function compactConversation(
       truePostCompactTokenCount,
       compactionUsage,
     }
+    completed = true
+    return result
   } catch (error) {
+    if (stateStarted) {
+      emitCompactionState(context, {
+        state: context.abortController.signal.aborted ? 'discarded' : 'failed',
+        reason: errorMessage(error),
+      })
+    }
     // Only show the error notification for manual /compact.
     // Auto-compact failures are retried on the next turn and the
     // notification is confusing when compaction eventually succeeds.
@@ -933,6 +1097,9 @@ export async function compactConversation(
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
     context.onCompactProgress?.({ type: 'compact_end' })
+    if (completed) {
+      emitCompactionState(context, { state: 'consumed' })
+    }
     context.setSDKStatus?.('' as SDKStatus)
   }
 }
@@ -1043,6 +1210,7 @@ export async function partialCompactConversation(
         context,
         preCompactTokenCount,
         cacheSafeParams: retryCacheSafeParams,
+        reportProgress: true,
       })
       summary = getAssistantMessageText(summaryResponse)
       if (!summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
@@ -1259,6 +1427,7 @@ async function streamCompactSummary({
   context,
   preCompactTokenCount,
   cacheSafeParams,
+  reportProgress,
 }: {
   messages: Message[]
   summaryRequest: UserMessage
@@ -1266,6 +1435,7 @@ async function streamCompactSummary({
   context: ToolUseContext
   preCompactTokenCount: number
   cacheSafeParams: CacheSafeParams
+  reportProgress: boolean
 }): Promise<AssistantMessage> {
   // When prompt cache sharing is enabled, use forked agent to reuse the
   // main conversation's cached prefix (system prompt, tools, context messages).
@@ -1283,16 +1453,17 @@ async function streamCompactSummary({
   // Two signals: (1) PUT /worker heartbeat via sessionActivity, and
   // (2) re-emit 'compacting' status so the SDK event stream stays active
   // and the server doesn't consider the session stale.
-  const activityInterval = isSessionActivityTrackingActive()
-    ? setInterval(
-        (statusSetter?: (status: 'compacting' | null) => void) => {
-          sendSessionActivitySignal()
-          statusSetter?.('compacting')
-        },
-        30_000,
-        context.setSDKStatus,
-      )
-    : undefined
+  const activityInterval =
+    reportProgress && isSessionActivityTrackingActive()
+      ? setInterval(
+          (statusSetter?: (status: 'compacting' | null) => void) => {
+            sendSessionActivitySignal()
+            statusSetter?.('compacting')
+          },
+          30_000,
+          context.setSDKStatus,
+        )
+      : undefined
 
   try {
     if (promptCacheSharingEnabled) {
@@ -1320,7 +1491,7 @@ async function streamCompactSummary({
           // this the bar sits empty / at zero fill until compact_end).
           overrides: {
             abortController: context.abortController,
-            shareSetResponseLength: true,
+            shareSetResponseLength: reportProgress,
           },
         })
         const assistantMsg = getLastAssistantMessage(result.messages)
@@ -1388,7 +1559,7 @@ async function streamCompactSummary({
       // Reset state for retry
       let hasStartedStreaming = false
       let response: AssistantMessage | undefined
-      context.setResponseLength?.(() => 0)
+      if (reportProgress) context.setResponseLength?.(() => 0)
 
       // Check if tool search is enabled using the main loop's tools list.
       // context.options.tools includes MCP tools merged via useMergedTools.
@@ -1479,7 +1650,7 @@ async function streamCompactSummary({
           streamEvent.event.content_block.type === 'text'
         ) {
           hasStartedStreaming = true
-          context.setStreamMode?.('responding')
+          if (reportProgress) context.setStreamMode?.('responding')
         }
 
         if (
@@ -1488,7 +1659,9 @@ async function streamCompactSummary({
           streamEvent.event.delta.type === 'text_delta'
         ) {
           const charactersStreamed = streamEvent.event.delta.text.length
-          context.setResponseLength?.(length => length + charactersStreamed)
+          if (reportProgress) {
+            context.setResponseLength?.(length => length + charactersStreamed)
+          }
         }
 
         if (event.type === 'assistant') {

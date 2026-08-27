@@ -39,10 +39,12 @@ import { fetchSingleFileGitDiff, type ToolUseDiff } from 'src/utils/gitDiff.js'
 import { logError } from 'src/utils/log.js'
 import { expandPath } from 'src/utils/path.js'
 import {
+  checkReadPermissionForTool,
   checkWritePermissionForTool,
   matchingRuleForInput,
 } from 'src/utils/permissions/filesystem.js'
 import type { PermissionDecision } from 'src/utils/permissions/PermissionResult.js'
+import type { FileState } from 'src/utils/fileStateCache.js'
 import { matchWildcardPattern } from 'src/utils/permissions/shellRuleMatching.js'
 import { validateInputForSettingsFileEdit } from 'src/utils/settings/validateEditTool.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from '../NotebookEditTool/constants.js'
@@ -68,6 +70,7 @@ import {
 import {
   areFileEditsInputsEquivalent,
   findActualString,
+  getEditApplicability,
   getPatchForEdit,
 } from './utils.js'
 
@@ -274,29 +277,28 @@ export const FileEditTool = buildTool({
       }
     }
 
-    const readTimestamp = toolUseContext.readFileState.get(fullFilePath)
-
-    // Check if file exists and get its last modified time
-    if (readTimestamp) {
-      const lastWriteTime = getFileModificationTime(fullFilePath)
-      if (lastWriteTime > readTimestamp.timestamp) {
-        // Timestamp indicates modification, but on Windows timestamps can change
-        // without content changes (cloud sync, antivirus, etc.). For full reads,
-        // compare content as a fallback to avoid false positives.
-        const isFullRead =
-          readTimestamp.offset === undefined &&
-          readTimestamp.limit === undefined
-        if (isFullRead && fileContent === readTimestamp.content) {
-          // Content unchanged, safe to proceed
-        } else {
-          return {
-            result: false,
-            behavior: 'ask',
-            message:
-              'File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.',
-            errorCode: 7,
-          }
-        }
+    const staleState = classifyStaleEdit(
+      fileContent,
+      toolUseContext.readFileState.get(fullFilePath),
+      input,
+      toolUseContext,
+    )
+    if (staleState === 'unread') {
+      return {
+        result: false,
+        behavior: 'ask',
+        message:
+          'File has not been fully read yet. Read it again before attempting to write it.',
+        errorCode: 6,
+      }
+    }
+    if (staleState === 'conflict') {
+      return {
+        result: false,
+        behavior: 'ask',
+        message:
+          'File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.',
+        errorCode: 7,
       }
     }
 
@@ -378,6 +380,7 @@ export const FileEditTool = buildTool({
     input: FileEditInput,
     {
       readFileState,
+      getAppState,
       userModified,
       updateFileHistoryState,
       dynamicSkillDirTriggers,
@@ -434,89 +437,94 @@ export const FileEditTool = buildTool({
     // atomicity. The block is synchronous, which is what makes the
     // read-check-patch-write sequence atomic on a single-threaded runtime; the
     // IIFE only scopes it.
-    const { originalFileContents, patch, actualOldString } = (() => {
-      const {
-        content: originalFileContents,
-        fileExists,
-        encoding,
-        lineEndings: endings,
-      } = readFileForEdit(absoluteFilePath)
+    const { originalFileContents, patch, actualOldString, staleRecovered } =
+      (() => {
+        const {
+          content: originalFileContents,
+          fileExists,
+          encoding,
+          lineEndings: endings,
+        } = readFileForEdit(absoluteFilePath)
 
-      if (fileExists) {
-        const lastWriteTime = getFileModificationTime(absoluteFilePath)
-        const lastRead = readFileState.get(absoluteFilePath)
-        if (!lastRead || lastWriteTime > lastRead.timestamp) {
-          // Timestamp indicates modification, but on Windows timestamps can change
-          // without content changes (cloud sync, antivirus, etc.). For full reads,
-          // compare content as a fallback to avoid false positives.
-          const isFullRead =
-            lastRead &&
-            lastRead.offset === undefined &&
-            lastRead.limit === undefined
-          const contentUnchanged =
-            isFullRead && originalFileContents === lastRead.content
-          if (!contentUnchanged) {
+        let staleRecovered = false
+        if (fileExists) {
+          const staleState = classifyStaleEdit(
+            originalFileContents,
+            readFileState.get(absoluteFilePath),
+            input,
+            { getAppState },
+          )
+          if (staleState === 'unread' || staleState === 'conflict') {
             throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
           }
+          staleRecovered = staleState === 'recoverable'
         }
-      }
 
-      // 3. Find the exact string in file content
-      const actualOldString =
-        findActualString(originalFileContents, old_string) || old_string
+        // 3. Find the exact string in file content
+        const actualOldString =
+          findActualString(originalFileContents, old_string) || old_string
 
-      // 4. Generate patch
-      const { patch, updatedFile } = getPatchForEdit({
-        filePath: absoluteFilePath,
-        fileContents: originalFileContents,
-        oldString: actualOldString,
-        newString: new_string,
-        replaceAll: replace_all,
-      })
+        // 4. Generate patch
+        const { patch, updatedFile } = getPatchForEdit({
+          filePath: absoluteFilePath,
+          fileContents: originalFileContents,
+          oldString: actualOldString,
+          newString: new_string,
+          replaceAll: replace_all,
+        })
 
-      // 5. Write to disk
-      writeTextContent(absoluteFilePath, updatedFile, encoding, endings)
+        // 5. Write to disk
+        writeTextContent(absoluteFilePath, updatedFile, encoding, endings)
 
-      // Notify LSP servers about file modification (didChange) and save (didSave)
-      const lspManager = getLspServerManager()
-      if (lspManager) {
-        // Clear previously delivered diagnostics so new ones will be shown
-        clearDeliveredDiagnosticsForFile(`file://${absoluteFilePath}`)
-        // didChange: Content has been modified
-        lspManager
-          .changeFile(absoluteFilePath, updatedFile)
-          .catch((err: Error) => {
+        // Notify LSP servers about file modification (didChange) and save (didSave)
+        const lspManager = getLspServerManager()
+        if (lspManager) {
+          // Clear previously delivered diagnostics so new ones will be shown
+          clearDeliveredDiagnosticsForFile(`file://${absoluteFilePath}`)
+          // didChange: Content has been modified
+          lspManager
+            .changeFile(absoluteFilePath, updatedFile)
+            .catch((err: Error) => {
+              logForDebugging(
+                `LSP: Failed to notify server of file change for ${absoluteFilePath}: ${err.message}`,
+              )
+              logError(err)
+            })
+          // didSave: File has been saved to disk (triggers diagnostics in TypeScript server)
+          lspManager.saveFile(absoluteFilePath).catch((err: Error) => {
             logForDebugging(
-              `LSP: Failed to notify server of file change for ${absoluteFilePath}: ${err.message}`,
+              `LSP: Failed to notify server of file save for ${absoluteFilePath}: ${err.message}`,
             )
             logError(err)
           })
-        // didSave: File has been saved to disk (triggers diagnostics in TypeScript server)
-        lspManager.saveFile(absoluteFilePath).catch((err: Error) => {
-          logForDebugging(
-            `LSP: Failed to notify server of file save for ${absoluteFilePath}: ${err.message}`,
-          )
-          logError(err)
-        })
-      }
+        }
 
-      // Notify VSCode about the file change for diff view
-      notifyVscodeFileUpdated(
-        absoluteFilePath,
-        originalFileContents,
-        updatedFile,
-      )
+        // Notify VSCode about the file change for diff view
+        notifyVscodeFileUpdated(
+          absoluteFilePath,
+          originalFileContents,
+          updatedFile,
+        )
 
-      // 6. Update read timestamp, to invalidate stale writes
-      readFileState.set(absoluteFilePath, {
-        content: updatedFile,
-        timestamp: getFileModificationTime(absoluteFilePath),
-        offset: undefined,
-        limit: undefined,
-      })
+        // 6. Update read timestamp, to invalidate stale writes
+        if (staleRecovered) {
+          readFileState.delete(absoluteFilePath)
+        } else {
+          readFileState.set(absoluteFilePath, {
+            content: updatedFile,
+            timestamp: getFileModificationTime(absoluteFilePath),
+            offset: undefined,
+            limit: undefined,
+          })
+        }
 
-      return { originalFileContents, patch, actualOldString }
-    })()
+        return {
+          originalFileContents,
+          patch,
+          actualOldString,
+          staleRecovered,
+        }
+      })()
 
     // 7. Log events
     if (absoluteFilePath.endsWith(`${sep}CLAUDE.md`)) {
@@ -560,6 +568,7 @@ export const FileEditTool = buildTool({
       structuredPatch: patch,
       userModified: userModified ?? false,
       replaceAll: replace_all,
+      ...(staleRecovered && { staleRecovered: true }),
       ...(gitDiff && { gitDiff }),
     }
     return {
@@ -567,28 +576,76 @@ export const FileEditTool = buildTool({
     }
   },
   mapToolResultToToolResultBlockParam(data: FileEditOutput, toolUseID) {
-    const { filePath, userModified, replaceAll } = data
+    const { filePath, userModified, replaceAll, staleRecovered } = data
     const modifiedNote = userModified
       ? '.  The user modified your proposed changes before accepting them. '
+      : ''
+    const staleNote = staleRecovered
+      ? ' The file contained other changes not in your context; read it again before making further edits.'
       : ''
 
     if (replaceAll) {
       return {
         tool_use_id: toolUseID,
         type: 'tool_result',
-        content: `The file ${filePath} has been updated${modifiedNote}. All occurrences were successfully replaced.`,
+        content: `The file ${filePath} has been updated${modifiedNote}. All occurrences were successfully replaced.${staleNote}`,
       }
     }
 
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
-      content: `The file ${filePath} has been updated successfully${modifiedNote}.`,
+      content: `The file ${filePath} has been updated successfully${modifiedNote}.${staleNote}`,
     }
   },
 } satisfies ToolDef<ReturnType<typeof inputSchema>, FileEditOutput>)
 
 // --
+
+type StaleEditState = 'unread' | 'current' | 'recoverable' | 'conflict'
+
+function classifyStaleEdit(
+  fileContent: string,
+  lastRead: FileState | undefined,
+  input: FileEditInput,
+  context: Pick<ToolUseContext, 'getAppState'>,
+): StaleEditState {
+  if (!isCompleteFileState(lastRead)) return 'unread'
+  if (fileContent === lastRead.content) return 'current'
+  if (
+    getEditApplicability(
+      fileContent,
+      input.old_string,
+      input.replace_all ?? false,
+    ) === 'applies' &&
+    canAutoReadForStaleEdit(input, context)
+  ) {
+    return 'recoverable'
+  }
+  return 'conflict'
+}
+
+function isCompleteFileState(state: FileState | undefined): state is FileState {
+  return (
+    state !== undefined &&
+    state.limit === undefined &&
+    state.isPartialView !== true &&
+    (state.offset === undefined || state.offset === 0 || state.offset === 1)
+  )
+}
+
+function canAutoReadForStaleEdit(
+  input: FileEditInput,
+  context: Pick<ToolUseContext, 'getAppState'>,
+): boolean {
+  return (
+    checkReadPermissionForTool(
+      FileEditTool,
+      input,
+      context.getAppState().toolPermissionContext,
+    ).behavior === 'allow'
+  )
+}
 
 function readFileForEdit(absoluteFilePath: string): {
   content: string

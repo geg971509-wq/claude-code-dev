@@ -5,42 +5,67 @@
  * For Windows/Linux, use src/utils/computerUse/platforms/ instead.
  */
 
-export interface FrontmostAppInfo {
-  bundleId: string
-  appName: string
+import { createRequire } from 'node:module'
+import { dirname, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import type { InputBackend } from './types.js'
+
+export type { FrontmostAppInfo, InputBackend } from './types.js'
+
+const nodeRequire = createRequire(import.meta.url)
+const nativeFunctions = [
+  'moveMouse',
+  'key',
+  'keys',
+  'mouseLocation',
+  'mouseButton',
+  'mouseScroll',
+  'typeText',
+  'getFrontmostAppInfo',
+] as const
+
+function vendorRoot(): string {
+  const dir = dirname(fileURLToPath(import.meta.url))
+  const parts = dir.split(sep)
+  const distIndex = parts.lastIndexOf('dist')
+  return distIndex === -1
+    ? resolve(dir, '..', '..', '..', '..', 'vendor')
+    : `${parts.slice(0, distIndex + 1).join(sep)}${sep}vendor`
 }
 
-export interface InputBackend {
-  moveMouse(x: number, y: number, animated: boolean): Promise<void>
-  key(key: string, action: 'press' | 'release'): Promise<void>
-  keys(parts: string[]): Promise<void>
-  mouseLocation(): Promise<{ x: number; y: number }>
-  mouseButton(
-    button: 'left' | 'right' | 'middle',
-    action: 'click' | 'press' | 'release',
-    count?: number,
-  ): Promise<void>
-  mouseScroll(
-    amount: number,
-    direction: 'vertical' | 'horizontal',
-  ): Promise<void>
-  typeText(text: string): Promise<void>
-  getFrontmostAppInfo(): FrontmostAppInfo | null
+function loadNativeBackend(): InputBackend | null {
+  const binary = 'computer-use-input.node'
+  const candidates = new Set([
+    process.env.COMPUTER_USE_INPUT_NODE_PATH,
+    resolve(vendorRoot(), 'computer-use', binary),
+    resolve(dirname(process.execPath), 'vendor', 'computer-use', binary),
+    resolve(process.cwd(), 'vendor', 'computer-use', binary),
+  ])
+  for (const path of candidates) {
+    if (!path) continue
+    try {
+      const candidate = nodeRequire(path) as Record<string, unknown>
+      if (
+        nativeFunctions.every(name => typeof candidate[name] === 'function')
+      ) {
+        return candidate as unknown as InputBackend
+      }
+    } catch {
+      // Try the next packaged/runtime location before using the script fallback.
+    }
+  }
+  return null
 }
 
 function loadBackend(): InputBackend | null {
+  if (process.platform !== 'darwin') return null
+  const native = loadNativeBackend()
+  if (native) return native
   try {
-    if (process.platform === 'darwin') {
-      return require('./backends/darwin.js') as InputBackend
-    } else if (process.platform === 'win32') {
-      return require('./backends/win32.js') as InputBackend
-    } else if (process.platform === 'linux') {
-      return require('./backends/linux.js') as InputBackend
-    }
+    return require('./backends/darwin.js') as InputBackend
   } catch {
     return null
   }
-  return null
 }
 
 const backend = loadBackend()
@@ -55,16 +80,8 @@ export const mouseScroll = backend?.mouseScroll
 export const typeText = backend?.typeText
 export const getFrontmostAppInfo = backend?.getFrontmostAppInfo ?? (() => null)
 
-export class ComputerUseInputAPI {
-  declare moveMouse: InputBackend['moveMouse']
-  declare key: InputBackend['key']
-  declare keys: InputBackend['keys']
-  declare mouseLocation: InputBackend['mouseLocation']
-  declare mouseButton: InputBackend['mouseButton']
-  declare mouseScroll: InputBackend['mouseScroll']
-  declare typeText: InputBackend['typeText']
-  declare getFrontmostAppInfo: InputBackend['getFrontmostAppInfo']
-  declare isSupported: true
+export interface ComputerUseInputAPI extends InputBackend {
+  isSupported: true
 }
 
 interface ComputerUseInputUnsupported {

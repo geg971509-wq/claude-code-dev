@@ -37,9 +37,8 @@ describe('agentsPlatform index metadata', () => {
     expect(cmd.isEnabled?.()).toBe(true)
   })
 
-  test('aliases includes agents and schedule-agent', () => {
-    expect(cmd.aliases).toContain('agents')
-    expect(cmd.aliases).toContain('schedule-agent')
+  test('keeps scheduled-agent aliases distinct from the local agents command', () => {
+    expect(cmd.aliases).toEqual(['schedule-agent'])
   })
 
   test('bridgeSafe is false', () => {

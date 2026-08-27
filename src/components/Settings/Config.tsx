@@ -620,6 +620,27 @@ export function Config({
         });
       },
     },
+    ...(feature('CROSS_SESSION_MESSAGING')
+      ? [
+          {
+            id: 'crossSessionInbound',
+            label: 'Inbound agent messages',
+            value: settingsData?.crossSessionInbound ?? 'automatic',
+            options: ['automatic', 'accept', 'hold', 'refuse'],
+            type: 'enum' as const,
+            onChange(value: string) {
+              const crossSessionInbound = value === 'automatic' ? undefined : (value as 'accept' | 'hold' | 'refuse');
+              updateSettingsForSource('localSettings', {
+                crossSessionInbound,
+              });
+              setSettingsData(prev => ({
+                ...prev,
+                crossSessionInbound,
+              }));
+            },
+          },
+        ]
+      : []),
     ...(feature('TRANSCRIPT_CLASSIFIER') && showAutoInDefaultModePicker
       ? [
           {

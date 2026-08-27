@@ -66,6 +66,10 @@ export function normalizePayload(
   if (typeof p.isSynthetic === 'boolean') normalized.isSynthetic = p.isSynthetic
   if (typeof p.status === 'string') normalized.status = p.status
   if (typeof p.subtype === 'string') normalized.subtype = p.subtype
+  if (typeof p.is_error === 'boolean') normalized.is_error = p.is_error
+  if (p.errors !== undefined) normalized.errors = p.errors
+  if (p.result !== undefined) normalized.result = p.result
+  if (p.event && typeof p.event === 'object') normalized.event = p.event
 
   // Preserve tool fields
   if (p.tool_name) normalized.tool_name = p.tool_name
@@ -78,6 +82,9 @@ export function normalizePayload(
   if (p.request) normalized.request = p.request
   if (p.approved !== undefined) normalized.approved = p.approved
   if (p.updated_input) normalized.updated_input = p.updated_input
+  if (p.updated_permissions)
+    normalized.updated_permissions = p.updated_permissions
+  if (p.response) normalized.response = p.response
 
   // Preserve message field for backward compat
   if (p.message) normalized.message = p.message

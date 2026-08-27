@@ -29,11 +29,14 @@ export interface SessionEvent {
 }
 
 export interface EventPayload {
-  content?: string
+  [key: string]: unknown
+  content?: unknown
   message?: unknown
+  event?: unknown
   status?: string
   uuid?: string
   raw?: {
+    [key: string]: unknown
     uuid?: string
     status?: string
   }
@@ -56,6 +59,8 @@ export interface ContentBlock {
 
 export interface PermissionRequest {
   subtype?: string
+  tool_use_id?: string
+  tool_call_id?: string
   tool_name?: string
   input?: unknown
   tool_input?: unknown

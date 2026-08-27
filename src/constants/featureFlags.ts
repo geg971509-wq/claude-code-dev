@@ -42,10 +42,12 @@ export const FEATURE_FLAGS = [
   'COMMIT_ATTRIBUTION', // Git 提交归属追踪（记录 AI 辅助贡献）
   'COMPACT_PRESERVE_USER_MESSAGES', // compact 时保留真实用户消息 HEAD+TAIL（借鉴 kimi handoff）
   'COMPACT_TAIL_PRESERVATION', // compact 后逐字保留最近 N 个 API round（借鉴 opencode tail preservation）
+  'PRECOMPUTED_COMPACT', // 在下一次压缩前异步准备摘要，失败时回退普通 compact
   'COMPACTION_REMINDERS', // 压缩提醒
   'CONNECTOR_TEXT', // Connector 文本块类型，扩展 API 内容格式
   'COORDINATOR_MODE', // 多 worker 编排模式
   'COWORKER_TYPE_TELEMETRY', // Coworker 类型遥测
+  'CROSS_SESSION_MESSAGING', // 跨会话 Agent 发现、寻址、收发与回执
   'DAEMON', // 守护进程模式，长驻 supervisor 管理后台 worker
   'DIRECT_CONNECT', // 直连模式（claude server / claude open）
   'DOWNLOAD_USER_SETTINGS', // 下载用户设置

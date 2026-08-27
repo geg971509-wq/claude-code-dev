@@ -92,7 +92,13 @@ import {
 } from '../utils/swarm/permissionSync.js';
 import { registerSandboxPermissionCallback } from '../hooks/useSwarmPermissionPoller.js';
 import { getTeamName, getAgentName } from '../utils/teammate.js';
+import { getPrecomputedCompactManager } from '../services/compact/precomputedCompact.js';
+import { dispatchAgentFleetAction } from '../services/agentFleet/actions.js';
+import { configureAgentFleetOwner } from '../services/agentFleet/owner.js';
+import { buildAgentFleetSnapshot } from '../services/agentFleet/roster.js';
+import { createAgentFleetTaskOwners } from '../services/agentFleet/taskOwners.js';
 import { WorkerPendingPermission } from '../components/permissions/WorkerPendingPermission.js';
+import { PeerInboundApprovalDialog } from '../components/permissions/PeerInboundApprovalDialog.js';
 import {
   injectUserMessageToTeammate,
   getAllInProcessTeammateTasks,
@@ -168,6 +174,7 @@ import { useTeammateViewAutoExit } from '../hooks/useTeammateViewAutoExit.js';
 import { errorMessage, toError } from '../utils/errors.js';
 import { isHumanTurn } from '../utils/messagePredicates.js';
 import { logError } from '../utils/log.js';
+import { memoryDebugEvent } from '../utils/memoryDebug.js';
 import { getCwd } from '../utils/cwd.js';
 // Dead code elimination: conditional imports
 const useVoiceIntegration: typeof import('../hooks/useVoiceIntegration.js').useVoiceIntegration = feature('VOICE_MODE')
@@ -463,6 +470,7 @@ import { FullscreenLayout, useUnseenDivider, computeUnseenDivider } from '../com
 import { isFullscreenEnvEnabled, maybeGetTmuxMouseHint, isMouseTrackingEnabled } from '../utils/fullscreen.js';
 import { AlternateScreen } from '@anthropic/ink';
 import { ScrollKeybindingHandler } from '../components/ScrollKeybindingHandler.js';
+import type { CrossSessionInboundMessage, PeerHoldCause } from '../utils/crossSessionInbox.js';
 import {
   useMessageActions,
   MessageActionsKeybindings,
@@ -743,6 +751,7 @@ function AnimatedTerminalTitle({
 }
 
 export type Props = {
+  effectiveContextWindow?: number;
   commands: Command[];
   debug: boolean;
   initialTools: Tool[];
@@ -791,6 +800,7 @@ export type Props = {
 export type Screen = 'prompt' | 'transcript';
 
 export function REPL({
+  effectiveContextWindow,
   commands: initialCommands,
   debug,
   initialTools,
@@ -862,6 +872,13 @@ export function REPL({
   const ultraplanLaunchPending = useAppState(s => s.ultraplanLaunchPending);
   const viewingAgentTaskId = useAppState(s => s.viewingAgentTaskId);
   const setAppState = useSetAppState();
+
+  useEffect(() => {
+    if (!feature('CROSS_SESSION_MESSAGING')) return;
+    void import('../utils/crossSessionMessaging.js').then(module => {
+      module.setCrossSessionPermissionMode(toolPermissionContext.mode);
+    });
+  }, [toolPermissionContext.mode]);
 
   // Bootstrap: retained local_agent that hasn't loaded disk yet → read
   // sidechain JSONL and UUID-merge with whatever stream has appended so far.
@@ -1355,6 +1372,33 @@ export function REPL({
       resolvePromise: (allowConnection: boolean) => void;
     }>
   >([]);
+  const [heldPeerMessages, setHeldPeerMessages] = useState<
+    ReadonlyArray<{ message: CrossSessionInboundMessage; cause: PeerHoldCause }>
+  >([]);
+  useEffect(() => {
+    if (feature('CROSS_SESSION_MESSAGING')) {
+      const messaging =
+        require('../utils/crossSessionMessaging.js') as typeof import('../utils/crossSessionMessaging.js');
+      const refresh = () => setHeldPeerMessages([...messaging.getHeldCrossSessionMessages()]);
+      refresh();
+      return messaging.subscribeHeldCrossSessionMessages(refresh);
+    }
+    return undefined;
+  }, []);
+  useEffect(() => {
+    if (feature('CROSS_SESSION_MESSAGING')) {
+      const { subscribeCrossSessionReceipts } =
+        require('../utils/crossSessionMessaging.js') as typeof import('../utils/crossSessionMessaging.js');
+      return subscribeCrossSessionReceipts(receipt => {
+        addNotification({
+          key: `peer-message-${receipt.msgId}-${receipt.status}`,
+          text: `Agent message ${receipt.status}${receipt.from ? ` by ${receipt.from}` : ''}${receipt.reason ? `: ${receipt.reason}` : ''}`,
+          priority: 'low',
+        });
+      });
+    }
+    return undefined;
+  }, [addNotification]);
   const [promptQueue, setPromptQueue] = useState<
     Array<{
       request: PromptRequest;
@@ -1384,7 +1428,11 @@ export function REPL({
   const agentTitle = mainThreadAgentDefinition?.agentType;
   const terminalTitle = sessionTitle ?? agentTitle ?? haikuTitle ?? 'Claude Code';
   const isWaitingForApproval =
-    toolUseConfirmQueue.length > 0 || promptQueue.length > 0 || pendingWorkerRequest || pendingSandboxRequest;
+    toolUseConfirmQueue.length > 0 ||
+    promptQueue.length > 0 ||
+    heldPeerMessages.length > 0 ||
+    pendingWorkerRequest ||
+    pendingSandboxRequest;
   // Local-jsx commands (like /plugin, /config) show user-facing dialogs that
   // wait for input. Require jsx != null — if the flag is stuck true but jsx
   // is null, treat as not-showing so TextInput focus and queue processor
@@ -1460,7 +1508,15 @@ export function REPL({
   // (e.g. handleSpeculationAccept → onQuery) see stale data.
   const setMessages = useCallback((action: React.SetStateAction<MessageType[]>) => {
     const prev = messagesRef.current;
+    memoryDebugEvent('set_messages_start', {
+      previousLength: prev.length,
+      actionType: typeof action,
+    });
     const next = typeof action === 'function' ? action(messagesRef.current) : action;
+    memoryDebugEvent('set_messages_computed', {
+      previousLength: prev.length,
+      nextLength: next.length,
+    });
     messagesRef.current = next;
     if (next.length < userInputBaselineRef.current) {
       // Shrank (compact/rewind/clear) — clamp so placeholderText's length
@@ -2376,6 +2432,7 @@ export function REPL({
   function getFocusedInputDialog():
     | 'message-selector'
     | 'sandbox-permission'
+    | 'peer-message'
     | 'tool-permission'
     | 'prompt'
     | 'worker-sandbox-permission'
@@ -2409,6 +2466,7 @@ export function REPL({
     // Permission/interactive dialogs (show unless blocked by toolJSX)
     const allowDialogsWithAnimation = !toolJSX || toolJSX.shouldContinueAnimation;
 
+    if (allowDialogsWithAnimation && heldPeerMessages[0]) return 'peer-message';
     if (allowDialogsWithAnimation && toolUseConfirmQueue[0]) return 'tool-permission';
     if (allowDialogsWithAnimation && promptQueue[0]) return 'prompt';
     // Worker sandbox permission prompts (network access) from swarm workers
@@ -2506,6 +2564,15 @@ export function REPL({
   }, [focusedInputDialog, repinScroll]);
 
   function onCancel() {
+    if (focusedInputDialog === 'peer-message') {
+      const held = heldPeerMessages[0];
+      if (held) {
+        const { resolveHeldCrossSessionMessage } =
+          require('../utils/crossSessionMessaging.js') as typeof import('../utils/crossSessionMessaging.js');
+        void resolveHeldCrossSessionMessage(held.message.msgId, 'deny');
+      }
+      return;
+    }
     if (focusedInputDialog === 'elicitation') {
       // Elicitation dialog handles its own Escape, and closing it shouldn't affect any loading state.
       return;
@@ -2882,6 +2949,10 @@ export function REPL({
       };
 
       return {
+        effectiveContextWindow,
+        precomputedCompactManager: feature('PRECOMPUTED_COMPACT')
+          ? getPrecomputedCompactManager(getSessionId())
+          : undefined,
         abortController,
         options: {
           commands,
@@ -3017,6 +3088,28 @@ export function REPL({
       appendSystemPrompt,
       setConversationId,
     ],
+  );
+
+  useEffect(
+    () =>
+      configureAgentFleetOwner({
+        buildSnapshot: () =>
+          buildAgentFleetSnapshot(
+            getCwd(),
+            { all: true },
+            {
+              listSessions: async () => [],
+              getOwnerSnapshots: async () => ({ snapshots: [], failed: false }),
+              getTaskRecords: () => store.getState().tasks,
+              ownerSessionId: getSessionId(),
+            },
+          ),
+        dispatch: (record, action) => {
+          const context = getToolUseContext(messagesRef.current, [], new AbortController(), mainLoopModel);
+          return dispatchAgentFleetAction(record, action, createAgentFleetTaskOwners(context, canUseTool));
+        },
+      }),
+    [store, getToolUseContext, mainLoopModel, canUseTool],
   );
 
   // Session backgrounding (Ctrl+B to background/foreground)
@@ -3266,6 +3359,11 @@ export function REPL({
       mainLoopModelParam: string,
       effort?: EffortValue,
     ) => {
+      memoryDebugEvent('on_query_impl_start', {
+        messagesLength: messagesIncludingNewMessages.length,
+        newMessagesLength: newMessages.length,
+        shouldQuery,
+      });
       // Prepare IDE integration for new prompt. Read mcpClients fresh from
       // store — useManageMCPConnections may have populated it since the
       // render that captured this closure (same pattern as computeTools).
@@ -3328,6 +3426,7 @@ export function REPL({
       // (~85 calls/turn); hoisting it here makes getAppState a pure read and stops
       // ephemeral contexts (permission dialog, BackgroundTasksDialog) from
       // accidentally clearing it mid-turn.
+      memoryDebugEvent('on_query_before_permission_state');
       store.setState(prev => {
         const cur = prev.toolPermissionContext.alwaysAllowRules.command;
         if (
@@ -3347,6 +3446,7 @@ export function REPL({
           },
         };
       });
+      memoryDebugEvent('on_query_after_permission_state');
 
       // The last message is an assistant message if the user input was a bash command,
       // or if the user input was an invalid slash command.
@@ -3367,12 +3467,17 @@ export function REPL({
         return;
       }
 
+      memoryDebugEvent('on_query_before_tool_context');
       const toolUseContext = getToolUseContext(
         messagesIncludingNewMessages,
         newMessages,
         abortController,
         mainLoopModelParam,
       );
+      memoryDebugEvent('on_query_after_tool_context', {
+        toolsLength: toolUseContext.options.tools.length,
+        mcpClientsLength: toolUseContext.options.mcpClients.length,
+      });
       // getToolUseContext reads tools/mcpClients fresh from store.getState()
       // (via computeTools/mergeClients). Use those rather than the closure-
       // captured `tools`/`mcpClients` — useManageMCPConnections may have
@@ -3392,6 +3497,7 @@ export function REPL({
       }
 
       queryCheckpoint('query_context_loading_start');
+      memoryDebugEvent('on_query_before_context_loading');
       const [, , defaultSystemPrompt, baseUserContext, systemContext] = await Promise.all([
         // IMPORTANT: do this after setMessages() above, to avoid UI jank
         undefined,
@@ -3408,6 +3514,7 @@ export function REPL({
         getUserContext(),
         getSystemContext(),
       ]);
+      memoryDebugEvent('on_query_after_context_loading');
       const userContext = {
         ...baseUserContext,
         ...getCoordinatorUserContext(freshMcpClients, isScratchpadEnabled() ? getScratchpadDir() : undefined),
@@ -3421,6 +3528,7 @@ export function REPL({
       };
       queryCheckpoint('query_context_loading_end');
 
+      memoryDebugEvent('on_query_before_system_prompt');
       const systemPrompt = buildEffectiveSystemPrompt({
         mainThreadAgentDefinition,
         toolUseContext,
@@ -3428,12 +3536,16 @@ export function REPL({
         defaultSystemPrompt,
         appendSystemPrompt,
       });
+      memoryDebugEvent('on_query_after_system_prompt', {
+        systemPromptLength: systemPrompt.length,
+      });
 
       queryCheckpoint('query_query_start');
       resetTurnHookDuration();
       resetTurnToolDuration();
       resetTurnClassifierDuration();
 
+      memoryDebugEvent('on_query_before_query_generator');
       for await (const event of query({
         messages: messagesIncludingNewMessages,
         systemPrompt,
@@ -3441,6 +3553,7 @@ export function REPL({
         systemContext,
         canUseTool,
         toolUseContext,
+        effectiveContextWindow,
         querySource: getQuerySourceForREPL(),
       })) {
         onQueryEvent(event);
@@ -3539,6 +3652,10 @@ export function REPL({
       input?: string,
       effort?: EffortValue,
     ): Promise<boolean> => {
+      memoryDebugEvent('on_query_start', {
+        newMessagesLength: newMessages.length,
+        shouldQuery,
+      });
       // If this is a teammate, mark them as active when starting a turn
       if (isAgentSwarmsEnabled()) {
         const teamName = getTeamName();
@@ -3553,6 +3670,9 @@ export function REPL({
       // and transitions idle→running, returning the generation number.
       // Returns null if already running — no separate check-then-set.
       const thisGeneration = queryGuard.tryStart();
+      memoryDebugEvent('on_query_guard', {
+        started: thisGeneration !== null,
+      });
       if (thisGeneration === null) {
         logEvent('tengu_concurrent_onquery_detected', {});
 
@@ -3582,7 +3702,13 @@ export function REPL({
         // in the same frame. The placeholder's purpose is to bridge the gap
         // between submission and setMessages — once setMessages fires, it's done.
         setUserInputOnProcessing(undefined);
+        memoryDebugEvent('on_query_before_append', {
+          currentMessagesLength: messagesRef.current.length,
+        });
         setMessages(oldMessages => [...oldMessages, ...newMessages]);
+        memoryDebugEvent('on_query_after_append', {
+          currentMessagesLength: messagesRef.current.length,
+        });
         responseLengthRef.current = 0;
         if (feature('TOKEN_BUDGET')) {
           const parsedBudget = input ? parseTokenBudget(input) : null;
@@ -3600,7 +3726,9 @@ export function REPL({
         const latestMessages = messagesRef.current;
 
         if (input) {
+          memoryDebugEvent('on_query_before_memory_hook');
           await mrOnBeforeQuery(input, latestMessages, newMessages.length);
+          memoryDebugEvent('on_query_after_memory_hook');
         }
 
         // Pass full conversation history to callback
@@ -3611,6 +3739,7 @@ export function REPL({
           }
         }
 
+        memoryDebugEvent('on_query_before_impl');
         await onQueryImpl(
           latestMessages,
           newMessages,
@@ -4011,7 +4140,7 @@ export function REPL({
             const context = getToolUseContext(messagesRef.current, [], createAbortController(), mainLoopModel);
 
             const mod = await matchingCommand.load();
-            const jsx = await mod.call(onDone, context, commandArgs);
+            const jsx = await mod.call(onDone, context, commandArgs, commandName);
 
             // Skip if onDone already fired — prevents stuck isLocalJSXCommand
             // (see processSlashCommand.tsx local-jsx case for full mechanism).
@@ -5848,6 +5977,23 @@ export function REPL({
                     }}
                   />
                 )}
+                {focusedInputDialog === 'peer-message' && heldPeerMessages[0] && (
+                  <PeerInboundApprovalDialog
+                    key={heldPeerMessages[0].message.msgId}
+                    message={heldPeerMessages[0].message}
+                    cause={heldPeerMessages[0].cause}
+                    onDecision={decision => {
+                      const held = heldPeerMessages[0];
+                      if (!held) return;
+                      const { resolveHeldCrossSessionMessage } =
+                        require('../utils/crossSessionMessaging.js') as typeof import('../utils/crossSessionMessaging.js');
+                      void resolveHeldCrossSessionMessage(
+                        held.message.msgId,
+                        decision === 'approve' ? 'approve' : 'deny',
+                      );
+                    }}
+                  />
+                )}
                 {focusedInputDialog === 'prompt' && (
                   <PromptDialog
                     key={promptQueue[0]!.request.prompt}
@@ -6392,6 +6538,7 @@ export function REPL({
                         feedback,
                         direction,
                       );
+                      await context.precomputedCompactManager?.discard(context.agentId ?? 'main');
 
                       const kept = result.messagesToKeep ?? [];
                       const ordered =

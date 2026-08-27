@@ -9,12 +9,23 @@ let cached: ComputerUseAPI | undefined
 export function requireComputerUseSwift(): ComputerUseAPI {
   if (cached) return cached
   const mod = require('@ant/computer-use-swift')
-  if (mod.ComputerUseAPI && typeof mod.ComputerUseAPI === 'function') {
-    cached = new mod.ComputerUseAPI() as ComputerUseAPI
+  if (mod.computerUse) {
+    cached = mod.computerUse as ComputerUseAPI
   } else {
     cached = mod as ComputerUseAPI
   }
   return cached
+}
+
+export function requestComputerUseTccPermission(
+  permission: 'accessibility' | 'screenRecording',
+): void {
+  const { tcc } = requireComputerUseSwift()
+  if (permission === 'accessibility') {
+    tcc?.requestAccessibility()
+  } else {
+    tcc?.requestScreenRecording()
+  }
 }
 
 export type { ComputerUseAPI }

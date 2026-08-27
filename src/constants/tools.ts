@@ -18,6 +18,8 @@ import { FILE_WRITE_TOOL_NAME } from 'src/tools/FileWriteTool/prompt.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from 'src/tools/NotebookEditTool/constants.js'
 import { SKILL_TOOL_NAME } from 'src/tools/SkillTool/constants.js'
 import { SEND_MESSAGE_TOOL_NAME } from 'src/tools/SendMessageTool/constants.js'
+import { LIST_AGENTS_TOOL_NAME } from 'src/tools/ListAgentsTool/constants.js'
+import { SEND_FILE_TOOL_NAME } from 'src/tools/SendFileTool/constants.js'
 import { TASK_CREATE_TOOL_NAME } from 'src/tools/TaskCreateTool/constants.js'
 import { TASK_GET_TOOL_NAME } from 'src/tools/TaskGetTool/constants.js'
 import { TASK_LIST_TOOL_NAME } from 'src/tools/TaskListTool/constants.js'
@@ -83,6 +85,10 @@ export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
   EXECUTE_TOOL_NAME,
   ENTER_WORKTREE_TOOL_NAME,
   EXIT_WORKTREE_TOOL_NAME,
+  SEND_MESSAGE_TOOL_NAME,
+  ...(feature('CROSS_SESSION_MESSAGING')
+    ? [LIST_AGENTS_TOOL_NAME, SEND_FILE_TOOL_NAME]
+    : []),
 ])
 /**
  * Tools allowed only for in-process teammates (not general async agents).
@@ -95,6 +101,7 @@ export const IN_PROCESS_TEAMMATE_ALLOWED_TOOLS = new Set([
   TASK_LIST_TOOL_NAME,
   TASK_UPDATE_TOOL_NAME,
   SEND_MESSAGE_TOOL_NAME,
+  LIST_AGENTS_TOOL_NAME,
   // Teammate-created crons are tagged with the creating agentId and routed to
   // that teammate's pendingUserMessages queue (see useScheduledTasks.ts).
   CRON_CREATE_TOOL_NAME,
@@ -123,6 +130,7 @@ export const COORDINATOR_MODE_ALLOWED_TOOLS = new Set([
   AGENT_TOOL_NAME,
   TASK_STOP_TOOL_NAME,
   SEND_MESSAGE_TOOL_NAME,
+  LIST_AGENTS_TOOL_NAME,
   SYNTHETIC_OUTPUT_TOOL_NAME,
 ])
 
@@ -144,6 +152,7 @@ export const CORE_TOOLS = new Set([
   // Agent & interaction
   AGENT_TOOL_NAME, // 'Agent'
   ASK_USER_QUESTION_TOOL_NAME, // 'AskUserQuestion'
+  LIST_AGENTS_TOOL_NAME, // 'ListAgents'
   // Task management
   TASK_OUTPUT_TOOL_NAME, // 'TaskOutput'
   TASK_STOP_TOOL_NAME, // 'TaskStop'

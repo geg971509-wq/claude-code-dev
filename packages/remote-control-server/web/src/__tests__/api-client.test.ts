@@ -178,15 +178,19 @@ describe('api functions', () => {
 
 describe('ACP relay client', () => {
   test('builds relay URLs without UUID or token query params', () => {
-    ;(globalThis as any).window = {
-      location: {
-        protocol: 'https:',
-        host: 'rcs.example.test',
-      },
+    const globalWithWindow = globalThis as unknown as { window?: Window }
+    const originalWindow = globalWithWindow.window
+    try {
+      globalWithWindow.window = {
+        location: { protocol: 'https:', host: 'rcs.example.test' },
+      } as unknown as Window
+      expect(relayClient.buildRelayUrl('agent_123')).toBe(
+        'wss://rcs.example.test/acp/relay/agent_123',
+      )
+    } finally {
+      if (originalWindow === undefined)
+        Reflect.deleteProperty(globalWithWindow, 'window')
+      else globalWithWindow.window = originalWindow
     }
-
-    expect(relayClient.buildRelayUrl('agent_123')).toBe(
-      'wss://rcs.example.test/acp/relay/agent_123',
-    )
   })
 })

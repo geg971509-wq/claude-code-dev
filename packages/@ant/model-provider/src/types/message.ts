@@ -93,7 +93,12 @@ export type SystemCompactBoundaryMessage = Message & {
 }
 export type TombstoneMessage = Message
 export type ToolUseSummaryMessage = Message
-export type MessageOrigin = string
+export type MessageOrigin =
+  | string
+  | {
+      kind: string
+      [key: string]: unknown
+    }
 export type CompactMetadata = Record<string, unknown>
 export type SystemAPIErrorMessage = Message & { type: 'system' }
 export type SystemFileSnapshotMessage = Message & { type: 'system' }

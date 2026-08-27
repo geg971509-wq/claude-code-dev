@@ -275,7 +275,9 @@ function ChordInterceptor({
 
         case 'unbound':
           setPendingChord(null);
-          event.stopImmediatePropagation();
+          if (wasInChord) {
+            event.stopImmediatePropagation();
+          }
           break;
 
         case 'none':

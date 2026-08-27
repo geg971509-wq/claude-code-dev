@@ -84,7 +84,6 @@ export function useKeybinding(
         case 'unbound':
           // Explicitly unbound - clear any pending chord
           keybindingContext.setPendingChord(null)
-          event.stopImmediatePropagation()
           break
         case 'none':
           // No match - let other handlers try
@@ -183,7 +182,6 @@ export function useKeybindings(
         case 'unbound':
           // Explicitly unbound - clear any pending chord
           keybindingContext.setPendingChord(null)
-          event.stopImmediatePropagation()
           break
         case 'none':
           // No match - let other handlers try

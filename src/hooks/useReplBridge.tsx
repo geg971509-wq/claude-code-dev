@@ -10,7 +10,7 @@ import {
 import { handleRemoteInterrupt } from '../bridge/remoteInterruptHandling.js';
 import { isTranscriptResetResultReady, shouldDeferBridgeResult } from '../bridge/bridgeResultScheduling.js';
 import { buildBridgeConnectUrl } from '../bridge/bridgeStatusUtil.js';
-import { extractInboundMessageFields } from '../bridge/inboundMessages.js';
+import { extractInboundMessageFields, handleCrossSessionInbound } from '../bridge/inboundMessages.js';
 import type { BridgeState, ReplBridgeHandle } from '../bridge/replBridge.js';
 import { setReplBridgeHandle } from '../bridge/replBridgeHandle.js';
 import type { Command } from '../commands.js';
@@ -204,6 +204,10 @@ export function useReplBridge(
             try {
               const fields = extractInboundMessageFields(msg);
               if (!fields) return;
+              if (fields.kind !== 'human') {
+                await handleCrossSessionInbound(msg, fields);
+                return;
+              }
 
               const { uuid } = fields;
 

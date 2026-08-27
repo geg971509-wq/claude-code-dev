@@ -11,7 +11,6 @@ import {
   type Tools,
   type ToolUseContext,
 } from '../../Tool.js'
-import { BASH_TOOL_NAME } from 'src/tools/BashTool/toolName.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { createChildAbortController } from '../../utils/abortController.js'
 import { errorMessage } from '../../utils/errors.js'
@@ -50,9 +49,7 @@ type TrackedTool = {
 export class StreamingToolExecutor {
   private tools: TrackedTool[] = []
   private toolUseContext: ToolUseContext
-  private hasErrored = false
-  private erroredToolDescription = ''
-  private siblingAbortController: AbortController
+  private batchAbortController: AbortController
   private discarded = false
   private progressAvailableResolve?: () => void
   private turnSpan: LangfuseSpan | null = null
@@ -63,7 +60,7 @@ export class StreamingToolExecutor {
     toolUseContext: ToolUseContext,
   ) {
     this.toolUseContext = toolUseContext
-    this.siblingAbortController = createChildAbortController(
+    this.batchAbortController = createChildAbortController(
       toolUseContext.abortController,
     )
   }
@@ -82,7 +79,7 @@ export class StreamingToolExecutor {
     this.discarded = true
     // Abort running tool subprocesses (Bash spawns, etc.) so they don't
     // continue producing results after the executor is replaced.
-    this.siblingAbortController.abort('streaming_fallback')
+    this.batchAbortController.abort('streaming_fallback')
     // Settle the in-progress bookkeeping before dropping the tools. Anything not
     // yet yielded was registered by executeTool and would otherwise stay in
     // inProgressToolUseIDs for the session: getCompletedResults early-returns
@@ -196,7 +193,7 @@ export class StreamingToolExecutor {
 
   private createSyntheticErrorMessage(
     toolUseId: string,
-    reason: 'sibling_error' | 'user_interrupted' | 'streaming_fallback',
+    reason: 'user_interrupted' | 'streaming_fallback',
     assistantMessage: AssistantMessage,
   ): Message {
     // For user interruptions (ESC to reject), use REJECT_MESSAGE so the UI shows
@@ -215,35 +212,17 @@ export class StreamingToolExecutor {
         sourceToolAssistantUUID: assistantMessage.uuid,
       })
     }
-    if (reason === 'streaming_fallback') {
-      return createUserMessage({
-        content: [
-          {
-            type: 'tool_result',
-            content:
-              '<tool_use_error>Error: Streaming fallback - tool execution discarded</tool_use_error>',
-            is_error: true,
-            tool_use_id: toolUseId,
-          },
-        ],
-        toolUseResult: 'Streaming fallback - tool execution discarded',
-        sourceToolAssistantUUID: assistantMessage.uuid,
-      })
-    }
-    const desc = this.erroredToolDescription
-    const msg = desc
-      ? `Cancelled: parallel tool call ${desc} errored`
-      : 'Cancelled: parallel tool call errored'
     return createUserMessage({
       content: [
         {
           type: 'tool_result',
-          content: `<tool_use_error>${msg}</tool_use_error>`,
+          content:
+            '<tool_use_error>Error: Streaming fallback - tool execution discarded</tool_use_error>',
           is_error: true,
           tool_use_id: toolUseId,
         },
       ],
-      toolUseResult: msg,
+      toolUseResult: 'Streaming fallback - tool execution discarded',
       sourceToolAssistantUUID: assistantMessage.uuid,
     })
   }
@@ -253,12 +232,9 @@ export class StreamingToolExecutor {
    */
   private getAbortReason(
     tool: TrackedTool,
-  ): 'sibling_error' | 'user_interrupted' | 'streaming_fallback' | null {
+  ): 'user_interrupted' | 'streaming_fallback' | null {
     if (this.discarded) {
       return 'streaming_fallback'
-    }
-    if (this.hasErrored) {
-      return 'sibling_error'
     }
     if (this.toolUseContext.abortController.signal.aborted) {
       // 'interrupt' means the user typed a new message while tools were
@@ -282,17 +258,6 @@ export class StreamingToolExecutor {
     } catch {
       return 'block'
     }
-  }
-
-  private getToolDescription(tool: TrackedTool): string {
-    const input = tool.block.input as Record<string, unknown> | undefined
-    const summary = input?.command ?? input?.file_path ?? input?.pattern ?? ''
-    if (typeof summary === 'string' && summary.length > 0) {
-      const truncated =
-        summary.length > 40 ? summary.slice(0, 40) + '\u2026' : summary
-      return `${tool.block.name}(${truncated})`
-    }
-    return tool.block.name
   }
 
   private updateInterruptibleState(): void {
@@ -321,7 +286,8 @@ export class StreamingToolExecutor {
       let thisToolErrored = false
 
       try {
-        // If already aborted (by error or user), generate synthetic error block instead of running the tool
+        // If already aborted by the user or streaming fallback, generate a
+        // synthetic error block instead of running the tool.
         const initialAbortReason = this.getAbortReason(tool)
         if (initialAbortReason) {
           messages.push(
@@ -334,21 +300,19 @@ export class StreamingToolExecutor {
           return
         }
 
-        // Per-tool child controller. Lets siblingAbortController kill running
-        // subprocesses (Bash spawns listen to this signal) when a Bash error
-        // cascades. Permission-dialog rejection also aborts this controller
+        // Per-tool child controller. Lets batchAbortController stop running
+        // subprocesses during streaming fallback. Permission-dialog rejection also aborts this controller
         // (PermissionContext.ts cancelAndAbort) — that abort must bubble up to
         // the query controller so the query loop's post-tool abort check ends
         // the turn. Without bubble-up, ExitPlanMode "clear context + auto"
         // sends REJECT_MESSAGE to the model instead of aborting (#21056 regression).
         const toolAbortController = createChildAbortController(
-          this.siblingAbortController,
+          this.batchAbortController,
         )
         toolAbortController.signal.addEventListener(
           'abort',
           () => {
             if (
-              toolAbortController.signal.reason !== 'sibling_error' &&
               !this.toolUseContext.abortController.signal.aborted &&
               !this.discarded
             ) {
@@ -369,7 +333,7 @@ export class StreamingToolExecutor {
         )
 
         for await (const update of generator) {
-          // Check if we were aborted by a sibling tool error or user interruption.
+          // Check if we were aborted by the user or streaming fallback.
           // Only add the synthetic error if THIS tool didn't produce the error.
           const abortReason = this.getAbortReason(tool)
           if (abortReason && !thisToolErrored) {
@@ -392,14 +356,6 @@ export class StreamingToolExecutor {
 
           if (isErrorResult) {
             thisToolErrored = true
-            // Only Bash errors cancel siblings. Bash commands often have implicit
-            // dependency chains (e.g. mkdir fails → subsequent commands pointless).
-            // Read/WebFetch/etc are independent — one failure shouldn't nuke the rest.
-            if (tool.block.name === BASH_TOOL_NAME) {
-              this.hasErrored = true
-              this.erroredToolDescription = this.getToolDescription(tool)
-              this.siblingAbortController.abort('sibling_error')
-            }
           }
 
           if (update.message) {
@@ -447,12 +403,6 @@ export class StreamingToolExecutor {
               sourceToolAssistantUUID: tool.assistantMessage.uuid,
             }),
           )
-
-          if (tool.block.name === BASH_TOOL_NAME) {
-            this.hasErrored = true
-            this.erroredToolDescription = this.getToolDescription(tool)
-            this.siblingAbortController.abort('sibling_error')
-          }
         }
       } finally {
         tool.results = messages

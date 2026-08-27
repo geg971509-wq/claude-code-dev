@@ -1,22 +1,42 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "entry": ["src/entrypoints/cli.tsx"],
-  "project": ["src/**/*.{ts,tsx}"],
-  "ignore": ["src/types/**", "src/**/*.d.ts"],
-  "ignoreDependencies": [
-    "@ant/*",
-    "react-compiler-runtime",
-    "@anthropic-ai/mcpb",
-    "@anthropic-ai/sandbox-runtime"
+  "ignoreDependencies": ["react-compiler-runtime"],
+  "ignoreBinaries": [
+    "findstr",
+    "gh",
+    "ip",
+    "mintlify",
+    "ps",
+    "security",
+    "tasklist"
   ],
-  "ignoreBinaries": ["bun"],
   "workspaces": {
-    "packages/*": {
-      "entry": ["src/index.ts"],
-      "project": ["src/**/*.ts"]
+    ".": {
+      "entry": [
+        "src/entrypoints/cli.tsx",
+        "scripts/dump-prompt.ts",
+        "scripts/postinstall.cjs",
+        "scripts/setup-chrome-mcp.mjs",
+        "src/**/*.{runner,isolated,integration,fixture}.{ts,tsx}",
+        "tests/**/*.{runner,isolated,integration,fixture}.{ts,tsx}"
+      ],
+      "project": [
+        "src/**/*.{js,ts,tsx}",
+        "scripts/**/*.{js,mjs,cjs,ts}",
+        "tests/**/*.{js,ts,tsx}"
+      ],
+      "ignore": [".superpowers/**"]
     },
-    "packages/@ant/*": {
-      "ignore": ["**"]
+    "packages/remote-control-server": {
+      "entry": ["web/src/main.tsx"],
+      "project": ["src/**/*.{ts,tsx}", "web/**/*.{ts,tsx}"],
+      "vite": {
+        "config": ["web/vite.config.ts"]
+      }
+    },
+    "packages/workflow-engine": {
+      "entry": ["src/index.ts", "scripts/**/*.ts", "examples/**/*.{ts,mjs}"],
+      "project": ["src/**/*.ts", "scripts/**/*.ts", "examples/**/*.{ts,mjs}"]
     }
   }
 }

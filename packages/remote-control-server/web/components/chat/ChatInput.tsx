@@ -26,6 +26,7 @@ interface ChatInputProps {
   placeholder?: string;
   /** 是否支持图片上传 */
   supportsImages?: boolean;
+  onError?: (message: string) => void;
   /** Agent 提供的可用 slash 命令 */
   commands?: AvailableCommand[];
   className?: string;
@@ -38,6 +39,7 @@ export function ChatInput({
   disabled = false,
   placeholder = '给 Claude 发送消息…',
   supportsImages = false,
+  onError,
   commands,
   className,
 }: ChatInputProps) {
@@ -125,10 +127,10 @@ export function ChatInput({
       if (files.length === 0) return;
 
       e.preventDefault();
-      const newImages = await processImageFiles(files);
+      const newImages = await processImageFiles(files, onError);
       setImages(prev => [...prev, ...newImages]);
     },
-    [supportsImages],
+    [onError, supportsImages],
   );
 
   // 选择文件
@@ -137,11 +139,11 @@ export function ChatInput({
     const files = fileInputRef.current.files;
     if (!files || files.length === 0) return;
 
-    const newImages = await processImageFiles(Array.from(files));
+    const newImages = await processImageFiles(Array.from(files), onError);
     setImages(prev => [...prev, ...newImages]);
     // 清空 input 以便重复选择
     fileInputRef.current.value = '';
-  }, []);
+  }, [onError]);
 
   const removeImage = useCallback((index: number) => {
     setImages(prev => prev.filter((_, i) => i !== index));
@@ -308,7 +310,7 @@ export function ChatInput({
 // 图片处理工具
 // =============================================================================
 
-async function processImageFiles(files: File[]): Promise<UserMessageImage[]> {
+async function processImageFiles(files: File[], onError?: (message: string) => void): Promise<UserMessageImage[]> {
   const results: UserMessageImage[] = [];
 
   for (const file of files) {
@@ -336,6 +338,7 @@ async function processImageFiles(files: File[]): Promise<UserMessageImage[]> {
       results.push({ mimeType, data: base64 });
     } catch (err) {
       console.error('Failed to process image:', err);
+      onError?.(err instanceof Error ? err.message : 'Failed to process image');
     }
   }
 

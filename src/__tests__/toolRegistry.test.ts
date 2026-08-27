@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test'
-import { parseToolPreset, filterToolsByDenyRules } from '../toolRegistry'
-import { getEmptyToolPermissionContext } from '../Tool'
+import {
+  parseToolPreset,
+  filterToolsByDenyRules,
+  getAllBaseTools,
+} from '../toolRegistry'
+import { getEmptyToolPermissionContext, toolMatchesName } from '../Tool'
 
 describe('parseToolPreset', () => {
   test('returns "default" for "default" input', () => {
@@ -81,5 +85,20 @@ describe('filterToolsByDenyRules', () => {
   test('handles empty tools array', () => {
     const ctx = getEmptyToolPermissionContext()
     expect(filterToolsByDenyRules([], ctx)).toEqual([])
+  })
+})
+
+describe('cross-session tool registration', () => {
+  test('registers ListAgents exactly once with its ListPeers alias', () => {
+    const tools = getAllBaseTools()
+    const matches = tools.filter(tool => toolMatchesName(tool, 'ListAgents'))
+
+    expect(matches).toHaveLength(1)
+    expect(toolMatchesName(matches[0]!, 'ListPeers')).toBe(true)
+  })
+
+  test('registers the dedicated peer SendFile tool exactly once', () => {
+    const matches = getAllBaseTools().filter(tool => tool.name === 'SendFile')
+    expect(matches).toHaveLength(1)
   })
 })

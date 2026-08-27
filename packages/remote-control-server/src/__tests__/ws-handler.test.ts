@@ -206,6 +206,79 @@ describe('ws-handler', () => {
       expect((events[0] as any).type).toBe('partial_assistant')
     })
 
+    test('preserves current stream_event payload without flattening it', () => {
+      const bus = getEventBus('s1')
+      const events: unknown[] = []
+      bus.subscribe(e => events.push(e))
+      const streamEvent = {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'hello' },
+      }
+
+      ingestBridgeMessage('s1', {
+        type: 'stream_event',
+        uuid: 'stream-1',
+        event: streamEvent,
+      })
+
+      expect((events[0] as any).type).toBe('stream_event')
+      expect((events[0] as any).payload.event).toEqual(streamEvent)
+      expect((events[0] as any).payload.uuid).toBe('stream-1')
+    })
+
+    test('preserves legacy partial_assistant stream payload', () => {
+      const bus = getEventBus('s1')
+      const events: unknown[] = []
+      bus.subscribe(e => events.push(e))
+      const streamEvent = {
+        type: 'message_stop',
+      }
+
+      ingestBridgeMessage('s1', {
+        type: 'partial_assistant',
+        uuid: 'legacy-1',
+        event: streamEvent,
+      })
+
+      expect((events[0] as any).payload.event).toEqual(streamEvent)
+      expect((events[0] as any).payload.uuid).toBe('legacy-1')
+    })
+
+    test('preserves result failure metadata from the bridge', () => {
+      const bus = getEventBus('s1')
+      const events: any[] = []
+      bus.subscribe(event => events.push(event))
+      ingestBridgeMessage('s1', {
+        type: 'result',
+        subtype: 'error_max_turns',
+        is_error: true,
+        errors: ['Maximum turns reached'],
+      })
+      expect(events[0].payload).toMatchObject({
+        subtype: 'error_max_turns',
+        is_error: true,
+        errors: ['Maximum turns reached'],
+      })
+    })
+
+    test('preserves failure result detail when errors are absent', () => {
+      const bus = getEventBus('s1')
+      const events: any[] = []
+      bus.subscribe(event => events.push(event))
+      ingestBridgeMessage('s1', {
+        type: 'result',
+        subtype: 'error_during_execution',
+        is_error: true,
+        result: 'Command exited with status 1',
+      })
+      expect(events[0].payload).toMatchObject({
+        subtype: 'error_during_execution',
+        is_error: true,
+        result: 'Command exited with status 1',
+      })
+    })
+
     test('falls back to unknown type', () => {
       const bus = getEventBus('s1')
       const events: unknown[] = []

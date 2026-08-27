@@ -6,6 +6,7 @@ import {
   CLI_BUN_WRAPPER_SOURCE,
   CLI_NODE_WRAPPER_SOURCE,
 } from './scripts/cli-entry-wrappers.ts'
+import { stageRipgrep } from './scripts/ripgrep-sidecar.ts'
 
 const outdir = 'dist'
 
@@ -87,14 +88,16 @@ console.log(
   `Bundled ${result.outputs.length} files to ${outdir}/ (patched ${patched} for import.meta.require, ${bunPatched} for Bun destructure)`,
 )
 
-// Step 4: Copy native .node addon files (audio-capture) and vendored binaries (ripgrep)
+// Step 4: Copy native addons and vendored binaries.
 const audioCaptureDir = join(outdir, 'vendor', 'audio-capture')
 await cp('vendor/audio-capture', audioCaptureDir, { recursive: true })
 console.log(`Copied vendor/audio-capture/ → ${audioCaptureDir}/`)
 
-const ripgrepDir = join(outdir, 'vendor', 'ripgrep')
-await cp('src/utils/vendor/ripgrep', ripgrepDir, { recursive: true })
-console.log(`Copied src/utils/vendor/ripgrep/ → ${ripgrepDir}/`)
+const computerUseDir = join(outdir, 'vendor', 'computer-use')
+await cp('vendor/computer-use', computerUseDir, { recursive: true })
+console.log(`Copied vendor/computer-use/ → ${computerUseDir}/`)
+
+stageRipgrep({ outdir, allKnown: true })
 
 // Step 5: Generate cli-bun and cli-node executable entry points.
 // Wrapper sources (runtime version gates) are shared with scripts/post-build.ts

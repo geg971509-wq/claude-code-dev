@@ -1364,6 +1364,11 @@ async function* queryModel(
   // after shared preprocessing (message normalization, tool filtering,
   // media stripping) but before Anthropic-specific logic (betas, thinking, caching).
   if (getAPIProvider() === 'openai') {
+    queryCheckpoint('query_openai_delegate_start', {
+      querySource: options.querySource,
+      messageCount: messagesForAPI.length,
+      toolCount: tools.length,
+    })
     const { queryModelOpenAI } = await import('./openai/index.js')
     // OpenAI emulates Anthropic's dynamic tool loading client-side. It needs
     // the full tool pool so SearchExtraToolsTool can search deferred MCP tools that
@@ -1375,6 +1380,7 @@ async function* queryModel(
       signal,
       options,
     )
+    queryCheckpoint('query_openai_delegate_end')
     return
   }
 

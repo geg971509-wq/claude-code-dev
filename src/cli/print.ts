@@ -91,6 +91,7 @@ import { validateUuid } from 'src/utils/uuid.js'
 import { fromArray } from 'src/utils/generators.js'
 import { ask } from 'src/QueryEngine.js'
 import type { PermissionPromptTool } from 'src/utils/queryHelpers.js'
+import type { CompactionStateEvent } from 'src/Tool.js'
 import {
   createFileStateCacheWithSizeLimit,
   mergeFileStateCaches,
@@ -137,7 +138,10 @@ import { isPolicyAllowed } from 'src/services/policyLimits/index.js'
 import type { ReplBridgeHandle } from 'src/bridge/replBridge.js'
 import { getRemoteSessionUrl } from 'src/constants/product.js'
 import { buildBridgeConnectUrl } from 'src/bridge/bridgeStatusUtil.js'
-import { extractInboundMessageFields } from 'src/bridge/inboundMessages.js'
+import {
+  extractInboundMessageFields,
+  handleCrossSessionInbound,
+} from 'src/bridge/inboundMessages.js'
 import { resolveAndPrepend } from 'src/bridge/inboundAttachments.js'
 import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js'
 import { hasPermissionsToUseTool } from 'src/utils/permissions/permissions.js'
@@ -187,6 +191,10 @@ import {
   type PromptVariant,
 } from 'src/services/PromptSuggestion/promptSuggestion.js'
 import { getLastCacheSafeParams } from 'src/utils/cacheSafeParamsSlot.js'
+import { dispatchAgentFleetAction } from 'src/services/agentFleet/actions.js'
+import { configureAgentFleetOwner } from 'src/services/agentFleet/owner.js'
+import { buildAgentFleetSnapshot } from 'src/services/agentFleet/roster.js'
+import { createAgentFleetTaskOwners } from 'src/services/agentFleet/taskOwners.js'
 import { getAccountInformation } from 'src/utils/auth.js'
 import { OAuthService } from 'src/services/oauth/index.js'
 import { installOAuthTokens } from 'src/cli/handlers/auth.js'
@@ -297,6 +305,8 @@ import {
 import { runWithWorkload, WORKLOAD_CRON } from 'src/utils/workloadContext.js'
 import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
+import type { PeerReceipt } from 'src/utils/peerMessageEnvelope.js'
+import type { PeerHoldCause } from 'src/utils/crossSessionInbox.js'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { AppState } from 'src/state/AppStateStore.js'
 import {
@@ -360,7 +370,7 @@ import { stopTask } from '../tasks/stopTask.js'
 import { drainSdkEvents } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
 import { errorMessage, toError } from '../utils/errors.js'
-import { sleep } from '../utils/sleep.js'
+import { sleep, withTimeout } from '../utils/sleep.js'
 import { isExtractModeActive } from '../memdir/paths.js'
 
 // Dead code elimination: conditional imports
@@ -414,6 +424,77 @@ function trackReceivedMessageUuid(uuid: UUID): boolean {
     }
   }
   return true // new UUID
+}
+
+const DEFAULT_HEADLESS_PEER_HOLD_TIMEOUT_MS = 5 * 60 * 1_000
+const HEADLESS_PEER_SHUTDOWN_TIMEOUT_MS = 750
+
+export function getHeadlessPeerHoldTimeoutMs(
+  configured = process.env.CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS,
+): number {
+  if (configured === 'never') return 0
+  if (!configured) return DEFAULT_HEADLESS_PEER_HOLD_TIMEOUT_MS
+  if (configured === '60s') return 60_000
+  if (configured === '5m') return 300_000
+  if (configured === '10m') return 600_000
+  const parsed = Number(configured)
+  return Number.isFinite(parsed) && parsed >= 0
+    ? parsed
+    : DEFAULT_HEADLESS_PEER_HOLD_TIMEOUT_MS
+}
+
+export function createCrossSessionReceiptStatusMessage(
+  receipt: PeerReceipt,
+  sessionId: string = getSessionId(),
+  uuid = randomUUID(),
+): StdoutMessage {
+  return {
+    type: 'system',
+    subtype: 'status',
+    status: null,
+    peerMessageStatus: receipt.status,
+    peerMessageId: receipt.msgId,
+    ...(receipt.from ? { peerMessageFrom: receipt.from } : {}),
+    ...(receipt.reason ? { peerMessageReason: receipt.reason } : {}),
+    uuid,
+    session_id: sessionId,
+  }
+}
+
+export function createAutoCompactStateStatusMessage(
+  event: CompactionStateEvent,
+  sessionId: string = getSessionId(),
+  uuid = randomUUID(),
+): StdoutMessage {
+  const terminal =
+    event.state === 'consumed' ||
+    event.state === 'discarded' ||
+    event.state === 'failed'
+  return {
+    type: 'system',
+    subtype: 'status',
+    status: terminal ? null : 'compacting',
+    autocompact_state: {
+      state: event.state,
+      revision: event.revision,
+      timestamp: event.timestamp,
+      ...(event.agentId ? { agent_id: event.agentId } : {}),
+      ...(event.source ? { source: event.source } : {}),
+      ...(event.reason ? { reason: event.reason } : {}),
+      ...(event.preCompactTokens !== undefined
+        ? { pre_compact_tokens: event.preCompactTokens }
+        : {}),
+      ...(event.postCompactTokens !== undefined
+        ? { post_compact_tokens: event.postCompactTokens }
+        : {}),
+    },
+    uuid,
+    session_id: sessionId,
+  }
+}
+
+export function shouldExpireHeadlessPeerHold(cause: PeerHoldCause): boolean {
+  return cause === 'mode-mismatch' || cause === 'no-mode-asserted'
 }
 
 type PromptValue = string | ContentBlockParam[]
@@ -475,6 +556,7 @@ export async function runHeadless(
     maxTurns: number | undefined
     maxBudgetUsd: number | undefined
     taskBudget: { total: number } | undefined
+    effectiveContextWindow: number | undefined
     systemPrompt: string | undefined
     appendSystemPrompt: string | undefined
     userSpecifiedModel: string | undefined
@@ -1022,6 +1104,7 @@ function runHeadlessStreaming(
     maxTurns: number | undefined
     maxBudgetUsd: number | undefined
     taskBudget: { total: number } | undefined
+    effectiveContextWindow: number | undefined
     systemPrompt: string | undefined
     appendSystemPrompt: string | undefined
     userSpecifiedModel: string | undefined
@@ -1049,6 +1132,54 @@ function runHeadlessStreaming(
   let abortController: AbortController | undefined
   // Same queue sendRequest() enqueues to — one FIFO for everything.
   const output = structuredIO.outbound
+  let crossSessionDisposed = false
+  let crossSessionSetupPromise: Promise<void> | undefined
+  let unsubscribeCrossSessionReceipts: (() => void) | undefined
+  let unsubscribeHeldCrossSessionMessages: (() => void) | undefined
+  let teardownAgentFleetOwner: (() => void) | undefined
+  const peerHoldTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  const clearPeerHoldTimer = (msgId: string): void => {
+    const timer = peerHoldTimers.get(msgId)
+    if (timer) clearTimeout(timer)
+    peerHoldTimers.delete(msgId)
+  }
+
+  const teardownCrossSessionMessaging = async (): Promise<void> => {
+    crossSessionDisposed = true
+    await crossSessionSetupPromise
+    teardownAgentFleetOwner?.()
+    teardownAgentFleetOwner = undefined
+    unsubscribeCrossSessionReceipts?.()
+    unsubscribeCrossSessionReceipts = undefined
+    unsubscribeHeldCrossSessionMessages?.()
+    unsubscribeHeldCrossSessionMessages = undefined
+    for (const timer of peerHoldTimers.values()) clearTimeout(timer)
+    peerHoldTimers.clear()
+    if (!feature('CROSS_SESSION_MESSAGING')) return
+
+    const module = await import('src/utils/crossSessionMessaging.js')
+    const held = module.getHeldCrossSessionMessages()
+    if (held.length > 0) {
+      logForDebugging(
+        `[cross-session-inbound] headless shutdown: settling ${held.length} still-held peer message(s) as expired`,
+      )
+    }
+    const settled = Promise.allSettled(
+      held.map(entry =>
+        module.resolveHeldCrossSessionMessage(entry.message.msgId, 'cancelled'),
+      ),
+    ).then(() => module.shutdownCrossSessionMessaging())
+    try {
+      await withTimeout(
+        settled,
+        HEADLESS_PEER_SHUTDOWN_TIMEOUT_MS,
+        'headless peer shutdown receipt deadline reached',
+      )
+    } catch (error) {
+      logForDebugging(`[cross-session-inbound] ${errorMessage(error)}`)
+    }
+  }
 
   // Ctrl+C in -p mode: abort the in-flight query, then shut down gracefully.
   // gracefulShutdown persists session state and flushes analytics, with a
@@ -1087,6 +1218,11 @@ function runHeadlessStreaming(
   // notifySessionMetadataChanged, both of which onChangeAppState now covers);
   // keeping it would double-emit status messages.
   setPermissionModeChangedListener(newMode => {
+    if (feature('CROSS_SESSION_MESSAGING')) {
+      void import('src/utils/crossSessionMessaging.js').then(module => {
+        module.setCrossSessionPermissionMode(newMode)
+      })
+    }
     // Only emit for SDK-exposed modes.
     if (
       newMode === 'default' ||
@@ -2228,6 +2364,7 @@ function runHeadlessStreaming(
                   maxTurns: options.maxTurns,
                   maxBudgetUsd: options.maxBudgetUsd,
                   taskBudget: options.taskBudget,
+                  effectiveContextWindow: options.effectiveContextWindow,
                   canUseTool,
                   userSpecifiedModel: activeUserSpecifiedModel,
                   fallbackModel: options.fallbackModel,
@@ -2276,6 +2413,11 @@ function runHeadlessStreaming(
                       session_id: getSessionId(),
                       uuid: randomUUID(),
                     })
+                  },
+                  onCompactionState: event => {
+                    const message = createAutoCompactStateStatusMessage(event)
+                    output.enqueue(message)
+                    bridgeHandle?.writeSdkMessages([message])
                   },
                 })) {
                   // Forward messages to bridge incrementally (mid-turn) so
@@ -2790,9 +2932,119 @@ function runHeadlessStreaming(
         unsubscribeSkillChanges()
         unsubscribeAuthStatus?.()
         statusListeners.delete(rateLimitListener)
+        await teardownCrossSessionMessaging()
         output.done()
       }
     }
+  }
+
+  teardownAgentFleetOwner = configureAgentFleetOwner({
+    buildSnapshot: () =>
+      buildAgentFleetSnapshot(
+        getCwd(),
+        { all: true },
+        {
+          listSessions: async () => [],
+          getOwnerSnapshots: async () => ({ snapshots: [], failed: false }),
+          getTaskRecords: () => getAppState().tasks,
+          ownerSessionId: getSessionId(),
+        },
+      ),
+    dispatch: async (record, action) => {
+      const saved = getLastCacheSafeParams()
+      const context = saved
+        ? {
+            ...saved.toolUseContext,
+            abortController: createAbortController(),
+          }
+        : (
+            await buildSideQuestionFallbackParams({
+              tools: buildAllTools(getAppState()),
+              commands: currentCommands,
+              mcpClients: [
+                ...getAppState().mcp.clients,
+                ...sdkClients,
+                ...dynamicMcpState.clients,
+              ],
+              messages: mutableMessages,
+              readFileState,
+              getAppState,
+              setAppState,
+              customSystemPrompt: options.systemPrompt,
+              appendSystemPrompt: options.appendSystemPrompt,
+              thinkingConfig: options.thinkingConfig,
+              agents: currentAgents,
+            })
+          ).toolUseContext
+      return dispatchAgentFleetAction(
+        record,
+        action,
+        createAgentFleetTaskOwners(context, canUseTool),
+      )
+    },
+  })
+
+  if (feature('CROSS_SESSION_MESSAGING')) {
+    crossSessionSetupPromise = import(
+      'src/utils/crossSessionMessaging.js'
+    ).then(module => {
+      if (crossSessionDisposed) return
+      module.configureCrossSessionMessaging({
+        permissionMode: getAppState().toolPermissionContext.mode,
+        wake: () => {
+          void run()
+        },
+      })
+      unsubscribeCrossSessionReceipts = module.subscribeCrossSessionReceipts(
+        receipt => {
+          logForDebugging(
+            `[headless] cross-session hold-receipt: status=${receipt.status} from=${String(receipt.from ?? '(unknown)')}`,
+          )
+          if (!crossSessionDisposed) {
+            output.enqueue(createCrossSessionReceiptStatusMessage(receipt))
+          }
+        },
+      )
+
+      const syncHeldMessages = (): void => {
+        const held = module.getHeldCrossSessionMessages()
+        const active = new Set(held.map(entry => entry.message.msgId))
+        for (const msgId of peerHoldTimers.keys()) {
+          if (!active.has(msgId)) clearPeerHoldTimer(msgId)
+        }
+        const timeoutMs = getHeadlessPeerHoldTimeoutMs()
+        if (timeoutMs <= 0) return
+        for (const entry of held) {
+          if (
+            peerHoldTimers.has(entry.message.msgId) ||
+            !shouldExpireHeadlessPeerHold(entry.cause)
+          ) {
+            continue
+          }
+          logForDebugging(
+            `[cross-session-inbound] headless: held peer message awaiting approval msg_id=${entry.message.msgId} cause=${entry.cause}`,
+          )
+          const timer = setTimeout(() => {
+            clearPeerHoldTimer(entry.message.msgId)
+            void module
+              .resolveHeldCrossSessionMessage(entry.message.msgId, 'cancelled')
+              .then(result => {
+                if (result === 'dropped') {
+                  logForDebugging(
+                    '[cross-session-inbound] headless: held peer message expired (no approval surface) — dropped with an expired receipt',
+                  )
+                }
+              })
+          }, timeoutMs)
+          timer.unref?.()
+          peerHoldTimers.set(entry.message.msgId, timer)
+        }
+      }
+
+      unsubscribeHeldCrossSessionMessages =
+        module.subscribeHeldCrossSessionMessages(syncHeldMessages)
+      syncHeldMessages()
+    })
   }
 
   // Cron scheduler: runs scheduled_tasks.json tasks in SDK/-p mode.
@@ -4098,12 +4350,16 @@ function runHeadlessStreaming(
                   'src/bridge/initReplBridge.js'
                 )
                 const handle = await initReplBridge({
-                  onInboundMessage(msg) {
+                  async onInboundMessage(msg) {
                     const fields = extractInboundMessageFields(msg)
                     if (!fields) return
+                    if (fields.kind !== 'human') {
+                      await handleCrossSessionInbound(msg, fields)
+                      return
+                    }
                     const { content, uuid } = fields
                     enqueue({
-                      value: content,
+                      value: await resolveAndPrepend(msg, content),
                       mode: 'prompt' as const,
                       uuid,
                       skipSlashCommands: true,
@@ -4325,6 +4581,7 @@ function runHeadlessStreaming(
       unsubscribeSkillChanges()
       unsubscribeAuthStatus?.()
       statusListeners.delete(rateLimitListener)
+      await teardownCrossSessionMessaging()
       output.done()
     }
   })()

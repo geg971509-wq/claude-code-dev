@@ -10,6 +10,9 @@ export function toClientPayload(event: SessionEvent): Record<string, unknown> {
     typeof payload?.uuid === 'string' && payload.uuid ? payload.uuid : event.id
 
   if (event.type === 'user' || event.type === 'user_message') {
+    const raw = payload?.raw as Record<string, unknown> | undefined
+    const rawMessage = raw?.message as Record<string, unknown> | undefined
+    const message = payload?.message as Record<string, unknown> | undefined
     return {
       type: 'user',
       uuid: messageUuid,
@@ -17,7 +20,8 @@ export function toClientPayload(event: SessionEvent): Record<string, unknown> {
       ...(payload?.isSynthetic === true ? { isSynthetic: true } : {}),
       message: {
         role: 'user',
-        content: payload?.content ?? payload?.message ?? '',
+        content:
+          rawMessage?.content ?? message?.content ?? payload?.content ?? '',
       },
     }
   }

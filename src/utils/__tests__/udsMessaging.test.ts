@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
+  lstat,
   chmod,
   mkdir,
   mkdtemp,
@@ -17,6 +18,7 @@ import { tmpdir } from 'node:os'
 import {
   drainInbox,
   getDefaultUdsSocketPath,
+  getUdsMessagingStartupError,
   MAX_UDS_INBOX_ENTRIES,
   MAX_UDS_INBOX_BYTES,
   MAX_UDS_FRAME_BYTES,
@@ -27,6 +29,8 @@ import {
   parseUdsTarget,
   sendUdsMessage,
   setOnEnqueue,
+  setOnPeerMessage,
+  setOnPeerMessageStatus,
   startUdsMessaging,
   stopUdsMessaging,
   UDS_AUTH_TIMEOUT_MS,
@@ -92,6 +96,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   setOnEnqueue(null)
+  setOnPeerMessage(null)
+  setOnPeerMessageStatus(null)
   drainInbox()
   await stopUdsMessaging()
   if (previousConfigDir === undefined) {
@@ -114,6 +120,52 @@ async function closeServer(
 }
 
 describe('UDS inbox retention', () => {
+  test('explicit socket path refuses a regular file without deleting it', async () => {
+    if (process.platform === 'win32') return
+    const path = socketPath('regular-file')
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+    await writeFile(path, 'keep me', 'utf-8')
+
+    await expect(startUdsMessaging(path, { isExplicit: true })).rejects.toThrow(
+      'existing path is not a socket',
+    )
+    expect(getUdsMessagingStartupError()).toContain(
+      'existing path is not a socket',
+    )
+    expect(await Bun.file(path).text()).toBe('keep me')
+
+    await unlink(path)
+    await startUdsMessaging(socketPath('recovered'), { isExplicit: true })
+    expect(getUdsMessagingStartupError()).toBeUndefined()
+  })
+
+  test('explicit socket path refuses a symlink without deleting it', async () => {
+    if (process.platform === 'win32') return
+    const path = socketPath('symlink')
+    const target = `${path}.target`
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+    await writeFile(target, 'keep target', 'utf-8')
+    await symlink(target, path)
+
+    await expect(startUdsMessaging(path, { isExplicit: true })).rejects.toThrow(
+      'existing path is a symbolic link',
+    )
+    expect((await lstat(path)).isSymbolicLink()).toBe(true)
+    expect(await Bun.file(target).text()).toBe('keep target')
+  })
+
+  test('default socket removes its empty private parent directory on stop', async () => {
+    if (process.platform === 'win32') return
+    const path = getDefaultUdsSocketPath()
+    const parent = dirname(path)
+
+    await startUdsMessaging(path)
+    expect((await stat(parent)).isDirectory()).toBe(true)
+    await stopUdsMessaging()
+
+    await expect(lstat(parent)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   test('drainInbox returns each pending socket message once', async () => {
     const path = socketPath('drain')
     await startUdsMessaging(path, { isExplicit: true })
@@ -196,6 +248,74 @@ describe('UDS inbox retention', () => {
     expect(drained).toHaveLength(1)
     expect(drained[0]?.message.data).toBe('hello from client')
     expect(drained[0]?.message.meta).toBeUndefined()
+  })
+
+  test('formal peer messages use the dedicated handler and return its status', async () => {
+    const path = socketPath('peer-user')
+    await startUdsMessaging(path, { isExplicit: true })
+    let received: unknown
+    setOnPeerMessage(message => {
+      received = message
+      return 'held'
+    })
+    const { sendToUdsSocket } = await import('../udsClient.js')
+
+    const result = await sendToUdsSocket(path, {
+      content: 'hello from peer',
+      msg_id: 'peer-message-1',
+      fromMode: 'prompting',
+    })
+
+    expect(result).toEqual({ msgId: 'peer-message-1', status: 'held' })
+    expect(received).toMatchObject({
+      type: 'user',
+      message: { role: 'user', content: 'hello from peer' },
+      msg_id: 'peer-message-1',
+      fromMode: 'prompting',
+    })
+    expect(drainInbox()).toEqual([])
+  })
+
+  test('rejects a formal peer message addressed to another session', async () => {
+    const path = socketPath('peer-session-mismatch')
+    await startUdsMessaging(path, {
+      isExplicit: true,
+      sessionId: 'receiver-session',
+    })
+    setOnPeerMessage(() => 'delivered')
+    const { sendToUdsSocket } = await import('../udsClient.js')
+
+    await expect(
+      sendToUdsSocket(path, {
+        content: 'wrong target',
+        sessionId: 'different-session',
+      }),
+    ).rejects.toThrow('target session mismatch')
+  })
+
+  test('formal peer receipts reach the status callback by original message id', async () => {
+    const path = socketPath('peer-receipt')
+    await startUdsMessaging(path, { isExplicit: true })
+    const receipts: unknown[] = []
+    setOnPeerMessageStatus(receipt => {
+      receipts.push(receipt)
+    })
+    const { sendUdsPeerReceipt } = await import('../udsClient.js')
+
+    await sendUdsPeerReceipt(path, {
+      msgId: 'peer-message-2',
+      status: 'delivered',
+      from: `uds:${path}`,
+    })
+
+    expect(receipts).toEqual([
+      {
+        msgId: 'peer-message-2',
+        status: 'delivered',
+        from: `uds:${path}`,
+      },
+    ])
+    expect(drainInbox()).toEqual([])
   })
 
   test('udsClient peer probe fails closed on oversized pong frames', async () => {
@@ -642,6 +762,12 @@ describe('UDS inbox retention', () => {
     await expect(sendToUdsSocket(targetWithToken, 'hello')).rejects.toThrow(
       'inline auth token',
     )
+  })
+
+  test('parses canonical uds addresses into connectable socket paths', () => {
+    expect(parseUdsTarget('uds:/tmp/peer.sock')).toEqual({
+      socketPath: '/tmp/peer.sock',
+    })
   })
 
   test('fails closed and cleans temp files when capability target is occupied', async () => {

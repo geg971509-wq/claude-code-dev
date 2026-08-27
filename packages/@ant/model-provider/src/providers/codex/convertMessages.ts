@@ -31,17 +31,15 @@ type ToolResultLikeBlock = {
   content?: string | ReadonlyArray<ContentBlock>
 }
 
-export type CodexImageConversionOptions = {
-  resolveBase64ImageUrl?: (
-    data: string,
-    mediaType?: string,
-  ) => Promise<string | null>
-}
-
 type CodexCallIdState = {
   byOriginalId: Map<string, string>
   sequence: number
 }
+
+const REMOTE_IMAGE_URL_PLACEHOLDER =
+  'image content omitted because remote image URLs are not supported'
+const IMAGE_PROCESSING_ERROR_PLACEHOLDER =
+  'image content omitted because it could not be processed'
 
 function createInputText(text: string): ResponseInputText {
   return {
@@ -60,8 +58,6 @@ function createInputImage(imageUrl: string): ResponseInputImage {
 
 function getUnsupportedBlockText(type: string): string | null {
   switch (type) {
-    case 'image':
-      return '[Image omitted: codex gateway currently requires remote image URLs. Configure CODEX_IMGBB_API_KEY to auto-convert local images.]'
     case 'document':
       return '[Document omitted: codex gateway does not support document replay.]'
     default:
@@ -69,52 +65,59 @@ function getUnsupportedBlockText(type: string): string | null {
   }
 }
 
-function getImageUrl(block: ContentBlock): string | null {
+function isRemoteImageUrl(imageUrl: string): boolean {
+  const colon = imageUrl.indexOf(':')
+  if (colon <= 0) {
+    return false
+  }
+  const scheme = imageUrl.slice(0, colon).toLowerCase()
+  return scheme === 'http' || scheme === 'https'
+}
+
+function createDataUrl(data: string, mediaType?: string): string {
+  const mime = mediaType && mediaType.length > 0 ? mediaType : 'image/png'
+  return `data:${mime};base64,${data}`
+}
+
+function resolveImageUrl(block: ContentBlock): string | null {
   const source = block.source
   if (!source) {
     return null
   }
 
-  if (
-    source.type === 'url' &&
-    typeof source.url === 'string' &&
-    source.url.length > 0
-  ) {
+  if (typeof source.url === 'string' && source.url.length > 0) {
+    if (isRemoteImageUrl(source.url)) {
+      return null
+    }
     return source.url
   }
 
+  if (source.type === 'base64' && typeof source.data === 'string') {
+    return createDataUrl(source.data, source.media_type)
+  }
+
   return null
 }
 
-async function resolveImageUrl(
+function convertImageBlock(
   block: ContentBlock,
-  options: CodexImageConversionOptions,
-): Promise<string | null> {
-  const directUrl = getImageUrl(block)
-  if (directUrl) {
-    return directUrl
+): ResponseInputText | ResponseInputImage {
+  const imageUrl = resolveImageUrl(block)
+  if (imageUrl) {
+    return createInputImage(imageUrl)
   }
-
-  if (block.source?.type !== 'base64') {
-    return null
+  if (
+    typeof block.source?.url === 'string' &&
+    isRemoteImageUrl(block.source.url)
+  ) {
+    return createInputText(REMOTE_IMAGE_URL_PLACEHOLDER)
   }
-
-  if (options.resolveBase64ImageUrl && typeof block.source.data === 'string') {
-    const uploadedUrl = await options.resolveBase64ImageUrl(
-      block.source.data,
-      block.source.media_type,
-    )
-    if (uploadedUrl) {
-      return uploadedUrl
-    }
-  }
-  return null
+  return createInputText(IMAGE_PROCESSING_ERROR_PLACEHOLDER)
 }
 
-async function convertBlocksToInputContent(
+function convertBlocksToInputContent(
   content: ReadonlyArray<ContentBlock>,
-  options: CodexImageConversionOptions,
-): Promise<Array<ResponseInputText | ResponseInputImage>> {
+): Array<ResponseInputText | ResponseInputImage> {
   const output: Array<ResponseInputText | ResponseInputImage> = []
 
   for (const block of content) {
@@ -124,11 +127,8 @@ async function convertBlocksToInputContent(
     }
 
     if (block.type === 'image') {
-      const imageUrl = await resolveImageUrl(block, options)
-      if (imageUrl) {
-        output.push(createInputImage(imageUrl))
-        continue
-      }
+      output.push(convertImageBlock(block))
+      continue
     }
 
     const fallback = getUnsupportedBlockText(block.type)
@@ -140,10 +140,9 @@ async function convertBlocksToInputContent(
   return output
 }
 
-async function convertToolResultOutput(
+function convertToolResultOutput(
   content: string | ReadonlyArray<ContentBlock> | undefined,
-  options: CodexImageConversionOptions,
-): Promise<ResponseFunctionToolCallOutputItem['output']> {
+): ResponseFunctionToolCallOutputItem['output'] {
   if (!content) {
     return ''
   }
@@ -152,7 +151,7 @@ async function convertToolResultOutput(
     return content
   }
 
-  const output = await convertBlocksToInputContent(content, options)
+  const output = convertBlocksToInputContent(content)
 
   if (output.length === 0) {
     return ''
@@ -253,12 +252,11 @@ function resolveToolResultCallId(
   return state.byOriginalId.get(toolUseId) ?? normalizeCodexCallId(toolUseId)
 }
 
-async function convertUserContentToInputItems(
+function convertUserContentToInputItems(
   items: ResponseInputItem[],
   content: ReadonlyArray<string | ContentBlock>,
-  options: CodexImageConversionOptions,
   callIdState: CodexCallIdState,
-): Promise<void> {
+): void {
   const textParts: string[] = []
   const imageUrls: string[] = []
 
@@ -285,7 +283,7 @@ async function convertUserContentToInputItems(
       items.push({
         type: 'function_call_output',
         call_id: callId,
-        output: await convertToolResultOutput(toolResultBlock.content, options),
+        output: convertToolResultOutput(toolResultBlock.content),
       })
       continue
     }
@@ -296,11 +294,15 @@ async function convertUserContentToInputItems(
     }
 
     if (block.type === 'image') {
-      const imageUrl = await resolveImageUrl(block, options)
-      if (imageUrl) {
-        imageUrls.push(imageUrl)
+      const converted = convertImageBlock(block)
+      if (converted.type === 'input_image') {
+        if (converted.image_url) {
+          imageUrls.push(converted.image_url)
+        }
         continue
       }
+      textParts.push(converted.text)
+      continue
     }
 
     const fallback = getUnsupportedBlockText(block.type)
@@ -347,10 +349,9 @@ function convertAssistantContentToInputItems(
   pushAssistantMessage(items, textParts)
 }
 
-export async function anthropicMessagesToCodexInput(
+export function anthropicMessagesToCodexInput(
   messages: Message[],
-  options: CodexImageConversionOptions = {},
-): Promise<ResponseInputItem[]> {
+): ResponseInputItem[] {
   const items: ResponseInputItem[] = []
   const callIdState = createCodexCallIdState()
 
@@ -374,10 +375,9 @@ export async function anthropicMessagesToCodexInput(
     }
 
     if (message.type === 'user') {
-      await convertUserContentToInputItems(
+      convertUserContentToInputItems(
         items,
         apiMessage.content as ReadonlyArray<string | ContentBlock>,
-        options,
         callIdState,
       )
     } else {

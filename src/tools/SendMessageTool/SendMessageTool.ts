@@ -1,8 +1,9 @@
 import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
-import { isReplBridgeActive } from 'src/bootstrap/state.js'
+import { getSessionId, isReplBridgeActive } from 'src/bootstrap/state.js'
 import { getReplBridgeHandle } from 'src/bridge/replBridgeHandle.js'
 import type { Tool, ToolUseContext } from 'src/Tool.js'
+import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js'
 import { buildTool, type ToolDef } from 'src/Tool.js'
 import { findTeammateTaskByAgentId } from 'src/tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import {
@@ -18,7 +19,22 @@ import { errorMessage } from 'src/utils/errors.js'
 import { truncate } from 'src/utils/format.js'
 import { gracefulShutdown } from 'src/utils/gracefulShutdown.js'
 import { lazySchema } from '@claude-code-best/core-utils/lazySchema'
+import { enqueue } from 'src/utils/messageQueueManager.js'
 import { parseAddress } from 'src/utils/peerAddress.js'
+import { discoverPeerRosterForTarget } from 'src/utils/peerDiscovery.js'
+import { buildPeerMessageEnvelope } from 'src/utils/peerMessageEnvelope.js'
+import {
+  peerTargetRequiresIsolation,
+  sendPeerMessage,
+  type PeerOutboundMessage,
+  type PeerSendResult,
+} from 'src/utils/peerMessaging.js'
+import {
+  normalizePeerName,
+  type PeerCandidate,
+} from 'src/utils/peerRegistry.js'
+import { sendCrossSessionPeer } from 'src/utils/peerTransport.js'
+import { hasIsolatePeerMachines } from 'src/utils/settings/settings.js'
 import { semanticBoolean } from '@claude-code-best/core-utils/semanticBoolean'
 import { jsonStringify } from 'src/utils/slowOperations.js'
 import type { BackendType } from 'src/utils/swarm/backends/types.js'
@@ -75,7 +91,7 @@ const inputSchema = lazySchema(() =>
       .string()
       .optional()
       .describe(
-        'A 5-10 word summary shown as a preview in the UI (required when message is a string)',
+        'Optional short preview; defaults to the first non-empty message line',
       ),
     message: z.union([
       z.string().describe('Plain text message content'),
@@ -123,12 +139,48 @@ export type ResponseOutput = {
 }
 
 export type SendMessageToolOutput =
+  | PeerSendResult
   | MessageOutput
   | BroadcastOutput
   | RequestOutput
   | ResponseOutput
 
 const UDS_INLINE_TOKEN_MARKER = '#token='
+
+function isCrossSessionMessagingEnabled(): boolean {
+  if (feature('CROSS_SESSION_MESSAGING')) return true
+  return false
+}
+
+function verifyAndPinPeerTarget(
+  to: string,
+  target: PeerCandidate,
+  context: ToolUseContext,
+): string | undefined {
+  if (
+    parseAddress(to).scheme !== 'other' ||
+    /\s+\[[a-z0-9_-]{3,64}\]$/i.test(to.trim()) ||
+    (target.transport === 'in-process' && to === target.id)
+  ) {
+    return undefined
+  }
+  const key = normalizePeerName(to)
+  const identity = `${target.kind}:${target.transport}:${target.sessionId ?? target.id}`
+  let error: string | undefined
+  context.setAppState(previous => {
+    const pins = previous.sendMessagePins ?? new Map<string, string>()
+    const pinned = pins.get(key)
+    if (pinned && pinned !== identity) {
+      error = `Agent "${to}" now resolves to a different session; use ListAgents and the exact "name [ref]" address.`
+      return previous
+    }
+    if (pinned === identity) return previous
+    const next = new Map(pins)
+    next.set(key, identity)
+    return { ...previous, sendMessagePins: next }
+  })
+  return error
+}
 
 function stripInlineUdsToken(target: string): string {
   const markerIndex = target.indexOf(UDS_INLINE_TOKEN_MARKER)
@@ -161,61 +213,143 @@ function redactObservableInlineUdsToken(input: { to: string }): void {
   input.to = redactInlineUdsTokenForRejection(input.to)
 }
 
-function findTeammateColor(
-  appState: {
-    teamContext?: { teammates: { [id: string]: { color?: string } } }
-  },
-  name: string,
-): string | undefined {
-  const teammates = appState.teamContext?.teammates
-  if (!teammates) return undefined
-  for (const teammate of Object.values(teammates)) {
-    if ('name' in teammate && (teammate as { name: string }).name === name) {
-      return teammate.color
+async function dispatchPeerMessage(
+  target: PeerCandidate,
+  message: PeerOutboundMessage,
+  context: ToolUseContext,
+  canUseTool: CanUseToolFn,
+  invokingRequestId?: string,
+): Promise<{ status: 'delivered' | 'queued' | 'held' }> {
+  const appState = context.getAppState()
+  if (target.kind === 'main') {
+    const senderName = getAgentName() || context.agentId || 'subagent'
+    if (isTeammate()) {
+      await writeToMailbox(
+        TEAM_LEAD_NAME,
+        {
+          from: senderName,
+          text: message.content,
+          summary: message.summary,
+          timestamp: new Date().toISOString(),
+          color: getTeammateColor(),
+        },
+        getTeamName(appState.teamContext),
+      )
+    } else {
+      enqueue({
+        mode: 'prompt',
+        value: buildPeerMessageEnvelope(message.content, {
+          from: `in-process:${context.agentId ?? senderName}`,
+          name: senderName,
+          msgId: message.msgId,
+        }),
+        priority: 'next',
+        skipSlashCommands: true,
+        isMeta: true,
+        origin: {
+          kind: 'peer',
+          from: senderName,
+          senderTaskId: context.agentId,
+        },
+      })
     }
+    return { status: 'queued' }
   }
-  return undefined
+
+  if (target.transport === 'in-process') {
+    const agentId = toAgentId(target.id)
+    if (!agentId) throw new Error(`Invalid in-process agent ID: ${target.id}`)
+    const task = appState.tasks[agentId]
+    if (
+      isLocalAgentTask(task) &&
+      !isMainSessionTask(task) &&
+      task.status === 'running'
+    ) {
+      queuePendingMessage(
+        agentId,
+        message.content,
+        context.setAppStateForTasks ?? context.setAppState,
+      )
+      return { status: 'queued' }
+    }
+
+    await resumeAgentBackground({
+      agentId,
+      prompt: message.content,
+      toolUseContext: context,
+      canUseTool,
+      invokingRequestId,
+    })
+    return { status: 'queued' }
+  }
+
+  if (target.transport === 'mailbox') {
+    await writeToMailbox(
+      target.name,
+      {
+        from: getAgentName() || (isTeammate() ? 'teammate' : TEAM_LEAD_NAME),
+        text: message.content,
+        summary: message.summary,
+        timestamp: new Date().toISOString(),
+        color: getTeammateColor(),
+      },
+      getTeamName(appState.teamContext),
+    )
+    return { status: 'queued' }
+  }
+
+  if (
+    target.transport === 'uds' ||
+    target.transport === 'cloud' ||
+    target.transport === 'bridge'
+  ) {
+    return sendCrossSessionPeer(target, {
+      ...message,
+      sessionId: getSessionId(),
+      fromMode:
+        appState.toolPermissionContext.mode === 'bypassPermissions'
+          ? 'bypass'
+          : 'prompting',
+      senderName:
+        getAgentName() || (isTeammate() ? 'teammate' : TEAM_LEAD_NAME),
+    })
+  }
+
+  throw new Error(`Unsupported peer transport: ${target.transport}`)
 }
 
 async function handleMessage(
-  recipientName: string,
-  content: string,
-  summary: string | undefined,
+  input: { to: string; message: string; summary?: string },
   context: ToolUseContext,
-): Promise<{ data: MessageOutput }> {
-  const appState = context.getAppState()
-  const teamName = getTeamName(appState.teamContext)
-  const senderName =
-    getAgentName() || (isTeammate() ? 'teammate' : TEAM_LEAD_NAME)
-  const senderColor = getTeammateColor()
-
-  await writeToMailbox(
-    recipientName,
-    {
-      from: senderName,
-      text: content,
-      summary,
-      timestamp: new Date().toISOString(),
-      color: senderColor,
-    },
-    teamName,
-  )
-
-  const recipientColor = findTeammateColor(appState, recipientName)
-
+  canUseTool: CanUseToolFn,
+  invokingRequestId?: string,
+): Promise<{ data: PeerSendResult }> {
   return {
-    data: {
-      success: true,
-      message: `Message sent to ${recipientName}'s inbox`,
-      routing: {
-        sender: senderName,
-        senderColor,
-        target: `@${recipientName}`,
-        targetColor: recipientColor,
-        summary,
-        content,
+    data: await sendPeerMessage(
+      { to: input.to, content: input.message, summary: input.summary },
+      {
+        discover: () =>
+          discoverPeerRosterForTarget(
+            context.getAppState(),
+            input.to,
+            undefined,
+            {
+              includeMain: context.agentId !== undefined,
+              includeRemote: isCrossSessionMessagingEnabled(),
+            },
+          ),
+        send: (target, message) =>
+          dispatchPeerMessage(
+            target,
+            message,
+            context,
+            canUseTool,
+            invokingRequestId,
+          ),
+        verifyTarget: (to, target) =>
+          verifyAndPinPeerTarget(to, target, context),
       },
-    },
+    ),
   }
 }
 
@@ -618,7 +752,34 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
       }
     },
 
-    async checkPermissions(input, _context) {
+    async checkPermissions(input, context) {
+      if (hasIsolatePeerMachines() && typeof input.message === 'string') {
+        const address = parseAddress(input.to)
+        const roster =
+          address.scheme === 'other'
+            ? await discoverPeerRosterForTarget(
+                context.getAppState(),
+                input.to,
+                undefined,
+                {
+                  includeMain: context.agentId !== undefined,
+                  includeRemote: isCrossSessionMessagingEnabled(),
+                },
+              )
+            : undefined
+        if (peerTargetRequiresIsolation(input.to, roster)) {
+          return {
+            behavior: 'ask' as const,
+            message: `Send a message to '${input.to}' on another machine? It will be marked as coming from another Claude Code session.`,
+            decisionReason: {
+              type: 'safetyCheck' as const,
+              reason:
+                'isolatePeerMachines is enabled - cross-machine messages require explicit approval',
+              classifierApprovable: false,
+            },
+          }
+        }
+      }
       return { behavior: 'allow' as const, updatedInput: input }
     },
 
@@ -633,6 +794,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
       const addr = parseAddress(input.to)
       if (
         (addr.scheme === 'bridge' ||
+          addr.scheme === 'cloud' ||
           addr.scheme === 'uds' ||
           addr.scheme === 'tcp') &&
         addr.target.trim().length === 0
@@ -660,13 +822,6 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
         }
       }
       if (typeof input.message === 'string') {
-        if (!input.summary || input.summary.trim().length === 0) {
-          return {
-            result: false,
-            message: 'summary is required when message is a string',
-            errorCode: 9,
-          }
-        }
         return { result: true }
       }
 
@@ -728,6 +883,20 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
     async call(input, context, canUseTool, assistantMessage) {
       if (typeof input.message === 'string') {
         const addr = parseAddress(input.to)
+        if (
+          !isCrossSessionMessagingEnabled() &&
+          (addr.scheme === 'uds' ||
+            addr.scheme === 'bridge' ||
+            addr.scheme === 'cloud')
+        ) {
+          return {
+            data: {
+              success: false,
+              message: 'Cross-session messaging is disabled in this build.',
+              error_code: 'unsupported_transport' as const,
+            },
+          }
+        }
         if (addr.scheme === 'uds' && hasInlineUdsToken(input.to)) {
           return {
             data: {
@@ -739,91 +908,16 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
         }
       }
 
-      // Route to in-process subagent by name or raw agentId before falling
-      // through to ambient-team resolution. Stopped agents are auto-resumed.
-      if (typeof input.message === 'string' && input.to !== '*') {
-        const appState = context.getAppState()
-        const registered = appState.agentNameRegistry.get(input.to)
-        const agentId = registered ?? toAgentId(input.to)
-        if (agentId) {
-          const task = appState.tasks[agentId]
-          if (isLocalAgentTask(task) && !isMainSessionTask(task)) {
-            if (task.status === 'running') {
-              queuePendingMessage(
-                agentId,
-                input.message,
-                context.setAppStateForTasks ?? context.setAppState,
-              )
-              return {
-                data: {
-                  success: true,
-                  message: `Message queued for delivery to ${input.to} at its next tool round.`,
-                },
-              }
-            }
-            // task exists but stopped — auto-resume
-            try {
-              const result = await resumeAgentBackground({
-                agentId,
-                prompt: input.message,
-                toolUseContext: context,
-                canUseTool,
-                invokingRequestId: assistantMessage?.requestId as
-                  | string
-                  | undefined,
-              })
-              return {
-                data: {
-                  success: true,
-                  message: `Agent "${input.to}" was stopped (${task.status}); resumed it in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
-                },
-              }
-            } catch (e) {
-              return {
-                data: {
-                  success: false,
-                  message: `Agent "${input.to}" is stopped (${task.status}) and could not be resumed: ${errorMessage(e)}`,
-                },
-              }
-            }
-          } else {
-            // task evicted from state — try resume from disk transcript.
-            // agentId is either a registered name or a format-matching raw ID
-            // (toAgentId validates the createAgentId format, so teammate names
-            // never reach this block).
-            try {
-              const result = await resumeAgentBackground({
-                agentId,
-                prompt: input.message,
-                toolUseContext: context,
-                canUseTool,
-                invokingRequestId: assistantMessage?.requestId as
-                  | string
-                  | undefined,
-              })
-              return {
-                data: {
-                  success: true,
-                  message: `Agent "${input.to}" had no active task; resumed from transcript in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
-                },
-              }
-            } catch (e) {
-              return {
-                data: {
-                  success: false,
-                  message: `Agent "${input.to}" is registered but has no transcript to resume. It may have been cleaned up. (${errorMessage(e)})`,
-                },
-              }
-            }
-          }
-        }
-      }
-
       if (typeof input.message === 'string') {
         if (input.to === '*') {
           return handleBroadcast(input.message, input.summary, context)
         }
-        return handleMessage(input.to, input.message, input.summary, context)
+        return handleMessage(
+          { to: input.to, message: input.message, summary: input.summary },
+          context,
+          canUseTool,
+          assistantMessage?.requestId as string | undefined,
+        )
       }
 
       if (input.to === '*') {

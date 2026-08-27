@@ -132,6 +132,7 @@ export async function resumeAgentBackground({
       createUserMessage({ content: prompt }),
     ],
     toolUseContext,
+    effectiveContextWindow: toolUseContext.effectiveContextWindow,
     canUseTool,
     isAsync: true,
     querySource: getQuerySourceForAgent(

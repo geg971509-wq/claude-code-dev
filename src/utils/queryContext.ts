@@ -9,6 +9,7 @@
  * import from here (QueryEngine.ts, cli/print.ts).
  */
 
+import { feature } from 'bun:bundle'
 import type { Command } from '../commands.js'
 import { getSystemPrompt } from '../constants/prompts.js'
 import { getSystemContext, getUserContext } from '../context.js'
@@ -21,6 +22,8 @@ import { createAbortController } from './abortController.js'
 import type { FileStateCache } from './fileStateCache.js'
 import type { CacheSafeParams } from './forkedAgent.js'
 import { getMainLoopModel } from './model/model.js'
+import { getSessionId } from '../bootstrap/state.js'
+import { getPrecomputedCompactManager } from '../services/compact/precomputedCompact.js'
 import { asSystemPrompt } from './systemPromptType.js'
 import {
   shouldEnableThinkingByDefault,
@@ -140,6 +143,9 @@ export async function buildSideQuestionFallbackParams({
       : messages
 
   const toolUseContext: ToolUseContext = {
+    precomputedCompactManager: feature('PRECOMPUTED_COMPACT')
+      ? getPrecomputedCompactManager(getSessionId())
+      : undefined,
     options: {
       commands,
       debug: false,

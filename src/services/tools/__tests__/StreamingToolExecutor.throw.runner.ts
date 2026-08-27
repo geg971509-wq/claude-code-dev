@@ -183,11 +183,11 @@ function makeMinimalContext(): ToolUseContext {
   } as unknown as ToolUseContext
 }
 
-function makeTool(name: string): Tool {
+function makeTool(name: string, concurrencySafe = true): Tool {
   return {
     name,
     inputSchema: z.object({}).passthrough(),
-    isConcurrencySafe: () => true,
+    isConcurrencySafe: () => concurrencySafe,
     isEnabled: () => true,
     isReadOnly: () => true,
     call: async () => ({ data: null }),
@@ -198,6 +198,7 @@ function makeTool(name: string): Tool {
 
 const fakeTool = makeTool('FakeTool')
 const bashTool = makeTool(BASH_TOOL_NAME)
+const serialBashTool = makeTool(BASH_TOOL_NAME, false)
 
 const assistantMessage = {
   type: 'assistant',
@@ -348,14 +349,12 @@ describe('StreamingToolExecutor unexpected generator throws', () => {
       'sibling raw result',
     )
     const internals = executor as unknown as {
-      hasErrored: boolean
-      siblingAbortController: AbortController
+      batchAbortController: AbortController
     }
-    expect(internals.hasErrored).toBe(false)
-    expect(internals.siblingAbortController.signal.aborted).toBe(false)
+    expect(internals.batchAbortController.signal.aborted).toBe(false)
   })
 
-  test('turns an unexpected Bash throw into sibling cancellation', async () => {
+  test('keeps a concurrent sibling running after an unexpected Bash throw', async () => {
     const executor = new StreamingToolExecutor(
       [bashTool, fakeTool],
       () => true as any,
@@ -366,7 +365,7 @@ describe('StreamingToolExecutor unexpected generator throws', () => {
       command: 'echo fail',
     })
     addTool(executor, 'sibling', 'FakeTool', {
-      scenario: 'wait-for-sibling-abort',
+      scenario: 'complete-sibling',
     })
 
     const updates = await collectResults(executor)
@@ -375,20 +374,42 @@ describe('StreamingToolExecutor unexpected generator throws', () => {
     expect(resultFor(updates, 'bash').message?.toolUseResult).toBe(
       `unexpected ${BASH_TOOL_NAME} failure`,
     )
-    const sibling = resultFor(updates, 'sibling')
-    expect(sibling.message?.message?.content?.[0]?.content).toBe(
-      `<tool_use_error>Cancelled: parallel tool call ${BASH_TOOL_NAME}(echo fail) errored</tool_use_error>`,
-    )
-    expect(sibling.message?.toolUseResult).toBe(
-      `Cancelled: parallel tool call ${BASH_TOOL_NAME}(echo fail) errored`,
+    expect(resultFor(updates, 'sibling').message?.toolUseResult).toBe(
+      'sibling raw result',
     )
     const internals = executor as unknown as {
-      hasErrored: boolean
-      siblingAbortController: AbortController
+      batchAbortController: AbortController
     }
-    expect(internals.hasErrored).toBe(true)
-    expect(internals.siblingAbortController.signal.aborted).toBe(true)
-    expect(internals.siblingAbortController.signal.reason).toBe('sibling_error')
+    expect(internals.batchAbortController.signal.aborted).toBe(false)
+  })
+
+  test('runs a queued sibling after a Bash error result', async () => {
+    const executor = new StreamingToolExecutor(
+      [serialBashTool, fakeTool],
+      () => true as any,
+      makeMinimalContext(),
+    )
+    addTool(executor, 'bash', BASH_TOOL_NAME, {
+      scenario: 'yield-error-then-throw',
+      command: 'cargo clippy --all-targets --all-features',
+    })
+    addTool(executor, 'sibling', 'FakeTool', {
+      scenario: 'complete-sibling',
+    })
+
+    const updates = await collectResults(executor)
+
+    expect(updates).toHaveLength(2)
+    expect(resultFor(updates, 'bash').message?.toolUseResult).toEqual({
+      source: 'yielded-error',
+    })
+    expect(resultFor(updates, 'sibling').message?.toolUseResult).toBe(
+      'sibling raw result',
+    )
+    const internals = executor as unknown as {
+      batchAbortController: AbortController
+    }
+    expect(internals.batchAbortController.signal.aborted).toBe(false)
   })
 
   test('prioritizes a user abort over the generator exception', async () => {

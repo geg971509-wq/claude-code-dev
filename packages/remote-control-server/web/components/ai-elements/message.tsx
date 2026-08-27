@@ -268,7 +268,10 @@ export const MessageResponse = memo(
       </LazyStreamdown>
     </Suspense>
   ),
-  (prevProps, nextProps) => prevProps.children === nextProps.children,
+  (prevProps, nextProps) =>
+    prevProps.children === nextProps.children &&
+    prevProps.className === nextProps.className &&
+    prevProps.mode === nextProps.mode,
 );
 
 MessageResponse.displayName = 'MessageResponse';

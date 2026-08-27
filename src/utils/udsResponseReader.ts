@@ -7,7 +7,8 @@ import type { UdsMessage } from './udsMessaging.js'
 type UdsResponseReaderOptions = {
   maxFrameBytes: number
   acceptPong?: boolean
-  onSettled: (error?: Error) => void
+  acceptResponse?: (response: UdsMessage) => boolean
+  onSettled: (error?: Error, response?: UdsMessage) => void
   formatSocketError?: (error: unknown) => Error
 }
 
@@ -41,7 +42,7 @@ export function attachUdsResponseReader(
     socket.off('close', onClose)
   }
 
-  function finish(error?: Error): void {
+  function finish(error?: Error, response?: UdsMessage): void {
     if (settled) return
     settled = true
     buffer = ''
@@ -52,7 +53,7 @@ export function attachUdsResponseReader(
     } else {
       socket.end()
     }
-    options.onSettled(error)
+    options.onSettled(error, response)
   }
 
   function onData(chunk: Buffer): void {
@@ -82,11 +83,23 @@ export function attachUdsResponseReader(
         finish(error instanceof Error ? error : new Error(errorMessage(error)))
         return
       }
+      if (options.acceptResponse) {
+        if (!options.acceptResponse(response)) {
+          newlineIndex = buffer.indexOf('\n')
+          continue
+        }
+        if (response.type === 'error') {
+          finish(new Error(response.data ?? 'UDS receiver rejected message'))
+        } else {
+          finish(undefined, response)
+        }
+        return
+      }
       if (
         response.type === 'response' ||
         (options.acceptPong === true && response.type === 'pong')
       ) {
-        finish()
+        finish(undefined, response)
         return
       }
       if (response.type === 'error') {

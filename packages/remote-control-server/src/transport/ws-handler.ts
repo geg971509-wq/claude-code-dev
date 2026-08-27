@@ -230,7 +230,12 @@ export function ingestBridgeMessage(
 
   let payload: unknown
 
-  if (eventType === 'assistant' || eventType === 'partial_assistant') {
+  if (
+    (eventType === 'stream_event' || eventType === 'partial_assistant') &&
+    msg.event
+  ) {
+    payload = { event: msg.event, uuid: msg.uuid }
+  } else if (eventType === 'assistant' || eventType === 'partial_assistant') {
     const message = msg.message as Record<string, unknown> | undefined
     const content = message?.content
     // Extract text from content blocks for simple display
@@ -266,7 +271,13 @@ export function ingestBridgeMessage(
   } else if (eventType === 'control_response') {
     payload = { response: msg.response }
   } else if (eventType === 'result' || eventType === 'result_success') {
-    payload = { subtype: msg.subtype, uuid: msg.uuid, result: msg.result }
+    payload = {
+      subtype: msg.subtype,
+      uuid: msg.uuid,
+      result: msg.result,
+      is_error: msg.is_error,
+      errors: msg.errors,
+    }
   } else {
     payload = msg
   }

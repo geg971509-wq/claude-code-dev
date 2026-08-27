@@ -415,11 +415,31 @@ export type SDKSystemMessage = {
   [key: string]: unknown
 }
 export type SDKStatusMessage = {
-  type: 'status'
-  subtype?: string
-  status?: string
-  uuid?: UUID
-  [key: string]: unknown
+  type: 'system' | 'status'
+  subtype: 'status'
+  status: string | null
+  permissionMode?: PermissionMode
+  compact_result?: 'success' | 'failed'
+  compact_error?: string
+  autocompact_state?: {
+    state:
+      | 'started'
+      | 'ready'
+      | 'consumed'
+      | 'discarded'
+      | 'rehydrated'
+      | 'failed'
+    revision: number
+    timestamp: string
+    agent_id?: string
+    source?: string
+    reason?: string
+    pre_compact_tokens?: number
+    post_compact_tokens?: number
+  }
+  uuid: UUID
+  session_id?: string
+  message?: string
 }
 export type SDKToolProgressMessage = {
   type: 'tool_progress'

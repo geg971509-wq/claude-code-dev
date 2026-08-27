@@ -1,6 +1,5 @@
 {
   "perPackage": {
-    "@ant/computer-use-swift": 2,
     "agent-tools": 1
   }
 }

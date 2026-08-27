@@ -31,6 +31,58 @@ export { getNativeCSIuTerminalDisplayName } from './nativeCsiu.js';
 
 const EOL = '\n';
 
+export const ITERM2_CLIPBOARD_INSTRUCTION =
+  'iTerm2 → Settings → General → Selection → check "Applications in terminal may access clipboard"';
+
+export function isLocalITerm2({
+  osPlatform = platform(),
+  bundleId = process.env.__CFBundleIdentifier,
+  terminal = env.terminal,
+}: {
+  osPlatform?: NodeJS.Platform;
+  bundleId?: string;
+  terminal?: string | null;
+} = {}): boolean {
+  return (
+    osPlatform === 'darwin' &&
+    bundleId === 'com.googlecode.iterm2' &&
+    (terminal === 'iTerm.app' || terminal === 'tmux' || terminal === 'screen' || terminal === null)
+  );
+}
+
+export function remoteITerm2ClipboardHint(lcTerminal: string | undefined = process.env.LC_TERMINAL): string {
+  if (lcTerminal !== 'iTerm2') {
+    return '';
+  }
+  return `${EOL}${EOL}You appear to be connected from iTerm2 on another machine. For /copy to reach your local clipboard, on that machine open:${EOL}${chalk.dim(ITERM2_CLIPBOARD_INSTRUCTION)}`;
+}
+
+export async function enableITerm2ClipboardAccess(theme: ThemeName): Promise<string> {
+  const instruction = chalk.dim(ITERM2_CLIPBOARD_INSTRUCTION);
+  try {
+    const { stdout, code: readCode } = await execFileNoThrow(
+      'defaults',
+      ['read', 'com.googlecode.iterm2', 'AllowClipboardAccess'],
+      { useCwd: false },
+    );
+    if (readCode === 0 && stdout.trim() === '1') {
+      return `${color('success', theme)('iTerm2 clipboard access already enabled')}${EOL}${EOL}`;
+    }
+    const { code: writeCode } = await execFileNoThrow(
+      'defaults',
+      ['write', 'com.googlecode.iterm2', 'AllowClipboardAccess', '-bool', 'true'],
+      { useCwd: false },
+    );
+    if (writeCode !== 0) {
+      return `${color('warning', theme)("Couldn't update iTerm2 clipboard setting.")}${EOL}${instruction}${EOL}${EOL}`;
+    }
+    return `${color('success', theme)('Enabled "Applications in terminal may access clipboard" in iTerm2')}${EOL}${chalk.dim('Restart iTerm2 for this to take effect. Undo: defaults write com.googlecode.iterm2 AllowClipboardAccess -bool false')}${EOL}${EOL}`;
+  } catch (error) {
+    logError(error);
+    return `${color('warning', theme)("Couldn't update iTerm2 clipboard setting.")}${EOL}${instruction}${EOL}${EOL}`;
+  }
+}
+
 /**
  * Detect if we're running in a VSCode Remote SSH session.
  * In this case, keybindings need to be installed on the LOCAL machine,
@@ -155,6 +207,14 @@ export async function call(
   context: ToolUseContext & LocalJSXCommandContext,
   _args: string,
 ): Promise<null> {
+  if (isLocalITerm2()) {
+    const clipboard = await enableITerm2ClipboardAccess(context.options.theme);
+    onDone(`${clipboard}Shift+Enter is natively supported in iTerm2.
+
+No configuration needed. Just use Shift+Enter to add newlines.`);
+    return null;
+  }
+
   if (env.terminal && env.terminal in NATIVE_CSIU_TERMINALS) {
     const message = `Shift+Enter is natively supported in ${NATIVE_CSIU_TERMINALS[env.terminal]}.
 
@@ -190,7 +250,7 @@ ${platformTerminals}   • IDE: VSCode, Cursor, Windsurf, Zed
    • Other: Alacritty
 3. Return to tmux/screen - settings will persist
 
-${chalk.dim('Note: iTerm2, WezTerm, Ghostty, Kitty, Warp, and Windows Terminal support Shift+Enter natively.')}`;
+${chalk.dim('Note: iTerm2, WezTerm, Ghostty, Kitty, Warp, and Windows Terminal support Shift+Enter natively.')}${remoteITerm2ClipboardHint()}`;
     onDone(message);
     return null;
   }

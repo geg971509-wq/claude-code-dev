@@ -13,6 +13,7 @@ import copy from './commands/copy/index.js'
 import desktop from './commands/desktop/index.js'
 import commitPushPr from './commands/commit-push-pr.js'
 import compact from './commands/compact/index.js'
+import autocompact from './commands/autocompact/index.js'
 import config from './commands/config/index.js'
 import { context, contextNonInteractive } from './commands/context/index.js'
 // cost/index.ts re-exports usage — /cost is now an alias of /usage
@@ -26,6 +27,7 @@ import init from './commands/init.js'
 import initVerifiers from './commands/init-verifiers.js'
 import keybindings from './commands/keybindings/index.js'
 import lang from './commands/lang/index.js'
+import listAgents from './commands/list-agents/index.js'
 import login from './commands/login/index.js'
 import logout from './commands/logout/index.js'
 import installGitHubApp from './commands/install-github-app/index.js'
@@ -285,6 +287,7 @@ const COMMANDS = memoize((): Command[] => [
   clear,
   color,
   compact,
+  autocompact,
   config,
   copy,
   desktop,
@@ -302,6 +305,7 @@ const COMMANDS = memoize((): Command[] => [
   init,
   keybindings,
   lang,
+  listAgents,
   installGitHubApp,
   installSlackApp,
   mcp,
