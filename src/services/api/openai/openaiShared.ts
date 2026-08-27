@@ -679,7 +679,9 @@ const DEFAULT_TRANSIENT_MAX_RETRIES = 5
 const DEFAULT_OPENAI_REQUEST_MAX_RETRIES = 4
 const DEFAULT_OPENAI_STREAM_MAX_RETRIES = 5
 const DEFAULT_OPENAI_STREAM_IDLE_TIMEOUT_MS = 300_000
-const DEFAULT_OPENAI_STREAM_STALL_TIMEOUT_MS = 120_000
+/** Same 300s window as Codex `DEFAULT_STREAM_IDLE_TIMEOUT_MS`; no shorter post-first-chunk stall. */
+const DEFAULT_OPENAI_STREAM_STALL_TIMEOUT_MS =
+  DEFAULT_OPENAI_STREAM_IDLE_TIMEOUT_MS
 
 function parseBoundedRetryCount(
   value: string | undefined,
@@ -727,13 +729,9 @@ export function getOpenAIStreamIdleTimeoutMs(): number {
 }
 
 /**
- * Gap allowed *between* chunks once the stream has started producing them. The
- * idle budget above is sized for time-to-first-chunk (queueing plus a long
- * reasoning phase before any output); after the first chunk a provider that
- * goes quiet has already dropped the stream. Measured over 913 completed
- * streams in the raw logs, the largest inter-chunk gap ever observed was 56s,
- * so 120s is a wide margin — tune with OPENAI_STREAM_STALL_TIMEOUT_MS if a
- * provider legitimately pauses longer mid-stream.
+ * Gap allowed *between* chunks once the stream has started producing them.
+ * Defaults to the same 300s as Codex's single SSE-frame idle timeout. Override
+ * with OPENAI_STREAM_STALL_TIMEOUT_MS to tighten mid-stream silence detection.
  */
 export function getOpenAIStreamStallTimeoutMs(): number {
   const parsed = Number.parseInt(

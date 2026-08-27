@@ -17,6 +17,7 @@ import {
   isThinkingLoopError,
   getOpenAIRetryDelayMs,
   getOpenAIStreamIdleTimeoutMs,
+  getOpenAIStreamStallTimeoutMs,
   getOpenAIStreamMaxRetries,
   getTransientOpenAIMaxRetries,
   isSemanticOpenAIEvent,
@@ -320,6 +321,7 @@ describe('OpenAI retry configuration', () => {
     OPENAI_REQUEST_MAX_RETRIES: undefined,
     OPENAI_STREAM_MAX_RETRIES: undefined,
     OPENAI_STREAM_IDLE_TIMEOUT_MS: undefined,
+    OPENAI_STREAM_STALL_TIMEOUT_MS: undefined,
     CLAUDE_CODE_MAX_RETRIES: undefined,
   }
 
@@ -328,6 +330,7 @@ describe('OpenAI retry configuration', () => {
       expect(getOpenAIRequestMaxRetries()).toBe(4)
       expect(getOpenAIStreamMaxRetries()).toBe(5)
       expect(getOpenAIStreamIdleTimeoutMs()).toBe(300_000)
+      expect(getOpenAIStreamStallTimeoutMs()).toBe(300_000)
     })
   })
 
@@ -360,11 +363,13 @@ describe('OpenAI retry configuration', () => {
         OPENAI_REQUEST_MAX_RETRIES: 'invalid',
         OPENAI_STREAM_MAX_RETRIES: 'invalid',
         OPENAI_STREAM_IDLE_TIMEOUT_MS: '0',
+        OPENAI_STREAM_STALL_TIMEOUT_MS: '0',
       },
       () => {
         expect(getOpenAIRequestMaxRetries()).toBe(4)
         expect(getOpenAIStreamMaxRetries()).toBe(5)
         expect(getOpenAIStreamIdleTimeoutMs()).toBe(300_000)
+        expect(getOpenAIStreamStallTimeoutMs()).toBe(300_000)
       },
     )
   })
