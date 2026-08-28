@@ -49,8 +49,8 @@ export async function processBashCommand(
     }),
   });
 
-  // ctrl+b to background indicator
-  let jsx: React.ReactNode;
+  // Bun code splitting can collide a local `jsx` binding with its injected JSX runtime helper.
+  let toolProgressJSX: React.ReactNode;
 
   const inkInstance = instances.get(process.stdout);
   const terminalInput =
@@ -59,7 +59,6 @@ export async function processBashCommand(
       : (getBaseRenderOptions(false).stdin ?? process.stdin);
   const interactiveTerminal = inkInstance && terminalInput?.isTTY ? terminalInput : undefined;
   let terminalHandoffStarted = false;
-
   // Just show initial UI
   setToolJSX({
     jsx: <BashModeProgress input={inputString} progress={null} verbose={context.options.verbose} />,
@@ -84,7 +83,7 @@ export async function processBashCommand(
       ...context,
       // TODO: Clean up this hack
       setToolJSX: _ => {
-        jsx = _?.jsx;
+        toolProgressJSX = _?.jsx;
       },
     };
 
@@ -94,7 +93,7 @@ export async function processBashCommand(
         jsx: (
           <>
             <BashModeProgress input={inputString!} progress={progress.data} verbose={context.options.verbose} />
-            {jsx}
+            {toolProgressJSX}
           </>
         ),
         shouldHidePromptInput: false,

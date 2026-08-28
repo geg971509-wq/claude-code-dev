@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { readFileSync } from 'fs'
 import { relative, resolve } from 'path'
 
 const PROJECT_ROOT = resolve(import.meta.dir, '..', '..', '..', '..')
@@ -10,6 +11,14 @@ const RUNNER =
   ).replaceAll('\\', '/')
 
 describe('processBashCommand interactive terminal', () => {
+  test('does not shadow the compiled JSX runtime helper', () => {
+    const source = readFileSync(
+      resolve(import.meta.dir, '..', 'processBashCommand.tsx'),
+      'utf8',
+    )
+    expect(source).not.toMatch(/\b(?:let|const|var)\s+jsx\b/)
+  })
+
   test.skipIf(process.platform !== 'darwin')(
     'hands the TTY to the command and restores Ink input afterward',
     async () => {
