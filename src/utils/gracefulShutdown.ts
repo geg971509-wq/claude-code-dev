@@ -231,6 +231,14 @@ function forceExit(exitCode: number): never {
   return undefined as never
 }
 
+let sigintInterceptor: (() => void) | undefined
+
+export function setSigintInterceptor(
+  interceptor: (() => void) | undefined,
+): void {
+  sigintInterceptor = interceptor
+}
+
 /**
  * Set up global signal handlers for graceful shutdown
  */
@@ -254,6 +262,10 @@ export const setupGracefulShutdown = memoize(() => {
   onExit(() => {})
 
   process.on('SIGINT', () => {
+    if (sigintInterceptor) {
+      sigintInterceptor()
+      return
+    }
     // In print mode, print.ts registers its own SIGINT handler that aborts
     // the in-flight query and calls gracefulShutdown(0); skip here to
     // avoid racing with it. Only check print mode — other non-interactive
@@ -400,6 +412,7 @@ export function resetShutdownState(): void {
   finalExitCode = 0
   syncShutdownFallbackAttached = false
   resumeHintPrinted = false
+  sigintInterceptor = undefined
   if (failsafeTimer !== undefined) {
     clearTimeout(failsafeTimer)
     failsafeTimer = undefined

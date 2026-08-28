@@ -8,6 +8,7 @@ import type { AttachmentMessage, SystemMessage, UserMessage } from 'src/types/me
 import type { ShellProgress } from 'src/types/tools.js';
 import { logEvent } from '../../services/analytics/index.js';
 import { errorMessage, ShellError } from '../errors.js';
+import { setSigintInterceptor } from '../gracefulShutdown.js';
 import {
   createSyntheticUserCaveatMessage,
   createUserInterruptionMessage,
@@ -56,6 +57,14 @@ export async function processBashCommand(
   });
 
   try {
+    if (!context.options.isNonInteractiveSession) {
+      setSigintInterceptor(() => {
+        if (!context.abortController.signal.aborted) {
+          context.abortController.abort('user-cancel');
+        }
+      });
+    }
+
     const bashModeContext: ProcessUserInputContext = {
       ...context,
       // TODO: Clean up this hack
@@ -109,6 +118,7 @@ export async function processBashCommand(
           undefined,
           onProgress,
         );
+    setSigintInterceptor(undefined);
     const data = response.data;
 
     if (!data) {
@@ -174,6 +184,7 @@ export async function processBashCommand(
       shouldQuery: false,
     };
   } finally {
+    setSigintInterceptor(undefined);
     setToolJSX(null);
   }
 }

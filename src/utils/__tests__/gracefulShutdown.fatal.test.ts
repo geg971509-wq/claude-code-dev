@@ -80,6 +80,7 @@ const setup = `
     gracefulShutdown,
     gracefulShutdownSync,
     resetShutdownState,
+    setSigintInterceptor,
     setupGracefulShutdown,
   } = await import('src/utils/gracefulShutdown.js')
   resetShutdownState()
@@ -90,6 +91,65 @@ describe('gracefulShutdown fatal handlers', () => {
   test('main does not register a duplicate SIGINT process.exit handler', () => {
     const source = readFileSync(resolve(PROJECT_ROOT, 'src/main.tsx'), 'utf8')
     expect(source).not.toContain("process.on('SIGINT'")
+  })
+
+  test('interactive bash command claims SIGINT, aborts, then releases it', async () => {
+    const { code, output } = await runScript(`
+      ${setup}
+      mock.module('src/components/BashModeProgress.tsx', () => ({
+        BashModeProgress: () => null,
+      }))
+      mock.module('src/tools/BashTool/BashTool.tsx', () => ({
+        BashTool: {
+          call: async (_input, context) => {
+            await new Promise(resolve =>
+              context.abortController.signal.addEventListener('abort', resolve, { once: true })
+            )
+            console.error('abort-reason:' + context.abortController.signal.reason)
+            throw new Error('cancelled shell')
+          },
+        },
+      }))
+      mock.module('src/utils/messages.ts', () => ({
+        createSyntheticUserCaveatMessage: () => ({ type: 'system' }),
+        createUserInterruptionMessage: () => ({ type: 'user' }),
+        createUserMessage: ({ content }) => ({ type: 'user', message: { role: 'user', content } }),
+        prepareUserContent: ({ inputString }) => inputString,
+      }))
+      mock.module('src/utils/shell/resolveDefaultShell.ts', () => ({
+        resolveDefaultShell: () => 'bash',
+      }))
+      mock.module('src/utils/shell/shellToolUtils.ts', () => ({
+        isPowerShellToolEnabled: () => false,
+      }))
+      mock.module('src/utils/toolResultStorage.ts', () => ({
+        processToolResultBlock: async () => ({ content: '' }),
+      }))
+      mock.module('src/utils/xml.ts', () => ({ escapeXml: value => String(value) }))
+
+      const { processBashCommand } = await import('src/utils/processUserInput/processBashCommand.tsx')
+      const abortController = new AbortController()
+      const command = processBashCommand(
+        'git push -u origin master',
+        [],
+        [],
+        {
+          options: { isNonInteractiveSession: false, verbose: false },
+          abortController,
+        },
+        () => {},
+      )
+      setTimeout(() => process.kill(process.pid, 'SIGINT'), 20)
+      await command
+      console.error('bash-done')
+      process.kill(process.pid, 'SIGINT')
+    `)
+
+    expect(code).toBe(0)
+    expect(output).toContain('abort-reason:user-cancel')
+    expect(output).toContain('bash-done')
+    expect(output).toContain('diagnostic:shutdown_signal')
+    expect(output).toContain('cleanup-runs:1')
   })
 
   test('failsafe still exits when hook timeout lookup fails', async () => {
