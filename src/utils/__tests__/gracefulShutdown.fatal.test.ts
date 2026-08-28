@@ -96,8 +96,12 @@ describe('gracefulShutdown fatal handlers', () => {
   test('interactive bash command claims SIGINT, aborts, then releases it', async () => {
     const { code, output } = await runScript(`
       ${setup}
+      mock.module('@anthropic/ink', () => ({ instances: new Map() }))
       mock.module('src/components/BashModeProgress.tsx', () => ({
         BashModeProgress: () => null,
+      }))
+      mock.module('src/utils/renderOptions.ts', () => ({
+        getBaseRenderOptions: () => ({}),
       }))
       mock.module('src/tools/BashTool/BashTool.tsx', () => ({
         BashTool: {

@@ -80,6 +80,7 @@ export async function createBashShellProvider(
         id: number | string
         sandboxTmpDir?: string
         useSandbox: boolean
+        interactive: boolean
       },
     ): Promise<{ commandString: string; cwdFilePath: string }> {
       let snapshotFilePath = await snapshotPromise
@@ -125,7 +126,8 @@ export async function createBashShellProvider(
       // literal file named `nul` — a reserved device name that breaks git.
       // See anthropics/claude-code#4928.
       const normalizedCommand = rewriteWindowsNullRedirect(command)
-      const addStdinRedirect = shouldAddStdinRedirect(normalizedCommand)
+      const addStdinRedirect =
+        !opts.interactive && shouldAddStdinRedirect(normalizedCommand)
       let quotedCommand = quoteShellCommand(normalizedCommand, addStdinRedirect)
 
       // Debug logging for heredoc/multiline commands to trace trailer handling
@@ -197,7 +199,7 @@ export async function createBashShellProvider(
       return { commandString, cwdFilePath }
     },
 
-    getSpawnArgs(commandString: string): string[] {
+    getSpawnArgs(commandString: string, _interactive: boolean): string[] {
       const skipLoginShell = lastSnapshotFilePath !== undefined
       if (skipLoginShell) {
         logForDebugging('Spawning shell without login (-l flag skipped)')

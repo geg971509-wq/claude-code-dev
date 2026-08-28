@@ -8,8 +8,16 @@ import type { ShellProvider } from './shellProvider.js'
  * PowerShell invocation flags + command. Shared by the provider's getSpawnArgs
  * and the hook spawn path in hooks.ts so the flag set stays in one place.
  */
-export function buildPowerShellArgs(cmd: string): string[] {
-  return ['-NoProfile', '-NonInteractive', '-Command', cmd]
+export function buildPowerShellArgs(
+  cmd: string,
+  interactive = false,
+): string[] {
+  return [
+    '-NoProfile',
+    ...(interactive ? [] : ['-NonInteractive']),
+    '-Command',
+    cmd,
+  ]
 }
 
 /**
@@ -38,6 +46,7 @@ export function createPowerShellProvider(shellPath: string): ShellProvider {
         id: number | string
         sandboxTmpDir?: string
         useSandbox: boolean
+        interactive: boolean
       },
     ): Promise<{ commandString: string; cwdFilePath: string }> {
       // Stash sandboxTmpDir for getEnvironmentOverrides (mirrors bashProvider)
@@ -96,8 +105,8 @@ export function createPowerShellProvider(shellPath: string): ShellProvider {
       return { commandString, cwdFilePath }
     },
 
-    getSpawnArgs(commandString: string): string[] {
-      return buildPowerShellArgs(commandString)
+    getSpawnArgs(commandString: string, interactive: boolean): string[] {
+      return buildPowerShellArgs(commandString, interactive)
     },
 
     async getEnvironmentOverrides(): Promise<Record<string, string>> {

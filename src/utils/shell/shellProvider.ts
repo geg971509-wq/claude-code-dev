@@ -17,13 +17,14 @@ export type ShellProvider = {
       id: number | string
       sandboxTmpDir?: string
       useSandbox: boolean
+      interactive: boolean
     },
   ): Promise<{ commandString: string; cwdFilePath: string }>
 
   /**
    * Shell args for spawn (e.g., ['-c', '-l', cmd] for bash).
    */
-  getSpawnArgs(commandString: string): string[]
+  getSpawnArgs(commandString: string, interactive: boolean): string[]
 
   /**
    * Extra env vars for this shell type.

@@ -538,6 +538,7 @@ export const PowerShellTool = buildTool({
     _canUseTool?: CanUseToolFn,
     _parentMessage?: AssistantMessage,
     onProgress?: ToolCallProgress<PowerShellProgress>,
+    interactiveTerminal?: NodeJS.ReadStream,
   ): Promise<{ data: Out }> {
     // Load-bearing guard: promptShellExecution.ts and processBashCommand.tsx
     // call PowerShellTool.call() directly, bypassing validateInput. This is
@@ -565,6 +566,7 @@ export const PowerShellTool = buildTool({
         isMainThread,
         toolUseId: toolUseContext.toolUseId,
         agentId: toolUseContext.agentId,
+        interactiveTerminal,
       });
 
       let generatorResult;
@@ -780,6 +782,7 @@ async function* runPowerShellCommand({
   isMainThread,
   toolUseId,
   agentId,
+  interactiveTerminal,
 }: {
   input: PowerShellToolInput;
   abortController: AbortController;
@@ -789,6 +792,7 @@ async function* runPowerShellCommand({
   isMainThread?: boolean;
   toolUseId?: string;
   agentId?: AgentId;
+  interactiveTerminal?: NodeJS.ReadStream;
 }): AsyncGenerator<
   {
     type: 'progress';
@@ -824,7 +828,8 @@ async function* runPowerShellCommand({
     });
   }
 
-  const shouldAutoBackground = !isBackgroundTasksDisabled && isAutobackgroundingAllowed(command);
+  const shouldAutoBackground =
+    !interactiveTerminal && !isBackgroundTasksDisabled && isAutobackgroundingAllowed(command);
 
   const powershellPath = await getCachedPowerShellPath();
   if (!powershellPath) {
@@ -858,6 +863,7 @@ async function* runPowerShellCommand({
       // The explicit platform check is redundant-but-obvious.
       shouldUseSandbox: getPlatform() === 'windows' ? false : shouldUseSandbox({ command, dangerouslyDisableSandbox }),
       shouldAutoBackground,
+      interactiveTerminal,
     });
   } catch (e) {
     logError(e);
@@ -959,7 +965,8 @@ async function* runPowerShellCommand({
     getKairosActive() &&
     isMainThread &&
     !isBackgroundTasksDisabled &&
-    run_in_background !== true
+    run_in_background !== true &&
+    !interactiveTerminal
   ) {
     setTimeout(() => {
       if (shellCommand.status === 'running' && backgroundShellId === undefined) {
@@ -972,7 +979,7 @@ async function* runPowerShellCommand({
   // Handle Claude asking to run it in the background explicitly
   // When explicitly requested via run_in_background, always honor the request
   // regardless of the command type (isAutobackgroundingAllowed only applies to automatic backgrounding)
-  if (run_in_background === true && !isBackgroundTasksDisabled) {
+  if (run_in_background === true && !isBackgroundTasksDisabled && !interactiveTerminal) {
     const shellId = await spawnBackgroundTask();
 
     logEvent('tengu_powershell_command_explicitly_backgrounded', {
@@ -1097,6 +1104,7 @@ async function* runPowerShellCommand({
       // Show backgrounding UI hint after threshold
       if (
         !isBackgroundTasksDisabled &&
+        !interactiveTerminal &&
         backgroundShellId === undefined &&
         elapsedSeconds >= PROGRESS_THRESHOLD_MS / 1000 &&
         setToolJSX

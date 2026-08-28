@@ -207,6 +207,7 @@ export type ExecOptions = {
   preventCwdChanges?: boolean
   shouldUseSandbox?: boolean
   shouldAutoBackground?: boolean
+  interactiveTerminal?: NodeJS.ReadStream
   /** When provided, stdout is piped (not sent to file) and this callback fires on each data chunk. */
   onStdout?: (data: string) => void
 }
@@ -227,9 +228,11 @@ export async function exec(
     preventCwdChanges,
     shouldUseSandbox,
     shouldAutoBackground,
+    interactiveTerminal,
     onStdout,
   } = options ?? {}
   const commandTimeout = timeout || DEFAULT_TIMEOUT
+  const interactive = interactiveTerminal !== undefined
 
   const provider = await resolveProvider[shellType]()
 
@@ -249,6 +252,7 @@ export async function exec(
       id,
       sandboxTmpDir: shouldUseSandbox ? sandboxTmpDir : undefined,
       useSandbox: shouldUseSandbox ?? false,
+      interactive,
     })
 
   let commandString = builtCommand
@@ -313,7 +317,7 @@ export async function exec(
   const spawnBinary = isSandboxedPowerShell ? '/bin/sh' : binShell
   const shellArgs = isSandboxedPowerShell
     ? ['-c', commandString]
-    : provider.getSpawnArgs(commandString)
+    : provider.getSpawnArgs(commandString, interactive)
   const envOverrides = await provider.getEnvironmentOverrides(command)
 
   // When onStdout is provided, use pipe mode: stdout flows through
@@ -366,10 +370,10 @@ export async function exec(
       },
       cwd,
       stdio: usePipeMode
-        ? ['pipe', 'pipe', 'pipe']
-        : ['pipe', outputHandle?.fd, outputHandle?.fd],
+        ? [interactiveTerminal ?? 'pipe', 'pipe', 'pipe']
+        : [interactiveTerminal ?? 'pipe', outputHandle?.fd, outputHandle?.fd],
       // Don't pass the signal - we'll handle termination ourselves with tree-kill
-      detached: provider.detached,
+      detached: interactive ? false : provider.detached,
       // Prevent visible console window on Windows (no-op on other platforms)
       windowsHide: true,
     })
@@ -379,7 +383,7 @@ export async function exec(
       abortSignal,
       commandTimeout,
       taskOutput,
-      shouldAutoBackground,
+      interactive ? false : shouldAutoBackground,
     )
 
     // Close our copy of the fd — the child has its own dup.

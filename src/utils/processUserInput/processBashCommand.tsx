@@ -1,6 +1,7 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources';
 import { randomUUID } from 'crypto';
 import * as React from 'react';
+import { instances } from '@anthropic/ink';
 import { BashModeProgress } from 'src/components/BashModeProgress.js';
 import type { SetToolJSXFn } from 'src/Tool.js';
 import { BashTool } from 'src/tools/BashTool/BashTool.js';
@@ -15,6 +16,7 @@ import {
   createUserMessage,
   prepareUserContent,
 } from '../messages.js';
+import { getBaseRenderOptions } from '../renderOptions.js';
 import { resolveDefaultShell } from '../shell/resolveDefaultShell.js';
 import { isPowerShellToolEnabled } from '../shell/shellToolUtils.js';
 import { processToolResultBlock } from '../toolResultStorage.js';
@@ -50,6 +52,14 @@ export async function processBashCommand(
   // ctrl+b to background indicator
   let jsx: React.ReactNode;
 
+  const inkInstance = instances.get(process.stdout);
+  const terminalInput =
+    context.options.isNonInteractiveSession || !inkInstance
+      ? undefined
+      : (getBaseRenderOptions(false).stdin ?? process.stdin);
+  const interactiveTerminal = inkInstance && terminalInput?.isTTY ? terminalInput : undefined;
+  let terminalHandoffStarted = false;
+
   // Just show initial UI
   setToolJSX({
     jsx: <BashModeProgress input={inputString} progress={null} verbose={context.options.verbose} />,
@@ -63,6 +73,11 @@ export async function processBashCommand(
           context.abortController.abort('user-cancel');
         }
       });
+    }
+
+    if (interactiveTerminal && inkInstance) {
+      terminalHandoffStarted = true;
+      inkInstance.suspendTerminal();
     }
 
     const bashModeContext: ProcessUserInputContext = {
@@ -107,6 +122,7 @@ export async function processBashCommand(
           undefined,
           undefined,
           onProgress,
+          interactiveTerminal,
         )
       : await BashTool.call(
           {
@@ -117,8 +133,8 @@ export async function processBashCommand(
           undefined,
           undefined,
           onProgress,
+          interactiveTerminal,
         );
-    setSigintInterceptor(undefined);
     const data = response.data;
 
     if (!data) {
@@ -184,7 +200,16 @@ export async function processBashCommand(
       shouldQuery: false,
     };
   } finally {
-    setSigintInterceptor(undefined);
-    setToolJSX(null);
+    try {
+      setToolJSX(null);
+    } finally {
+      try {
+        if (terminalHandoffStarted && inkInstance) {
+          inkInstance.resumeTerminal();
+        }
+      } finally {
+        setSigintInterceptor(undefined);
+      }
+    }
   }
 }

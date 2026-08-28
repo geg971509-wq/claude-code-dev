@@ -764,6 +764,7 @@ export const BashTool = buildTool({
     _canUseTool?: CanUseToolFn,
     parentMessage?: AssistantMessage,
     onProgress?: ToolCallProgress<BashProgress>,
+    interactiveTerminal?: NodeJS.ReadStream,
   ) {
     // Handle simulated sed edit - apply directly instead of running sed
     // This ensures what the user previewed is exactly what gets written
@@ -797,6 +798,7 @@ export const BashTool = buildTool({
         isMainThread,
         toolUseId: toolUseContext.toolUseId,
         agentId: toolUseContext.agentId,
+        interactiveTerminal,
       });
 
       // Consume the generator and capture the return value
@@ -989,6 +991,7 @@ async function* runShellCommand({
   isMainThread,
   toolUseId,
   agentId,
+  interactiveTerminal,
 }: {
   input: BashToolInput;
   abortController: AbortController;
@@ -998,6 +1001,7 @@ async function* runShellCommand({
   isMainThread?: boolean;
   toolUseId?: string;
   agentId?: AgentId;
+  interactiveTerminal?: NodeJS.ReadStream;
 }): AsyncGenerator<
   {
     type: 'progress';
@@ -1034,7 +1038,8 @@ async function* runShellCommand({
   // Determine if auto-backgrounding should be enabled
   // Only enable for commands that are allowed to be auto-backgrounded
   // and when background tasks are not disabled
-  const shouldAutoBackground = !isBackgroundTasksDisabled && isAutobackgroundingAllowed(command);
+  const shouldAutoBackground =
+    !interactiveTerminal && !isBackgroundTasksDisabled && isAutobackgroundingAllowed(command);
 
   const shellCommand = await exec(command, abortController.signal, 'bash', {
     timeout: timeoutMs,
@@ -1053,6 +1058,7 @@ async function* runShellCommand({
     preventCwdChanges,
     shouldUseSandbox: shouldUseSandbox(input),
     shouldAutoBackground,
+    interactiveTerminal,
   });
 
   // Start the command execution
@@ -1149,7 +1155,8 @@ async function* runShellCommand({
     getKairosActive() &&
     isMainThread &&
     !isBackgroundTasksDisabled &&
-    run_in_background !== true
+    run_in_background !== true &&
+    !interactiveTerminal
   ) {
     setTimeout(() => {
       if (shellCommand.status === 'running' && backgroundShellId === undefined) {
@@ -1163,7 +1170,7 @@ async function* runShellCommand({
   // When explicitly requested via run_in_background, always honor the request
   // regardless of the command type (isAutobackgroundingAllowed only applies to automatic backgrounding)
   // Skip if background tasks are disabled - run in foreground instead
-  if (run_in_background === true && !isBackgroundTasksDisabled) {
+  if (run_in_background === true && !isBackgroundTasksDisabled && !interactiveTerminal) {
     const shellId = await spawnBackgroundTask();
 
     logEvent('tengu_bash_command_explicitly_backgrounded', {
@@ -1293,6 +1300,7 @@ async function* runShellCommand({
       // Skip if background tasks are disabled
       if (
         !isBackgroundTasksDisabled &&
+        !interactiveTerminal &&
         backgroundShellId === undefined &&
         elapsedSeconds >= PROGRESS_THRESHOLD_MS / 1000 &&
         setToolJSX

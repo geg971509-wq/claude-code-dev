@@ -9,7 +9,7 @@ import { onExit } from 'signal-exit';
 import { getYogaCounters } from './yoga-layout/index.js';
 import { format } from 'util';
 import { colorize } from './colorize.js';
-import App from '../components/App.js';
+import App, { isEnvTruthy } from '../components/App.js';
 import type { CursorDeclaration, CursorDeclarationSetter } from '../components/CursorDeclarationContext.js';
 import { FRAME_INTERVAL_MS } from './constants.js';
 import * as dom from './dom.js';
@@ -80,9 +80,12 @@ import {
   DBP,
   DFE,
   DISABLE_MOUSE_TRACKING,
+  EBP,
+  EFE,
   ENABLE_MOUSE_TRACKING,
   ENTER_ALT_SCREEN,
   EXIT_ALT_SCREEN,
+  HIDE_CURSOR,
   SHOW_CURSOR,
 } from './termio/dec.js';
 import {
@@ -438,6 +441,44 @@ export default class Ink {
   resolveExitPromise: () => void = () => {};
   rejectExitPromise: (reason?: Error) => void = () => {};
   unsubscribeExit: () => void = () => {};
+
+  /** Pause Ink and hand the current terminal to a foreground process. */
+  suspendTerminal(): void {
+    this.pause();
+    this.suspendStdin();
+    this.options.stdout.write(
+      DISABLE_KITTY_KEYBOARD +
+        DISABLE_MODIFY_OTHER_KEYS +
+        DFE +
+        DBP +
+        (this.altScreenMouseTracking ? DISABLE_MOUSE_TRACKING : '') +
+        SHOW_CURSOR,
+    );
+  }
+
+  /** Restore Ink after a foreground process releases the terminal. */
+  resumeTerminal(): void {
+    try {
+      this.resumeStdin();
+    } finally {
+      try {
+        this.repaint();
+      } finally {
+        try {
+          this.resume();
+        } finally {
+          const hideCursor = isEnvTruthy(process.env.CLAUDE_CODE_ACCESSIBILITY) ? '' : HIDE_CURSOR;
+          this.options.stdout.write(
+            EBP +
+              EFE +
+              hideCursor +
+              (this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : '') +
+              (supportsExtendedKeys() ? DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS : ''),
+          );
+        }
+      }
+    }
+  }
 
   /**
    * Pause Ink and hand the terminal over to an external TUI (e.g. git

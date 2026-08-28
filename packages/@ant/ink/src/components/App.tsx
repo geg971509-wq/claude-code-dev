@@ -27,7 +27,7 @@ export function setAppCallbacks(cb: AppCallbacks): void {
   Object.assign(defaultCallbacks, cb);
 }
 
-function isEnvTruthy(value: string | undefined): boolean {
+export function isEnvTruthy(value: string | undefined): boolean {
   return value === '1' || value === 'true';
 }
 import { EventEmitter } from '../core/events/emitter.js';
