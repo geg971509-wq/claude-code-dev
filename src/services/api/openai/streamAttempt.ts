@@ -31,7 +31,10 @@ import {
   type OpenAIStreamAttempt,
   type ResponsesReasoningEffort,
 } from './responsesAdapter.js'
-import { resolveCodexResponsesReasoningEffort } from './codexReasoning.js'
+import {
+  applyCodexReasoningToRequest,
+  resolveCodexResponsesReasoningEffort,
+} from './codexReasoning.js'
 
 export type OpenAIStreamRequest = {
   model: string
@@ -63,6 +66,27 @@ function getHttpErrorStatus(error: unknown): number | null {
     return (error as { status: number }).status
   }
   return null
+}
+
+function normalizeBuiltResponsesReasoning<T extends object>(
+  builtRequest: T,
+  model: string,
+  effort: ResponsesReasoningEffort | undefined,
+): T {
+  const requestRecord = builtRequest as Record<string, unknown>
+  if (effort) {
+    // Builders retain legacy compatibility transforms. Reset to the resolved
+    // model-catalog value before the shared Codex normalizer decides whether a
+    // summary parameter is valid for this effort.
+    requestRecord.reasoning = { effort }
+  } else {
+    delete requestRecord.reasoning
+  }
+  applyCodexReasoningToRequest(requestRecord, {
+    model,
+    provider: 'openai',
+  })
+  return builtRequest
 }
 
 export function prepareOpenAIStreamRequest(
@@ -103,20 +127,25 @@ export function prepareOpenAIStreamRequest(
     promptCacheKey,
     createAttempt: async signal => {
       if (useChatGPTResponses) {
+        const chatGPTRequest = normalizeBuiltResponsesReasoning(
+          buildChatGPTResponsesRequest({
+            model: request.model,
+            messages: request.messages,
+            tools: request.tools,
+            toolChoice: request.toolChoice,
+            reasoningEffort: responsesReasoningEffort,
+            promptCacheKey,
+            sessionId,
+            // Inject here so buildChatGPTResponsesRequest stays I/O-free.
+            installationId: getOrCreateUserID(),
+            outputFormat: request.outputFormat,
+          }),
+          request.model,
+          responsesReasoningEffort,
+        )
         const createChatGPTAttempt = () =>
           createChatGPTResponsesStream({
-            request: buildChatGPTResponsesRequest({
-              model: request.model,
-              messages: request.messages,
-              tools: request.tools,
-              toolChoice: request.toolChoice,
-              reasoningEffort: responsesReasoningEffort,
-              promptCacheKey,
-              sessionId,
-              // Inject here so buildChatGPTResponsesRequest stays I/O-free.
-              installationId: getOrCreateUserID(),
-              outputFormat: request.outputFormat,
-            }),
+            request: chatGPTRequest,
             signal,
             sessionId,
             fetchOverride: request.fetchOverride,
@@ -134,8 +163,8 @@ export function prepareOpenAIStreamRequest(
       }
 
       if (useOfficialResponses) {
-        return createOfficialResponsesStream({
-          request: buildOfficialResponsesRequest({
+        const officialRequest = normalizeBuiltResponsesReasoning(
+          buildOfficialResponsesRequest({
             model: request.model,
             messages: request.messages,
             tools: request.tools,
@@ -145,6 +174,11 @@ export function prepareOpenAIStreamRequest(
             promptCacheKey,
             outputFormat: request.outputFormat,
           }),
+          request.model,
+          responsesReasoningEffort,
+        )
+        return createOfficialResponsesStream({
+          request: officialRequest,
           signal,
           sessionId,
           fetchOverride: request.fetchOverride,
