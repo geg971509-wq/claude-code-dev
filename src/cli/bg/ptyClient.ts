@@ -50,6 +50,7 @@ export async function attachPtySession(session: SessionEntry): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       let pending = ''
       let exited = false
+      let receivedLive = false
       socket.on('data', data => {
         pending += data.toString('utf8')
         for (;;) {
@@ -69,6 +70,7 @@ export async function attachPtySession(session: SessionEntry): Promise<void> {
             reject(new Error('PTY host returned an invalid event.'))
             return
           }
+          if (value.type === 'live') receivedLive = true
           if (value.type === 'data') process.stdout.write(value.data)
           if (value.type === 'exit') {
             exited = true
@@ -78,7 +80,12 @@ export async function attachPtySession(session: SessionEntry): Promise<void> {
       })
       socket.once('error', reject)
       socket.once('close', () => {
-        if (!exited) resolve()
+        if (exited) return
+        if (!receivedLive) {
+          reject(new Error('PTY session closed before authentication completed.'))
+          return
+        }
+        resolve()
       })
     })
   } finally {
