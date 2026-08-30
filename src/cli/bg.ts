@@ -8,6 +8,15 @@ import { jsonParse } from '../utils/slowOperations.js'
 import { peekForStdinData } from '../utils/process.js'
 import { selectEngine } from './bg/engines/index.js'
 import type { BgEngine, SessionEntry } from './bg/engine.js'
+import {
+  formatJobTargetError,
+  listJobRecords,
+  removeJobRecord,
+  resolveJobTarget,
+  writeJobRecord,
+  type BgJobRecord,
+  type BgLaunch,
+} from './bg/jobStore.js'
 
 export type { SessionEntry } from './bg/engine.js'
 
@@ -15,37 +24,8 @@ function getSessionsDir(): string {
   return join(getClaudeConfigHomeDir(), 'sessions')
 }
 
-function getSessionJobsDir(): string {
-  return join(getSessionsDir(), 'jobs')
-}
-
-async function listStoredJobs(): Promise<SessionEntry[]> {
-  let files: string[]
-  try {
-    files = await readdir(getSessionJobsDir())
-  } catch {
-    return []
-  }
-
-  const jobs: SessionEntry[] = []
-  for (const file of files) {
-    if (!/^.+\.json$/.test(file)) continue
-    try {
-      const entry = jsonParse(
-        await readFile(join(getSessionJobsDir(), file), 'utf-8'),
-      ) as SessionEntry
-      if (
-        entry &&
-        typeof entry.sessionId === 'string' &&
-        typeof entry.cwd === 'string'
-      ) {
-        jobs.push(entry)
-      }
-    } catch {
-      // Corrupt job file — leave it in place for manual recovery.
-    }
-  }
-  return jobs
+async function listStoredJobs(): Promise<BgJobRecord[]> {
+  return listJobRecords()
 }
 
 async function getEngineForSession(session: SessionEntry): Promise<BgEngine> {
@@ -109,6 +89,23 @@ export async function listLiveSessions(): Promise<SessionEntry[]> {
     }
   }
 
+  // `--exec` has no Claude child to write the normal PID registry file. Use
+  // the durable job record as the source of truth for those sessions (and as
+  // a short startup bridge for tmux-backed Claude jobs).
+  const storedJobs = await listStoredJobs()
+  for (const job of storedJobs) {
+    if (sessions.some(session => session.sessionId === job.sessionId)) continue
+    const live =
+      resolveSessionEngine(job) === 'tmux' && job.tmuxSessionName
+        ? spawnSync('tmux', ['has-session', '-t', job.tmuxSessionName], {
+            stdio: 'ignore',
+          }).status === 0
+        : Number.isSafeInteger(job.pid) && job.pid > 1 && isProcessRunning(job.pid)
+    if (live) sessions.push(job)
+    else if (job.status === 'starting' || job.status === 'running')
+      void writeJobRecord({ ...job, status: 'exited', updatedAt: Date.now() }).catch(() => {})
+  }
+
   return sessions
 }
 
@@ -122,6 +119,9 @@ export function findSession(
   return sessions.find(
     s =>
       s.sessionId === target ||
+      s.jobId === target ||
+      s.jobId?.startsWith(target) ||
+      s.sessionId.startsWith(target) ||
       s.pid === asNum ||
       (s.name && s.name === target),
   )
@@ -204,6 +204,7 @@ export async function psHandler(_args: string[]): Promise<void> {
   for (const s of sessions) {
     const engineType = resolveSessionEngine(s)
     const parts: string[] = [
+      `  ID: ${s.jobId ?? s.sessionId.slice(0, 8)}`,
       `  PID: ${s.pid}`,
       `  Kind: ${s.kind}`,
       `  Engine: ${engineType}`,
@@ -212,6 +213,7 @@ export async function psHandler(_args: string[]): Promise<void> {
     ]
 
     if (s.name) parts.push(`  Name: ${s.name}`)
+    if (s.routine) parts.push(`  Routine: ${s.routine}`)
     if (s.startedAt) parts.push(`  Started: ${formatTime(s.startedAt)}`)
     if (s.status) parts.push(`  Status: ${s.status}`)
     if (s.waitingFor) parts.push(`  Waiting for: ${s.waitingFor}`)
@@ -413,12 +415,13 @@ export async function stopHandler(target: string | undefined): Promise<void> {
   }
 
   const sessions = await listLiveSessions()
-  const session = findSession(sessions, target)
-  if (!session) {
-    console.error(`Session not found: ${target}`)
+  const resolved = resolveJobTarget(sessions as BgJobRecord[], target)
+  if (!('sessionId' in resolved)) {
+    console.error(formatJobTargetError(resolved))
     process.exitCode = 1
     return
   }
+  const session = resolved
 
   const result = signalSession(session, 'SIGTERM')
   if (!result.ok) {
@@ -427,7 +430,19 @@ export async function stopHandler(target: string | undefined): Promise<void> {
     return
   }
 
-  console.log(`stopped ${session.sessionId}`)
+  const stored = (await listStoredJobs()).find(
+    job => job.sessionId === session.sessionId,
+  )
+  if (stored) {
+    await writeJobRecord({
+      ...stored,
+      status: 'stopped',
+      waitingFor: undefined,
+      updatedAt: Date.now(),
+      error: undefined,
+    })
+  }
+  console.log(`stopped ${session.jobId ?? session.sessionId.slice(0, 8)}`)
   const pidFile = join(getSessionsDir(), `${session.pid}.json`)
   void unlink(pidFile).catch(() => {})
 }
@@ -442,6 +457,15 @@ export async function stopHandler(target: string | undefined): Promise<void> {
 export async function respawnHandler(
   target: string | undefined,
 ): Promise<void> {
+  if (target === '--help' || target === '-h') {
+    console.log('Usage: claude respawn <id>|--all\n\n  Restart a background session with the current Claude binary.')
+    return
+  }
+  if (target?.startsWith('-') && target !== '--all') {
+    console.error(`unknown option '${target}'\nUsage: claude respawn <id>|--all`)
+    process.exitCode = 1
+    return
+  }
   if (!target) {
     console.error('Usage: claude respawn <id|--all>')
     process.exitCode = 1
@@ -450,25 +474,32 @@ export async function respawnHandler(
 
   const liveSessions = await listLiveSessions()
   const storedJobs = await listStoredJobs()
-  const jobs =
+  const jobs: BgJobRecord[] =
     target === '--all'
-      ? storedJobs.length > 0
-        ? storedJobs
-        : liveSessions.filter(s => s.kind === 'bg')
-      : [
-          liveSessions.find(s => findSession([s], target)) ??
-            storedJobs.find(s => findSession([s], target)),
-        ].filter((s): s is SessionEntry => s !== undefined)
+      ? liveSessions.filter(s => s.kind === 'bg') as BgJobRecord[]
+      : (() => {
+          const all = [...storedJobs]
+          for (const live of liveSessions) {
+            if (!all.some(job => job.sessionId === live.sessionId))
+              all.push(live as BgJobRecord)
+          }
+          const resolved = resolveJobTarget(all, target)
+          if (!('sessionId' in resolved)) {
+            console.error(formatJobTargetError(resolved))
+            process.exitCode = 1
+            return []
+          }
+          return [resolved]
+        })()
 
   if (jobs.length === 0) {
-    console.error(`Session not found: ${target}`)
-    process.exitCode = 1
+    if (target === '--all') console.log('no live jobs to respawn')
     return
   }
 
   let failures = 0
   for (const job of jobs) {
-    if (!job.args) {
+    if (!job.args && job.launch?.mode !== 'exec') {
       console.error(
         `Cannot respawn ${job.sessionId}: launch arguments were not recorded.`,
       )
@@ -507,22 +538,30 @@ export async function respawnHandler(
     try {
       const engine = await getEngineForSession(job)
       const sessionName =
-        job.name ?? job.tmuxSessionName ?? `claude-bg-${job.sessionId.slice(0, 8)}`
+        job.tmuxSessionName ?? `claude-bg-${(job.jobId ?? job.sessionId).slice(0, 8)}`
       const logPath =
         job.logPath ?? join(getSessionsDir(), 'logs', `${sessionName}.log`)
       const result = await engine.start({
         sessionName,
-        args: job.args,
+        args: job.args ?? [],
         env: { ...process.env },
         logPath,
         cwd: job.cwd,
+        launch: job.launch ?? { mode: 'claude' },
+        routine: job.routine,
+        intent: job.intent,
+        sessionId: job.sessionId,
       })
-      // The relaunched child receives a fresh session ID and writes a new job
-      // record. Retire the old record only after spawn succeeds.
-      void unlink(join(getSessionJobsDir(), `${job.sessionId}.json`)).catch(
-        () => {},
-      )
-      console.log(`respawned ${job.sessionId} (${result.engineUsed})`)
+      await writeJobRecord({
+        ...job,
+        pid: result.pid,
+        engine: result.engineUsed,
+        tmuxSessionName:
+          result.engineUsed === 'tmux' ? sessionName : job.tmuxSessionName,
+        status: 'starting',
+        updatedAt: Date.now(),
+      })
+      console.log(`respawned ${job.jobId ?? job.sessionId.slice(0, 8)} (${result.engineUsed})`)
     } catch (error) {
       console.error(
         `Failed to respawn ${job.sessionId}: ${
@@ -542,6 +581,15 @@ export async function respawnHandler(
  * conversation record and can still be inspected or archived manually.
  */
 export async function rmHandler(target: string | undefined): Promise<void> {
+  if (target === '--help' || target === '-h') {
+    console.log('Usage: claude rm <id>\n\n  Delete a background job record. Logs are retained.')
+    return
+  }
+  if (target?.startsWith('-')) {
+    console.error(`unknown option '${target}'\nUsage: claude rm <id>`)
+    process.exitCode = 1
+    return
+  }
   if (!target) {
     console.error('Usage: claude rm <id>')
     process.exitCode = 1
@@ -549,22 +597,29 @@ export async function rmHandler(target: string | undefined): Promise<void> {
   }
 
   const liveSessions = await listLiveSessions()
-  if (findSession(liveSessions, target)) {
+  const liveResolution = resolveJobTarget(liveSessions as BgJobRecord[], target)
+  if ('sessionId' in liveResolution) {
     console.error('Session is still active; stop it before removing the job.')
     process.exitCode = 1
     return
   }
-
-  const job = (await listStoredJobs()).find(s => findSession([s], target))
-  if (!job) {
-    console.error(`Session not found: ${target}`)
+  if (liveResolution.kind === 'ambiguous') {
+    console.error(formatJobTargetError(liveResolution))
     process.exitCode = 1
     return
   }
 
+  const storedResolution = resolveJobTarget(await listStoredJobs(), target)
+  if (!('sessionId' in storedResolution)) {
+    console.error(formatJobTargetError(storedResolution))
+    process.exitCode = 1
+    return
+  }
+  const job = storedResolution
+
   try {
-    await unlink(join(getSessionJobsDir(), `${job.sessionId}.json`))
-    console.log(`removed ${job.sessionId}`)
+    await removeJobRecord(job)
+    console.log(`removed ${job.jobId ?? job.sessionId.slice(0, 8)}`)
   } catch (error) {
     console.error(
       `Failed to remove ${job.sessionId}: ${
@@ -577,26 +632,17 @@ export async function rmHandler(target: string | undefined): Promise<void> {
 
 const MAX_BACKGROUND_STDIN_BYTES = 256 * 1024
 
-/**
- * Read a piped prompt before detaching the background child.
- *
- * Background engines intentionally do not inherit stdin: detached children
- * must never compete with the parent CLI for terminal input. When the caller
- * supplies a pipe, consume it here and pass the resulting prompt as a normal
- * positional argument instead.
- */
 async function readBackgroundStdin(): Promise<string> {
   if (process.stdin.isTTY) return ''
-
   let data = ''
   let truncated = false
   const onData = (chunk: string | Buffer): void => {
     const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
-    if (data.length >= MAX_BACKGROUND_STDIN_BYTES) {
+    const remaining = MAX_BACKGROUND_STDIN_BYTES - data.length
+    if (remaining <= 0) {
       truncated = true
       return
     }
-    const remaining = MAX_BACKGROUND_STDIN_BYTES - data.length
     if (text.length > remaining) {
       data += text.slice(0, remaining)
       truncated = true
@@ -604,20 +650,43 @@ async function readBackgroundStdin(): Promise<string> {
     }
     data += text
   }
-
   process.stdin.setEncoding('utf8')
   process.stdin.on('data', onData)
   const timedOut = await peekForStdinData(process.stdin, 3_000)
   process.stdin.off('data', onData)
-
   if (timedOut && data.length === 0) return ''
-  if (truncated) {
-    console.error(
-      `Warning: piped background input exceeds ${MAX_BACKGROUND_STDIN_BYTES} bytes; truncated.`,
-    )
-  }
+  if (truncated)
+    console.error(`Warning: piped background input exceeds ${MAX_BACKGROUND_STDIN_BYTES} bytes; truncated.`)
   return data.replace(/\r?\n$/, '')
 }
+
+function stripManagedSessionId(args: string[]): string[] {
+  const result: string[] = []
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!
+    if (arg.startsWith('--session-id=')) continue
+    if (arg === '--session-id') {
+      if (args[index + 1] !== undefined) index++
+      continue
+    }
+    result.push(arg)
+  }
+  return result
+}
+
+function appendPipedPrompt(args: string[], prompt: string): string[] {
+  const terminator = args.indexOf('--')
+  if (terminator >= 0) {
+    const existing = args.slice(terminator + 1).join(' ')
+    return [
+      ...args.slice(0, terminator),
+      '--',
+      existing ? `${existing}\n${prompt}` : prompt,
+    ]
+  }
+  return [...args, '--', prompt]
+}
+
 /**
  * `claude daemon bg [args]` — start a background session.
  *
@@ -627,23 +696,71 @@ async function readBackgroundStdin(): Promise<string> {
 export async function handleBgStart(args: string[]): Promise<void> {
   const engine = await selectEngine()
 
-  // Strip dispatch-only flags before spawning the child. In particular,
-  // --pipe is a background launcher hint, not a main-session option.
-  const filteredArgs = args.filter(
+  const beforeTerminator = args.indexOf('--')
+  const scan = beforeTerminator >= 0 ? args.slice(0, beforeTerminator) : args
+  const execIndex = scan.findIndex(a => a === '--exec' || a.startsWith('--exec='))
+  const execCommand =
+    execIndex < 0
+      ? undefined
+      : scan[execIndex]!.startsWith('--exec=')
+        ? scan[execIndex]!.slice('--exec='.length)
+        : scan.slice(execIndex + 1).join(' ')
+
+  if (execIndex >= 0 && !execCommand?.trim()) {
+    console.error('--exec requires a command.')
+    process.exitCode = 1
+    return
+  }
+
+  const routineIndex = scan.findIndex(a => a === '--routine' || a.startsWith('--routine='))
+  let routine: string | undefined
+  if (routineIndex >= 0) {
+    routine = scan[routineIndex]!.startsWith('--routine=')
+      ? scan[routineIndex]!.slice('--routine='.length)
+      : scan[routineIndex + 1]
+    if (!routine || routine.startsWith('-')) {
+      console.error('--routine requires a name.')
+      process.exitCode = 1
+      return
+    }
+  }
+  if (execIndex >= 0) routine = undefined
+
+  const nameIndex = scan.findIndex(a => a === '--name' || a === '-n' || a.startsWith('--name='))
+  const displayName =
+    nameIndex < 0
+      ? undefined
+      : scan[nameIndex]!.startsWith('--name=')
+        ? scan[nameIndex]!.slice('--name='.length)
+        : scan[nameIndex + 1]
+
+  // `--exec` consumes the remaining command text. Only the display name is
+  // composable, matching the reference behavior; other Claude flags are not
+  // silently forwarded to an unrelated shell command.
+  if (execIndex >= 0) {
+    const ignored = scan.filter(
+      (arg, index) =>
+        index !== execIndex &&
+        !(index === nameIndex || index === nameIndex + 1) &&
+        arg.startsWith('-') &&
+        arg !== '--exec' &&
+        arg !== '--bg' &&
+        arg !== '--background',
+    )
+    if (ignored.length > 0)
+      console.error(`warning: --exec ignores ${ignored.join(' ')} (only --name composes)`)
+  }
+
+  const filteredArgs = (execIndex >= 0 ? [] : args).filter(
     a => a !== '--bg' && a !== '--background' && a !== '--pipe',
   )
-  const pipedInput = await readBackgroundStdin()
-
-  // Reference behavior reads non-TTY stdin in the parent and appends it after
-  // the user's explicit arguments. `--` keeps piped text from being parsed as
-  // another option by Commander in the child process.
-  if (pipedInput) {
-    filteredArgs.push('--', pipedInput)
-  }
+  const pipedInput = execIndex >= 0 ? '' : await readBackgroundStdin()
 
   // Engines without interactive TTY input (e.g. detached) require -p/--print
   // or piped input. Tmux provides a virtual terminal so it works without -p.
   if (
+    execIndex < 0 &&
+    !routine &&
     !engine.supportsInteractiveInput &&
     !pipedInput &&
     !filteredArgs.some(a => a === '-p' || a === '--print')
@@ -665,7 +782,19 @@ export async function handleBgStart(args: string[]): Promise<void> {
     return
   }
 
-  const sessionName = `claude-bg-${randomUUID().slice(0, 8)}`
+  const sessionId = randomUUID()
+  const jobId = sessionId.slice(0, 8)
+  const collision = (await listStoredJobs()).find(
+    job => job.jobId === jobId || job.sessionId.startsWith(jobId),
+  )
+  if (collision) {
+    console.error(`Previous session ${jobId} is still shutting down — try again in a moment.`)
+    process.exitCode = 1
+    return
+  }
+  // Keep the transport/session name filesystem- and tmux-safe. The optional
+  // user name is metadata only and must never become a shell/session target.
+  const sessionName = `claude-bg-${jobId}`
   const logPath = join(
     getClaudeConfigHomeDir(),
     'sessions',
@@ -674,23 +803,59 @@ export async function handleBgStart(args: string[]): Promise<void> {
   )
 
   try {
+    const managedArgs =
+      execIndex >= 0
+        ? []
+        : ['--session-id', sessionId, ...stripManagedSessionId(filteredArgs)]
+    if (pipedInput) {
+      const withInput = appendPipedPrompt(managedArgs, pipedInput)
+      managedArgs.splice(0, managedArgs.length, ...withInput)
+    }
+    const launch: BgLaunch =
+      execIndex >= 0
+        ? { mode: 'exec', command: execCommand!.trim() }
+        : { mode: 'claude', args: managedArgs }
+
     const result = await engine.start({
       sessionName,
-      args: filteredArgs,
+      args: managedArgs,
       env: { ...process.env },
       logPath,
       cwd: process.cwd(),
+      launch,
+      routine,
+      intent: execCommand?.trim() || (pipedInput || undefined),
+      sessionId,
     })
 
-    console.log(`Background session started: ${result.sessionName}`)
+    await writeJobRecord({
+      pid: result.pid,
+      sessionId,
+      jobId,
+      cwd: process.cwd(),
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      kind: 'bg',
+      name: displayName,
+      logPath: result.logPath,
+      engine: result.engineUsed,
+      tmuxSessionName: result.engineUsed === 'tmux' ? sessionName : undefined,
+      routine,
+      intent: execCommand?.trim() || (pipedInput || undefined),
+      launch,
+      args: managedArgs,
+      status: routine && !execCommand && !pipedInput ? 'idle' : 'starting',
+    })
+
+    console.log(`Background session started: ${jobId}`)
     console.log(`  Engine: ${result.engineUsed}`)
     console.log(`  Log: ${result.logPath}`)
     console.log()
     console.log(
-      `Use \`claude daemon attach ${result.sessionName}\` to reconnect.`,
+      `Use \`claude daemon attach ${jobId}\` to reconnect.`,
     )
     console.log(`Use \`claude daemon status\` to check status.`)
-    console.log(`Use \`claude daemon kill ${result.sessionName}\` to stop.`)
+    console.log(`Use \`claude daemon kill ${jobId}\` to stop.`)
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e))
     process.exitCode = 1

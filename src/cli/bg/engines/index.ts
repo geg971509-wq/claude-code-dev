@@ -10,19 +10,15 @@ export async function selectEngine(): Promise<import('../engine.js').BgEngine> {
     const { DetachedEngine } = await import('./detached.js')
     return new DetachedEngine()
   }
-
   const { TmuxEngine } = await import('./tmux.js')
   const tmux = new TmuxEngine()
-  if (await tmux.available()) {
-    return tmux
-  }
-
+  if (await tmux.available()) return tmux
   if (process.platform === 'darwin') {
     const { PtyEngine } = await import('./pty.js')
     const pty = new PtyEngine()
     if (await pty.available()) return pty
   }
-
   const { DetachedEngine } = await import('./detached.js')
   return new DetachedEngine()
 }
+

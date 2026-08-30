@@ -37,6 +37,12 @@ function getSessionLaunchArgs(): string[] | undefined {
   }
 }
 
+function getSessionLaunchMode(): 'claude' | 'exec' {
+  return process.env.CLAUDE_CODE_SESSION_LAUNCH_MODE === 'exec'
+    ? 'exec'
+    : 'claude'
+}
+
 /**
  * Kind override from env. Set by the spawner (`claude --bg`, daemon
  * supervisor) so the child can register without the parent having to
@@ -90,6 +96,12 @@ export async function registerSession(): Promise<boolean> {
     await mkdir(dir, { recursive: true, mode: 0o700 })
     await chmod(dir, 0o700)
     const launchArgs = getSessionLaunchArgs()
+    const launchMode = getSessionLaunchMode()
+    const existingJob = feature('BG_SESSIONS') && launchArgs
+      ? await readFile(join(dir, 'jobs', `${getSessionId()}.json`), 'utf8')
+          .then(raw => jsonParse(raw) as Record<string, unknown>)
+          .catch(() => undefined)
+      : undefined
     const metadata = {
       pid: process.pid,
       sessionId: getSessionId(),
@@ -109,9 +121,26 @@ export async function registerSession(): Promise<boolean> {
             engine: process.env.CLAUDE_CODE_SESSION_ENGINE,
             tmuxSessionName: process.env.CLAUDE_CODE_TMUX_SESSION,
             ptySocketPath: process.env.CLAUDE_CODE_PTY_SOCKET,
-            ptyTokenPath: process.env.CLAUDE_CODE_PTY_TOKEN,
-          }
-        : {}),
+          ptyTokenPath: process.env.CLAUDE_CODE_PTY_TOKEN,
+            jobId:
+              typeof existingJob?.jobId === 'string'
+                ? existingJob.jobId
+                : getSessionId().slice(0, 8),
+            schemaVersion: 1,
+            launch:
+              launchMode === 'exec'
+                ? {
+                    mode: 'exec',
+                    command: process.env.CLAUDE_CODE_SESSION_EXEC,
+                  }
+                : { mode: 'claude', args: launchArgs },
+            routine: process.env.CLAUDE_CODE_SESSION_ROUTINE,
+            intent: process.env.CLAUDE_CODE_SESSION_INTENT,
+            ...(existingJob?.worktreePath
+              ? { worktreePath: existingJob.worktreePath }
+              : {}),
+        }
+      : {}),
     }
     await writeFile(
       pidFile,
