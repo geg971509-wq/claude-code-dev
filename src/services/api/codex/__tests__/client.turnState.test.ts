@@ -15,7 +15,10 @@ describe('Codex turn-state routing', () => {
       baseURL: 'https://example.test/v1',
       maxRetries: 0,
       turnState,
-      fetchOverride: (async (_input, init) => {
+      fetchOverride: (async (
+        _input: Parameters<typeof fetch>[0],
+        init?: Parameters<typeof fetch>[1],
+      ) => {
         const headers = new Headers(init?.headers as HeadersInit | undefined)
         seen.push(headers.get(CODEX_TURN_STATE_HEADER))
         requestCount += 1
