@@ -68,6 +68,7 @@ describe('queryModelCodex request', () => {
     process.env.CODEX_LOGIN_METHOD = 'api_key'
     let requestBody: Record<string, unknown> | undefined
     let requestHeaders: Headers | undefined
+    const abortController = new AbortController()
 
     const fetchOverride = (async (
       _input: Parameters<typeof fetch>[0],
@@ -75,25 +76,26 @@ describe('queryModelCodex request', () => {
     ) => {
       requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>
       requestHeaders = new Headers(init?.headers)
-      return new Response(
-        JSON.stringify({ error: { message: 'request captured' } }),
-        {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        },
-      )
+      abortController.abort()
+      throw Object.assign(new Error('request captured'), { name: 'AbortError' })
     }) as unknown as typeof fetch
 
-    for await (const _ of queryModelCodex(
+    const generator = queryModelCodex(
       [],
       [] as unknown as SystemPrompt,
       [],
-      new AbortController().signal,
+      abortController.signal,
       { model: 'gpt-5.4', fetchOverride } as unknown as Options,
-    )) {
-      // Drain the handled API error so the request has been issued.
+    )
+
+    let caught: unknown
+    try {
+      await generator.next()
+    } catch (error) {
+      caught = error
     }
 
+    expect(caught).toBeInstanceOf(APIUserAbortError)
     expect(requestBody?.parallel_tool_calls).toBe(true)
     const metadata = requestBody?.client_metadata as
       | Record<string, unknown>
@@ -115,7 +117,7 @@ describe('queryModelCodex request', () => {
     expect(requestHeaders?.get(CODEX_WINDOW_ID_HEADER)).toBe(windowId)
   })
 
-  test('rethrows user cancellation instead of yielding an API error message', async () => {
+  test('rethrows a pre-existing user cancellation instead of yielding an API error message', async () => {
     process.env.CODEX_API_KEY = 'test-key'
     process.env.CODEX_LOGIN_METHOD = 'api_key'
     const abortController = new AbortController()
