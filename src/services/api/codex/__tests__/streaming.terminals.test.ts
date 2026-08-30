@@ -150,8 +150,8 @@ describe('streamCodexAttempt Responses terminal semantics', () => {
     expect(error).toBeInstanceOf(ProviderStreamError)
     expect((error as ProviderStreamError).code).toBe('server_is_overloaded')
     expect((error as ProviderStreamError).requestId).toBe('req_overloaded')
-    expect((error as ProviderStreamError).retryable).toBe(true)
-    expect(isTransientOpenAIError(error)).toBe(true)
+    expect((error as ProviderStreamError).retryable).toBe(false)
+    expect(isTransientOpenAIError(error)).toBe(false)
   })
 
   test('concatenates all completed output text parts into one block', async () => {
