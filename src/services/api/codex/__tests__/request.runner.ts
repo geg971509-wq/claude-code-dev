@@ -63,12 +63,18 @@ afterAll(() => {
 })
 
 describe('queryModelCodex request', () => {
-  test('projects canonical request metadata and identity headers', async () => {
+  test('projects canonical request metadata, identity headers, and output schema', async () => {
     process.env.CODEX_API_KEY = 'test-key'
     process.env.CODEX_LOGIN_METHOD = 'api_key'
     let requestBody: Record<string, unknown> | undefined
     let requestHeaders: Headers | undefined
     const abortController = new AbortController()
+    const outputSchema = {
+      type: 'object',
+      properties: { ok: { type: 'boolean' } },
+      required: ['ok'],
+      additionalProperties: false,
+    }
 
     const fetchOverride = (async (
       _input: Parameters<typeof fetch>[0],
@@ -85,7 +91,14 @@ describe('queryModelCodex request', () => {
       [] as unknown as SystemPrompt,
       [],
       abortController.signal,
-      { model: 'gpt-5.4', fetchOverride } as unknown as Options,
+      {
+        model: 'gpt-5.4',
+        fetchOverride,
+        outputFormat: {
+          type: 'json_schema',
+          schema: outputSchema,
+        },
+      } as unknown as Options,
     )
 
     let caught: unknown
@@ -97,6 +110,14 @@ describe('queryModelCodex request', () => {
 
     expect(caught).toBeInstanceOf(APIUserAbortError)
     expect(requestBody?.parallel_tool_calls).toBe(true)
+    expect(requestBody?.text).toEqual({
+      format: {
+        type: 'json_schema',
+        name: 'side_query_output',
+        schema: outputSchema,
+        strict: true,
+      },
+    })
     const metadata = requestBody?.client_metadata as
       | Record<string, unknown>
       | undefined
