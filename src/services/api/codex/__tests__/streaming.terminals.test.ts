@@ -6,10 +6,7 @@ import {
 import { isTransientOpenAIError } from '../../openai/openaiShared.js'
 import { streamCodexAttempt } from '../streaming.js'
 
-function makeResponse(
-  id = 'resp_1',
-  overrides: Record<string, unknown> = {},
-) {
+function makeResponse(id = 'resp_1', overrides: Record<string, unknown> = {}) {
   return {
     id,
     object: 'response',

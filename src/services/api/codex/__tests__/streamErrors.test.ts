@@ -17,9 +17,9 @@ describe('Codex Responses terminal error mapping', () => {
     expect(
       parseCodexResponsesRetryAfterMs('Please try again in 0.5 seconds.'),
     ).toBe(500)
-    expect(
-      parseCodexResponsesRetryAfterMs('Please try again in 125 ms.'),
-    ).toBe(125)
+    expect(parseCodexResponsesRetryAfterMs('Please try again in 125 ms.')).toBe(
+      125,
+    )
     expect(parseCodexResponsesRetryAfterMs('Try again later.')).toBeNull()
   })
 

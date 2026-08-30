@@ -667,9 +667,8 @@ export async function* streamCodexAttempt(params: {
           // at message_stop; idle/stall after text must stay retryable.
           if (
             !committed &&
-            (isSemanticOpenAIEvent(
-              out.event as BetaRawMessageStreamEvent,
-            ) || streamEvent.type === 'message_stop')
+            (isSemanticOpenAIEvent(out.event as BetaRawMessageStreamEvent) ||
+              streamEvent.type === 'message_stop')
           ) {
             committed = true
             if (params.emitPrimaryEvents !== false) {

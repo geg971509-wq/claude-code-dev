@@ -3,10 +3,7 @@ import {
   APIContextOverflowError,
   ProviderStreamError,
 } from '@ant/model-provider'
-import {
-  getCodexErrorStatus,
-  normalizeCodexError,
-} from '../errors.js'
+import { getCodexErrorStatus, normalizeCodexError } from '../errors.js'
 
 describe('Codex layered error normalization', () => {
   test('reads statusCode from provider-neutral errors', () => {
