@@ -498,6 +498,11 @@ export async function respawnHandler(
         logPath,
         cwd: job.cwd,
       })
+      // The relaunched child receives a fresh session ID and writes a new job
+      // record. Retire the old record only after spawn succeeds.
+      void unlink(join(getSessionJobsDir(), `${job.sessionId}.json`)).catch(
+        () => {},
+      )
       console.log(`respawned ${job.sessionId} (${result.engineUsed})`)
     } catch (error) {
       console.error(
