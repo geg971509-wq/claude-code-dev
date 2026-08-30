@@ -538,7 +538,7 @@ export async function respawnHandler(
     try {
       const engine = await getEngineForSession(job)
       const sessionName =
-        job.name ?? job.tmuxSessionName ?? `claude-bg-${job.sessionId.slice(0, 8)}`
+        job.tmuxSessionName ?? `claude-bg-${(job.jobId ?? job.sessionId).slice(0, 8)}`
       const logPath =
         job.logPath ?? join(getSessionsDir(), 'logs', `${sessionName}.log`)
       const result = await engine.start({
@@ -674,6 +674,19 @@ function stripManagedSessionId(args: string[]): string[] {
   return result
 }
 
+function appendPipedPrompt(args: string[], prompt: string): string[] {
+  const terminator = args.indexOf('--')
+  if (terminator >= 0) {
+    const existing = args.slice(terminator + 1).join(' ')
+    return [
+      ...args.slice(0, terminator),
+      '--',
+      existing ? `${existing}\n${prompt}` : prompt,
+    ]
+  }
+  return [...args, '--', prompt]
+}
+
 /**
  * `claude daemon bg [args]` — start a background session.
  *
@@ -770,7 +783,9 @@ export async function handleBgStart(args: string[]): Promise<void> {
 
   const sessionId = randomUUID()
   const jobId = sessionId.slice(0, 8)
-  const sessionName = displayName || `claude-bg-${jobId}`
+  // Keep the transport/session name filesystem- and tmux-safe. The optional
+  // user name is metadata only and must never become a shell/session target.
+  const sessionName = `claude-bg-${jobId}`
   const logPath = join(
     getClaudeConfigHomeDir(),
     'sessions',
@@ -779,15 +794,18 @@ export async function handleBgStart(args: string[]): Promise<void> {
   )
 
   try {
-    const launch: BgLaunch =
-      execIndex >= 0
-        ? { mode: 'exec', command: execCommand!.trim() }
-        : { mode: 'claude', args: filteredArgs }
     const managedArgs =
       execIndex >= 0
         ? []
         : ['--session-id', sessionId, ...stripManagedSessionId(filteredArgs)]
-    if (pipedInput) managedArgs.push('--', pipedInput)
+    if (pipedInput) {
+      const withInput = appendPipedPrompt(managedArgs, pipedInput)
+      managedArgs.splice(0, managedArgs.length, ...withInput)
+    }
+    const launch: BgLaunch =
+      execIndex >= 0
+        ? { mode: 'exec', command: execCommand!.trim() }
+        : { mode: 'claude', args: managedArgs }
 
     const result = await engine.start({
       sessionName,
@@ -809,7 +827,7 @@ export async function handleBgStart(args: string[]): Promise<void> {
       startedAt: Date.now(),
       updatedAt: Date.now(),
       kind: 'bg',
-      name: displayName || sessionName,
+      name: displayName,
       logPath: result.logPath,
       engine: result.engineUsed,
       tmuxSessionName: result.engineUsed === 'tmux' ? sessionName : undefined,
