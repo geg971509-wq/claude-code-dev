@@ -36,7 +36,10 @@ export class TmuxEngine implements BgEngine {
     }
     const launch =
       opts.launch?.mode === 'exec'
-        ? buildShellLaunch(opts.launch.command, env)
+        ? buildShellLaunch(
+            `(${opts.launch.command}) >> '${opts.logPath.replace(/'/g, "'\\''")}' 2>&1`,
+            env,
+          )
         : buildCliLaunch(opts.args, { env })
     const result = spawnSync(
       'tmux',
