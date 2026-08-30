@@ -663,8 +663,10 @@ function initializeEntrypoint(isNonInteractive: boolean): void {
   const cliArgs = process.argv.slice(2);
 
   // Check for MCP serve command (handle flags before mcp serve, e.g., --debug mcp serve)
-  const mcpIndex = cliArgs.indexOf('mcp');
-  if (mcpIndex !== -1 && cliArgs[mcpIndex + 1] === 'serve') {
+  const isMcpServe = cliArgs.some(
+    (arg, index) => arg === 'mcp' && cliArgs[index + 1] === 'serve',
+  );
+  if (isMcpServe) {
     process.env.CLAUDE_CODE_ENTRYPOINT = 'mcp';
     return;
   }

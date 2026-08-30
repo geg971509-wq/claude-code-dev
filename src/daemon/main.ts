@@ -48,6 +48,8 @@ interface WorkerState {
  *   attach  — attach to a background session
  *   logs    — show session logs
  *   kill    — kill a session
+ *   respawn — restart a background session with the current binary
+ *   rm      — remove stopped background job metadata
  */
 export async function daemonMain(args: string[]): Promise<void> {
   const subcommand = args[0] || 'status'
@@ -88,6 +90,16 @@ export async function daemonMain(args: string[]): Promise<void> {
       await bg.killHandler(args[1])
       break
     }
+    case 'respawn': {
+      const bg = await import('../cli/bg.js')
+      await bg.respawnHandler(args[1])
+      break
+    }
+    case 'rm': {
+      const bg = await import('../cli/bg.js')
+      await bg.rmHandler(args[1])
+      break
+    }
 
     case '--help':
     case '-h':
@@ -116,6 +128,8 @@ SUBCOMMANDS
   attach      Attach to a background session
   logs        Show session logs
   kill        Kill a session
+  respawn     Restart a background session with the current binary
+  rm          Remove stopped background job metadata (logs are kept)
   help        Show this help
 
 REPL

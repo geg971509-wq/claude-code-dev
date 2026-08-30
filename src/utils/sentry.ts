@@ -7,6 +7,7 @@
 
 import * as Sentry from '@sentry/node'
 import { logForDebugging } from './debug.js'
+import { isTelemetryOptedIn } from './privacyLevel.js'
 
 declare const BUILD_ENV: string | undefined
 
@@ -18,6 +19,11 @@ let initialized = false
  */
 export function initSentry(): void {
   if (initialized) {
+    return
+  }
+
+  if (!isTelemetryOptedIn()) {
+    logForDebugging('[sentry] Telemetry opt-in not enabled, skipping initialization')
     return
   }
 

@@ -3,6 +3,7 @@ import {
   getPrivacyLevel,
   isEssentialTrafficOnly,
   isTelemetryDisabled,
+  isTelemetryOptedIn,
   getEssentialTrafficOnlyReason,
 } from '../privacyLevel'
 
@@ -10,10 +11,12 @@ describe('getPrivacyLevel', () => {
   const originalDisableNonessential =
     process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
   const originalDisableTelemetry = process.env.DISABLE_TELEMETRY
+  const originalEnableTelemetry = process.env.CLAUDE_CODE_ENABLE_TELEMETRY
 
   afterEach(() => {
     delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
     delete process.env.DISABLE_TELEMETRY
+    delete process.env.CLAUDE_CODE_ENABLE_TELEMETRY
     if (originalDisableNonessential !== undefined) {
       process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC =
         originalDisableNonessential
@@ -21,11 +24,22 @@ describe('getPrivacyLevel', () => {
     if (originalDisableTelemetry !== undefined) {
       process.env.DISABLE_TELEMETRY = originalDisableTelemetry
     }
+    if (originalEnableTelemetry !== undefined) {
+      process.env.CLAUDE_CODE_ENABLE_TELEMETRY = originalEnableTelemetry
+    }
   })
 
-  test("returns 'default' when no env vars set", () => {
+  test("returns 'no-telemetry' when no env vars set", () => {
     delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
     delete process.env.DISABLE_TELEMETRY
+    delete process.env.CLAUDE_CODE_ENABLE_TELEMETRY
+    expect(getPrivacyLevel()).toBe('no-telemetry')
+  })
+
+  test("returns 'default' only with explicit telemetry opt-in", () => {
+    delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+    delete process.env.DISABLE_TELEMETRY
+    process.env.CLAUDE_CODE_ENABLE_TELEMETRY = '1'
     expect(getPrivacyLevel()).toBe('default')
   })
 
@@ -38,23 +52,42 @@ describe('getPrivacyLevel', () => {
   test("returns 'no-telemetry' when DISABLE_TELEMETRY is set", () => {
     delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
     process.env.DISABLE_TELEMETRY = '1'
+    process.env.CLAUDE_CODE_ENABLE_TELEMETRY = '1'
     expect(getPrivacyLevel()).toBe('no-telemetry')
+  })
+
+  test('treats falsey disable values as unset', () => {
+    process.env.CLAUDE_CODE_ENABLE_TELEMETRY = '1'
+    process.env.DISABLE_TELEMETRY = '0'
+    process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = 'false'
+    expect(getPrivacyLevel()).toBe('default')
   })
 
   test("'essential-traffic' takes priority over 'no-telemetry'", () => {
     process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
     process.env.DISABLE_TELEMETRY = '1'
+    process.env.CLAUDE_CODE_ENABLE_TELEMETRY = '1'
     expect(getPrivacyLevel()).toBe('essential-traffic')
   })
 })
 
 describe('isEssentialTrafficOnly', () => {
-  const original = process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+  const originalDisableNonessential =
+    process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+  const originalDisableTelemetry = process.env.DISABLE_TELEMETRY
+  const originalEnableTelemetry = process.env.CLAUDE_CODE_ENABLE_TELEMETRY
 
   afterEach(() => {
     delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
-    if (original !== undefined)
-      process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = original
+    delete process.env.DISABLE_TELEMETRY
+    delete process.env.CLAUDE_CODE_ENABLE_TELEMETRY
+    if (originalDisableNonessential !== undefined)
+      process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC =
+        originalDisableNonessential
+    if (originalDisableTelemetry !== undefined)
+      process.env.DISABLE_TELEMETRY = originalDisableTelemetry
+    if (originalEnableTelemetry !== undefined)
+      process.env.CLAUDE_CODE_ENABLE_TELEMETRY = originalEnableTelemetry
   })
 
   test("returns true for 'essential-traffic' level", () => {
@@ -62,9 +95,10 @@ describe('isEssentialTrafficOnly', () => {
     expect(isEssentialTrafficOnly()).toBe(true)
   })
 
-  test("returns false for 'default' level", () => {
+  test("returns false for explicitly enabled 'default' level", () => {
     delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
     delete process.env.DISABLE_TELEMETRY
+    process.env.CLAUDE_CODE_ENABLE_TELEMETRY = '1'
     expect(isEssentialTrafficOnly()).toBe(false)
   })
 
@@ -76,9 +110,22 @@ describe('isEssentialTrafficOnly', () => {
 })
 
 describe('isTelemetryDisabled', () => {
+  const originalDisableNonessential =
+    process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+  const originalDisableTelemetry = process.env.DISABLE_TELEMETRY
+  const originalEnableTelemetry = process.env.CLAUDE_CODE_ENABLE_TELEMETRY
+
   afterEach(() => {
     delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
     delete process.env.DISABLE_TELEMETRY
+    delete process.env.CLAUDE_CODE_ENABLE_TELEMETRY
+    if (originalDisableNonessential !== undefined)
+      process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC =
+        originalDisableNonessential
+    if (originalDisableTelemetry !== undefined)
+      process.env.DISABLE_TELEMETRY = originalDisableTelemetry
+    if (originalEnableTelemetry !== undefined)
+      process.env.CLAUDE_CODE_ENABLE_TELEMETRY = originalEnableTelemetry
   })
 
   test("returns true for 'no-telemetry' level", () => {
@@ -91,8 +138,33 @@ describe('isTelemetryDisabled', () => {
     expect(isTelemetryDisabled()).toBe(true)
   })
 
-  test("returns false for 'default' level", () => {
+  test('returns true without explicit opt-in', () => {
+    expect(isTelemetryDisabled()).toBe(true)
+  })
+
+  test("returns false for explicitly enabled 'default' level", () => {
+    process.env.CLAUDE_CODE_ENABLE_TELEMETRY = '1'
     expect(isTelemetryDisabled()).toBe(false)
+  })
+})
+
+describe('isTelemetryOptedIn', () => {
+  afterEach(() => {
+    delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+    delete process.env.DISABLE_TELEMETRY
+    delete process.env.CLAUDE_CODE_ENABLE_TELEMETRY
+  })
+
+  test('requires an explicit truthy enable flag', () => {
+    expect(isTelemetryOptedIn()).toBe(false)
+    process.env.CLAUDE_CODE_ENABLE_TELEMETRY = 'true'
+    expect(isTelemetryOptedIn()).toBe(true)
+  })
+
+  test('explicit disable flags override opt-in', () => {
+    process.env.CLAUDE_CODE_ENABLE_TELEMETRY = '1'
+    process.env.DISABLE_TELEMETRY = '1'
+    expect(isTelemetryOptedIn()).toBe(false)
   })
 })
 
