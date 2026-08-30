@@ -1377,6 +1377,7 @@ async function run(): Promise<CommanderCommand> {
       ),
     )
     .option('--agent <agent>', `Agent for the current session. Overrides the 'agent' setting.`)
+    .addOption(new Option('--routine <name>', 'Routine name for a long-lived background session').hideHelp())
     .option('--betas <betas...>', 'Beta headers to include in API requests (API key users only)')
     .option(
       '--fallback-model <model>',
