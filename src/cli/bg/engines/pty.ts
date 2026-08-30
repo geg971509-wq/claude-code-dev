@@ -25,7 +25,8 @@ async function waitForReady(path: string): Promise<number> {
         typeof value === 'object' &&
         value !== null &&
         'pid' in value &&
-        typeof value.pid === 'number'
+        Number.isSafeInteger(value.pid) &&
+        value.pid > 1
       )
         return value.pid
     }
@@ -55,6 +56,13 @@ export class PtyEngine implements BgEngine {
     const ackPath = join(hostDir, 'host.ready.ack')
     const configPath = join(hostDir, 'host.config.json')
     await mkdir(hostDir, { recursive: true, mode: 0o700 })
+    // A crashed PTY host can leave handshake markers behind. Remove them
+    // before spawning a new host so waitForReady cannot accept an old PID
+    // and the new host cannot mistake a stale ack for its own startup.
+    await Promise.all([
+      rm(readyPath, { force: true }),
+      rm(ackPath, { force: true }),
+    ])
 
     const env: NodeJS.ProcessEnv = {
       ...opts.env,
