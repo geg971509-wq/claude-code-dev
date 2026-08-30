@@ -488,6 +488,18 @@ export async function respawnHandler(
         continue
       }
       await waitForSessionExit(live)
+      if (
+        resolveSessionEngine(live) !== 'tmux' &&
+        isProcessRunning(live.pid)
+      ) {
+        const forceStopped = signalSession(live, 'SIGKILL')
+        if (!forceStopped.ok) {
+          console.error(`Cannot respawn ${live.sessionId}: ${forceStopped.reason}`)
+          failures++
+          continue
+        }
+        await waitForSessionExit(live)
+      }
       void unlink(join(getSessionsDir(), `${live.pid}.json`)).catch(() => {})
     }
 
