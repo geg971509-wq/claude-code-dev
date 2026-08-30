@@ -8,7 +8,10 @@ import {
   parseRetryAfterMs,
 } from '@ant/model-provider'
 import { getOrCreateUserID } from '../../../utils/config.js'
-import { isChatGPTAuthEnabled } from './chatgptAuth.js'
+import {
+  isChatGPTAuthEnabled,
+  refreshChatGPTAuthAfterUnauthorized,
+} from './chatgptAuth.js'
 import { getOpenAIClient } from './client.js'
 import { applyKimiAuthToEnv, isKimiAuthEnabled } from './kimiAuth.js'
 import { getOfficialOpenAIPromptCacheKey } from './openaiShared.js'
@@ -51,6 +54,17 @@ export type PreparedOpenAIStreamRequest = {
   createAttempt: (signal: AbortSignal) => Promise<OpenAIStreamAttempt>
 }
 
+function getHttpErrorStatus(error: unknown): number | null {
+  if (
+    error &&
+    typeof error === 'object' &&
+    typeof (error as { status?: unknown }).status === 'number'
+  ) {
+    return (error as { status: number }).status
+  }
+  return null
+}
+
 export function prepareOpenAIStreamRequest(
   request: OpenAIStreamRequest,
 ): PreparedOpenAIStreamRequest {
@@ -89,23 +103,34 @@ export function prepareOpenAIStreamRequest(
     promptCacheKey,
     createAttempt: async signal => {
       if (useChatGPTResponses) {
-        return createChatGPTResponsesStream({
-          request: buildChatGPTResponsesRequest({
-            model: request.model,
-            messages: request.messages,
-            tools: request.tools,
-            toolChoice: request.toolChoice,
-            reasoningEffort: responsesReasoningEffort,
-            promptCacheKey,
+        const createChatGPTAttempt = () =>
+          createChatGPTResponsesStream({
+            request: buildChatGPTResponsesRequest({
+              model: request.model,
+              messages: request.messages,
+              tools: request.tools,
+              toolChoice: request.toolChoice,
+              reasoningEffort: responsesReasoningEffort,
+              promptCacheKey,
+              sessionId,
+              // Inject here so buildChatGPTResponsesRequest stays I/O-free.
+              installationId: getOrCreateUserID(),
+              outputFormat: request.outputFormat,
+            }),
+            signal,
             sessionId,
-            // Inject here so buildChatGPTResponsesRequest stays I/O-free.
-            installationId: getOrCreateUserID(),
-            outputFormat: request.outputFormat,
-          }),
-          signal,
-          sessionId,
-          fetchOverride: request.fetchOverride,
-        })
+            fetchOverride: request.fetchOverride,
+          })
+
+        try {
+          return await createChatGPTAttempt()
+        } catch (error) {
+          if (getHttpErrorStatus(error) !== 401) {
+            throw error
+          }
+          await refreshChatGPTAuthAfterUnauthorized()
+          return createChatGPTAttempt()
+        }
       }
 
       if (useOfficialResponses) {
