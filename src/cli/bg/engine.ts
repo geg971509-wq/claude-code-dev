@@ -35,6 +35,9 @@ export interface SessionEntry {
   routine?: string
   intent?: string
   worktreePath?: string
+  worktreeBranch?: string
+  worktreeName?: string
+  worktreeHookBased?: boolean
   worktreeOwnershipToken?: string
   exitCode?: number | null
   error?: string
@@ -46,7 +49,9 @@ export interface BgStartOptions {
   env: Record<string, string | undefined>
   logPath: string
   cwd: string
-  launch?: { mode: 'claude' } | { mode: 'exec'; command: string }
+  launch?:
+    | { mode: 'claude' }
+    | { mode: 'exec'; command: string }
   routine?: string
   intent?: string
   sessionId?: string
