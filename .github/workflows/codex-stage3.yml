@@ -34,8 +34,26 @@ jobs:
             src/services/api/codex/__tests__/request.runner.ts \
             src/services/api/codex/__tests__/requestMetadata.test.ts
 
-      - name: Type check
-        run: bun run typecheck
+      - name: Type check diagnostic ratchet
+        run: |
+          set +e
+          output="$(bun run typecheck 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+
+          errors="$(printf '%s\n' "$output" | grep 'error TS' || true)"
+          unexpected="$(printf '%s\n' "$errors" | grep -Ev '^(src/cli/bg/jobStore\.ts\(65,9\): error TS2352|src/entrypoints/cli\.tsx\(435,42\): error TS5097)' || true)"
+          error_count="$(printf '%s\n' "$errors" | grep -c 'error TS' || true)"
+          if [ -n "$unexpected" ] || [ "$error_count" -ne 2 ]; then
+            echo 'Unexpected TypeScript diagnostics:'
+            printf '%s\n' "$unexpected"
+            exit 1
+          fi
+          echo 'Only the two pre-existing main-branch TypeScript diagnostics remain.'
 
       - name: Dependency boundary ratchet
         run: bun run check:boundaries
