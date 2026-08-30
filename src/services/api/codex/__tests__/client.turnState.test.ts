@@ -26,7 +26,7 @@ describe('Codex turn-state routing', () => {
               ? { [CODEX_TURN_STATE_HEADER]: 'turn-state-1' }
               : {},
         })
-      }) as typeof fetch,
+      }) as unknown as typeof fetch,
     })
 
     await client.responses.create({ model: 'gpt-5.6-sol', input: [] })
@@ -52,7 +52,7 @@ describe('Codex turn-state routing', () => {
             [CODEX_TURN_STATE_HEADER]: `turn-state-${requestCount}`,
           },
         })
-      }) as typeof fetch,
+      }) as unknown as typeof fetch,
     })
 
     await client.responses.create({ model: 'gpt-5.6-sol', input: [] })
