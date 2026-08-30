@@ -301,8 +301,12 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // Fast-path for `--bg`/`--background` shortcut → daemon bg.
-  if (feature('BG_SESSIONS') && (args.includes('--bg') || args.includes('--background'))) {
+  // Fast-path for `--bg`/`--background` shortcut → daemon bg. Arguments after
+  // `--` are literal prompt text, so they must not activate or be altered by
+  // the background shortcut (e.g. `claude -- --bg`).
+  const bgTerminator = args.indexOf('--');
+  const bgScan = bgTerminator >= 0 ? args.slice(0, bgTerminator) : args;
+  if (feature('BG_SESSIONS') && bgScan.some(a => a === '--bg' || a === '--background')) {
     profileCheckpoint('cli_daemon_path');
     await ensureFastPathSettingsLoaded();
     const { enableConfigs } = await import('../utils/config.js');
@@ -310,7 +314,12 @@ async function main(): Promise<void> {
     const { setShellIfWindows } = await import('../utils/windowsPaths.js');
     setShellIfWindows();
     const bg = await import('../cli/bg.js');
-    await bg.handleBgStart(args.filter(a => a !== '--bg' && a !== '--background'));
+    await bg.handleBgStart(
+      args.filter((arg, index) => {
+        if (bgTerminator >= 0 && index > bgTerminator) return true;
+        return arg !== '--bg' && arg !== '--background';
+      }),
+    );
     return;
   }
 
