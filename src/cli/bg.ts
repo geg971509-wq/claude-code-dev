@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { isProcessRunning } from '../utils/genericProcessUtils.js'
 import { jsonParse } from '../utils/slowOperations.js'
+import { peekForStdinData } from '../utils/process.js'
 import { selectEngine } from './bg/engines/index.js'
 import type { BgEngine, SessionEntry } from './bg/engine.js'
 
@@ -574,6 +575,49 @@ export async function rmHandler(target: string | undefined): Promise<void> {
   }
 }
 
+const MAX_BACKGROUND_STDIN_BYTES = 256 * 1024
+
+/**
+ * Read a piped prompt before detaching the background child.
+ *
+ * Background engines intentionally do not inherit stdin: detached children
+ * must never compete with the parent CLI for terminal input. When the caller
+ * supplies a pipe, consume it here and pass the resulting prompt as a normal
+ * positional argument instead.
+ */
+async function readBackgroundStdin(): Promise<string> {
+  if (process.stdin.isTTY) return ''
+
+  let data = ''
+  let truncated = false
+  const onData = (chunk: string | Buffer): void => {
+    const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+    if (data.length >= MAX_BACKGROUND_STDIN_BYTES) {
+      truncated = true
+      return
+    }
+    const remaining = MAX_BACKGROUND_STDIN_BYTES - data.length
+    if (text.length > remaining) {
+      data += text.slice(0, remaining)
+      truncated = true
+      return
+    }
+    data += text
+  }
+
+  process.stdin.setEncoding('utf8')
+  process.stdin.on('data', onData)
+  const timedOut = await peekForStdinData(process.stdin, 3_000)
+  process.stdin.off('data', onData)
+
+  if (timedOut && data.length === 0) return ''
+  if (truncated) {
+    console.error(
+      `Warning: piped background input exceeds ${MAX_BACKGROUND_STDIN_BYTES} bytes; truncated.`,
+    )
+  }
+  return data.replace(/\r?\n$/, '')
+}
 /**
  * `claude daemon bg [args]` — start a background session.
  *
@@ -583,14 +627,28 @@ export async function rmHandler(target: string | undefined): Promise<void> {
 export async function handleBgStart(args: string[]): Promise<void> {
   const engine = await selectEngine()
 
-  // Strip --bg/--background from args (for backward-compat shortcut)
-  const filteredArgs = args.filter(a => a !== '--bg' && a !== '--background')
+  // Strip dispatch-only flags before spawning the child. In particular,
+  // --pipe is a background launcher hint, not a main-session option.
+  const requestedPipe = args.includes('--pipe')
+  const filteredArgs = args.filter(
+    a => a !== '--bg' && a !== '--background' && a !== '--pipe',
+  )
+  const pipedInput = await readBackgroundStdin()
+
+  // Reference behavior reads non-TTY stdin in the parent and appends it after
+  // the user's explicit arguments. `--` keeps piped text from being parsed as
+  // another option by Commander in the child process.
+  if (pipedInput) {
+    filteredArgs.push('--', pipedInput)
+  }
 
   // Engines without interactive TTY input (e.g. detached) require -p/--print
   // or piped input. Tmux provides a virtual terminal so it works without -p.
   if (
     !engine.supportsInteractiveInput &&
-    !filteredArgs.some(a => a === '-p' || a === '--print' || a === '--pipe')
+    !requestedPipe &&
+    !pipedInput &&
+    !filteredArgs.some(a => a === '-p' || a === '--print')
   ) {
     console.error(
       'Error: Background sessions with detached engine require -p/--print flag.\n' +
