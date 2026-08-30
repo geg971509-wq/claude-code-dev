@@ -115,7 +115,7 @@ describe('Codex Responses terminal error mapping', () => {
     expect(getProviderErrorStatus(entitlement)).toBe(403)
   })
 
-  test('maps overload signals and unknown provider failures as retryable', () => {
+  test('keeps overload terminal but retries unknown provider failures', () => {
     for (const code of ['server_is_overloaded', 'slow_down']) {
       const error = createCodexResponsesStreamError({
         response: {
@@ -126,7 +126,7 @@ describe('Codex Responses terminal error mapping', () => {
       })
 
       expect(error).toBeInstanceOf(ProviderStreamError)
-      expect((error as ProviderStreamError).retryable).toBe(true)
+      expect((error as ProviderStreamError).retryable).toBe(false)
       expect(getProviderErrorStatus(error)).toBe(503)
     }
 
