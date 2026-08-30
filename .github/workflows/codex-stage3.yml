@@ -1,0 +1,52 @@
+name: Codex Stage 3 Verification
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        env:
+          CLAUDE_CODE_SKIP_CHROME_MCP_SETUP: "1"
+        run: bun install --frozen-lockfile
+
+      - name: Check stage formatting
+        run: |
+          bunx biome ci \
+            src/services/api/codex/client.ts \
+            src/services/api/codex/index.ts \
+            src/services/api/codex/requestMetadata.ts \
+            src/services/api/codex/__tests__/client.identity.test.ts \
+            src/services/api/codex/__tests__/request.runner.ts \
+            src/services/api/codex/__tests__/requestMetadata.test.ts
+
+      - name: Type check
+        run: bun run typecheck
+
+      - name: Dependency boundary ratchet
+        run: bun run check:boundaries
+
+      - name: Run Codex request lifecycle tests
+        run: |
+          bun test \
+            src/services/api/codex/__tests__/client.identity.test.ts \
+            src/services/api/codex/__tests__/client.turnState.test.ts \
+            src/services/api/codex/__tests__/requestMetadata.test.ts \
+            src/services/api/codex/__tests__/request.test.ts
+
+      - name: Build
+        run: bun run build:vite
