@@ -121,7 +121,12 @@ export async function listLiveSessions(): Promise<SessionEntry[]> {
           }).status === 0
         : isManagedProcessRunning(job)
     if (live) sessions.push(job)
-    else if (job.status === 'starting' || job.status === 'running')
+    else if (
+      job.status === 'starting' ||
+      job.status === 'running' ||
+      job.status === 'idle' ||
+      job.status === 'waiting'
+    )
       void writeJobRecord({ ...job, status: 'exited', updatedAt: Date.now() }).catch(() => {})
   }
 
@@ -144,6 +149,18 @@ export function findSession(
       s.pid === asNum ||
       (s.name && s.name === target),
   )
+}
+
+/** Resolve a live/stored session with the reference's unique-prefix rules. */
+function resolveSessionTarget(
+  sessions: SessionEntry[],
+  target: string,
+): SessionEntry | undefined {
+  const resolved = resolveJobTarget(sessions as BgJobRecord[], target)
+  if ('sessionId' in resolved) return resolved
+  console.error(formatJobTargetError(resolved))
+  process.exitCode = 1
+  return undefined
 }
 
 function formatTime(ts: number): string {
@@ -254,17 +271,23 @@ export async function psHandler(_args: string[]): Promise<void> {
  */
 export async function logsHandler(target: string | undefined): Promise<void> {
   const sessions = await listLiveSessions()
+  const storedJobs = await listStoredJobs()
+  const candidates = [...sessions]
+  for (const job of storedJobs) {
+    if (!candidates.some(session => session.sessionId === job.sessionId))
+      candidates.push(job)
+  }
 
   if (!target) {
-    if (sessions.length === 0) {
-      console.log('No active sessions.')
+    if (candidates.length === 0) {
+      console.log('No sessions with logs.')
       return
     }
-    if (sessions.length === 1) {
-      target = sessions[0]!.sessionId
+    if (candidates.length === 1) {
+      target = candidates[0]!.sessionId
     } else {
-      console.log('Multiple sessions active. Specify one:')
-      for (const s of sessions) {
+      console.log('Multiple sessions available. Specify one:')
+      for (const s of candidates) {
         const label = s.name ? `${s.name} (${s.sessionId})` : s.sessionId
         console.log(`  ${label}  PID=${s.pid}`)
       }
@@ -272,10 +295,8 @@ export async function logsHandler(target: string | undefined): Promise<void> {
     }
   }
 
-  const session = findSession(sessions, target)
+  const session = resolveSessionTarget(candidates, target)
   if (!session) {
-    console.error(`Session not found: ${target}`)
-    process.exitCode = 1
     return
   }
 
@@ -326,10 +347,8 @@ export async function attachHandler(target: string | undefined): Promise<void> {
     }
   }
 
-  const session = findSession(sessions, target)
+  const session = resolveSessionTarget(sessions, target)
   if (!session) {
-    console.error(`Session not found: ${target}`)
-    process.exitCode = 1
     return
   }
 
@@ -381,10 +400,8 @@ export async function killHandler(target: string | undefined): Promise<void> {
     return
   }
 
-  const session = findSession(sessions, target)
+  const session = resolveSessionTarget(sessions, target)
   if (!session) {
-    console.error(`Session not found: ${target}`)
-    process.exitCode = 1
     return
   }
 
@@ -564,13 +581,19 @@ export async function respawnHandler(
         job.tmuxSessionName ?? `claude-bg-${(job.jobId ?? job.sessionId).slice(0, 8)}`
       const logPath =
         job.logPath ?? join(getSessionsDir(), 'logs', `${sessionName}.log`)
+      const respawnArgs =
+        job.launch?.mode === 'exec' ? [] : buildRespawnArgs(job)
+      const respawnLaunch =
+        job.launch?.mode === 'exec'
+          ? job.launch
+          : { mode: 'claude' as const, args: respawnArgs }
       const result = await engine.start({
         sessionName,
-        args: job.args ?? [],
+        args: respawnArgs,
         env: { ...process.env },
         logPath,
         cwd: job.cwd,
-        launch: job.launch ?? { mode: 'claude' },
+        launch: respawnLaunch,
         routine: job.routine,
         intent: job.intent,
         sessionId: job.sessionId,
@@ -695,6 +718,151 @@ function stripManagedSessionId(args: string[]): string[] {
     result.push(arg)
   }
   return result
+}
+
+// Commander options that consume one or more argv values. These are used
+// only when reconstructing a respawn command: bare positional text is the
+// original prompt and must not be submitted a second time after --resume.
+const CLAUDE_SINGLE_VALUE_FLAGS = new Set([
+  '--agent',
+  '--agents',
+  '--append-system-prompt',
+  '--append-system-prompt-file',
+  '--autocompact',
+  '--fallback-model',
+  '--from-pr',
+  '--input-format',
+  '--max-budget-usd',
+  '--max-turns',
+  '--model',
+  '--name',
+  '-n',
+  '--output-format',
+  '--permission-mode',
+  '--permission-prompt-tool',
+  '--prefill',
+  '--remote-bin',
+  '--resume',
+  '--sdk-url',
+  '--session-id',
+  '--setting-sources',
+  '--settings',
+  '--system-prompt',
+  '--system-prompt-file',
+  '--thinking',
+  '--workload',
+])
+
+const CLAUDE_VARIADIC_VALUE_FLAGS = new Set([
+  '--add-dir',
+  '--betas',
+  '--channels',
+  '--dangerously-load-development-channels',
+  '--file',
+  '--mcp-config',
+  '--plugin-dir',
+])
+
+const CLAUDE_OPTIONAL_VALUE_FLAGS = new Set([
+  '--print',
+  '-p',
+  '--teleport',
+  '--remote',
+  '--remote-control',
+  '--rc',
+  '--worktree',
+])
+
+function isFlag(value: string): boolean {
+  return value.length > 1 && value.startsWith('-')
+}
+
+/** Return the initial prompt represented by a Claude launch argv. */
+function extractInitialPrompt(args: string[]): string | undefined {
+  const terminator = args.indexOf('--')
+  if (terminator >= 0) {
+    const prompt = args.slice(terminator + 1).join(' ').trim()
+    return prompt || undefined
+  }
+
+  let prompt: string | undefined
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!
+    if (isFlag(arg)) {
+      if (arg.includes('=')) continue
+      if (CLAUDE_SINGLE_VALUE_FLAGS.has(arg)) {
+        index++
+        continue
+      }
+      if (CLAUDE_VARIADIC_VALUE_FLAGS.has(arg)) {
+        while (index + 1 < args.length && !isFlag(args[index + 1]!)) index++
+        continue
+      }
+      if (arg === '--print' || arg === '-p') {
+        if (index + 1 < args.length && !isFlag(args[index + 1]!))
+          prompt = args[++index]
+        continue
+      }
+      if (CLAUDE_OPTIONAL_VALUE_FLAGS.has(arg)) {
+        if (index + 1 < args.length && !isFlag(args[index + 1]!)) index++
+        continue
+      }
+      continue
+    }
+    prompt = arg
+  }
+  return prompt?.trim() || undefined
+}
+
+/**
+ * Build launch args for a respawn. Existing transcripts must be resumed,
+ * not reopened with --session-id (which is rejected once the transcript
+ * exists), and the original prompt must not be submitted again.
+ */
+function buildRespawnArgs(job: BgJobRecord): string[] {
+  const source = job.args ?? []
+  // A routine created without an initial prompt is intentionally an idle
+  // session with no transcript to resume. Recreate its original launch and
+  // keep the managed session ID in place for the fresh routine.
+  if (job.routine && !job.intent) return stripManagedSessionId(source)
+  const result: string[] = []
+  for (let index = 0; index < source.length; index++) {
+    const arg = source[index]!
+    if (arg === '--') break
+    if (arg === '--session-id' || arg === '--resume') {
+      if (source[index + 1] !== undefined) index++
+      continue
+    }
+    if (arg === '--continue' || arg === '--fork-session') continue
+    if (arg.startsWith('--session-id=') || arg.startsWith('--resume=')) continue
+
+    if (!isFlag(arg)) {
+      // The launch's initial prompt is intentionally omitted. Any value that
+      // belongs to a recognized flag was consumed in the flag branch below.
+      continue
+    }
+    result.push(arg)
+    if (arg.includes('=')) continue
+    if (CLAUDE_SINGLE_VALUE_FLAGS.has(arg)) {
+      if (source[index + 1] !== undefined) result.push(source[++index]!)
+      continue
+    }
+    if (CLAUDE_VARIADIC_VALUE_FLAGS.has(arg)) {
+      while (index + 1 < source.length && !isFlag(source[index + 1]!))
+        result.push(source[++index]!)
+      continue
+    }
+    if (CLAUDE_OPTIONAL_VALUE_FLAGS.has(arg)) {
+      // --print/-p's optional value is an initial prompt. Other optional
+      // values (e.g. --worktree name) are configuration and are retained.
+      if ((arg === '--print' || arg === '-p') && source[index + 1] && !isFlag(source[index + 1]!)) {
+        index++
+      } else if (source[index + 1] && !isFlag(source[index + 1]!)) {
+        result.push(source[++index]!)
+      }
+    }
+  }
+  return ['--resume', job.sessionId, ...result]
 }
 
 function appendPipedPrompt(args: string[], prompt: string): string[] {
@@ -855,6 +1023,8 @@ export async function handleBgStart(args: string[]): Promise<void> {
       execIndex >= 0
         ? { mode: 'exec', command: execCommand!.trim() }
         : { mode: 'claude', args: managedArgs }
+    const launchIntent =
+      execCommand?.trim() || pipedInput || extractInitialPrompt(filteredArgs)
 
     const result = await engine.start({
       sessionName,
@@ -864,7 +1034,7 @@ export async function handleBgStart(args: string[]): Promise<void> {
       cwd: process.cwd(),
       launch,
       routine,
-      intent: execCommand?.trim() || (pipedInput || undefined),
+      intent: launchIntent,
       sessionId,
     })
 
@@ -881,7 +1051,7 @@ export async function handleBgStart(args: string[]): Promise<void> {
       engine: result.engineUsed,
       tmuxSessionName: result.engineUsed === 'tmux' ? sessionName : undefined,
       routine,
-      intent: execCommand?.trim() || (pipedInput || undefined),
+      intent: launchIntent,
       launch,
       args: managedArgs,
       status: routine && !execCommand && !pipedInput ? 'idle' : 'starting',
