@@ -366,9 +366,7 @@ async function refreshAndPersist(
   return refreshed
 }
 
-function startRefresh(
-  tokens: ChatGPTAuthTokens,
-): Promise<ChatGPTAuthTokens> {
+function startRefresh(tokens: ChatGPTAuthTokens): Promise<ChatGPTAuthTokens> {
   if (refreshInFlight) return refreshInFlight
   refreshInFlight = refreshAndPersist(tokens).finally(() => {
     refreshInFlight = null
@@ -434,10 +432,7 @@ export async function refreshChatGPTAuthAfterUnauthorized(
     )
   }
 
-  if (
-    rejectedAccessToken &&
-    tokens.accessToken !== rejectedAccessToken
-  ) {
+  if (rejectedAccessToken && tokens.accessToken !== rejectedAccessToken) {
     logForDebugging(
       '[OpenAI] Reusing ChatGPT credentials rotated by another request after 401',
     )
