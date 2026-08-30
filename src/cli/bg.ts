@@ -49,7 +49,9 @@ export function findSession(
   sessions: SessionEntry[],
   target: string,
 ): SessionEntry | undefined {
-  const asNum = parseInt(target, 10)
+  // Do not let parseInt's prefix parsing turn an invalid target such as
+  // `123abc` into a valid PID lookup.
+  const asNum = /^\d+$/.test(target) ? Number(target) : Number.NaN
   return sessions.find(
     s =>
       s.sessionId === target ||
