@@ -38,6 +38,10 @@ if (isEnvTruthy(process.env.CLAUDE_CODE_FORCE_INTERACTIVE)) {
 // Bugfix for corepack auto-pinning, which adds yarnpkg to peoples' package.jsons
 process.env.COREPACK_ENABLE_AUTO_PIN = '0';
 
+// Prevent Windows from resolving executables from the current directory.
+// This must be set before any fast-path can spawn a child process.
+process.env.NoDefaultCurrentDirectoryInExePath = '1';
+
 // Set max heap size for child processes in CCR environments (containers have 16GB)
 if (process.env.CLAUDE_CODE_REMOTE === 'true') {
   const existing = process.env.NODE_OPTIONS || '';
@@ -70,10 +74,18 @@ if (feature('ABLATION_BASELINE') && process.env.CLAUDE_CODE_ABLATION_BASELINE) {
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
-  // Fast-path for --version/-v: zero module loading needed
-  if (args.length === 1 && (args[0] === '--version' || args[0] === '-v' || args[0] === '-V')) {
+  // Fast-path for --version/-v: zero module loading needed. The official CLI
+  // accepts `--verbose` as a second argument and prints the build commit.
+  if (
+    (args.length === 1 || (args.length === 2 && args[1] === '--verbose')) &&
+    (args[0] === '--version' || args[0] === '-v' || args[0] === '-V')
+  ) {
     // MACRO.VERSION is inlined at build time
     console.log(`${MACRO.VERSION} (Claude Code)`);
+    if (args.length === 2) {
+      const commit = process.env.CLAUDE_CODE_GIT_SHA;
+      if (commit) console.log(`Commit: ${commit}`);
+    }
     return;
   }
 
@@ -85,6 +97,17 @@ async function main(): Promise<void> {
   if (args[0] === '--bg-pty-host') {
     const configPath = args[1];
     if (!configPath) throw new Error('--bg-pty-host requires a config path.');
+    try {
+      await ensureFastPathSettingsLoaded();
+    } catch (error) {
+      // The supervisor already performed its policy check. A settings read
+      // failure must not strand the PTY host before it can acknowledge exit.
+      process.stderr.write(
+        `ptyHost: settings bootstrap threw (continuing; supervisor already gated): ${
+          error instanceof Error ? error.stack ?? error.message : String(error)
+        }\n`,
+      );
+    }
     const { runPtyHostFromConfig } = await import('../cli/bg/ptyHost.js');
     process.exitCode = await runPtyHostFromConfig(configPath);
     return;
@@ -182,13 +205,7 @@ async function main(): Promise<void> {
   // workers are lean. If a worker kind needs configs/auth (assistant will),
   // it calls them inside its run() fn.
   if (args[0] === '--daemon-worker' || args[0]?.startsWith('--daemon-worker=')) {
-    if (!feature('DAEMON')) {
-      console.error(
-        'Error: --daemon-worker requires DAEMON feature to be enabled. Set FEATURE_DAEMON=1 or add DAEMON to DEFAULT_BUILD_FEATURES.',
-      );
-      process.exitCode = 1;
-      return;
-    }
+    await ensureFastPathSettingsLoaded();
     const kind = args[0] === '--daemon-worker' ? args[1] : args[0].split('=')[1];
     const { runDaemonWorker } = await import('../daemon/workerRegistry.js');
     await runDaemonWorker(kind);
@@ -208,6 +225,7 @@ async function main(): Promise<void> {
       args[0] === 'bridge')
   ) {
     profileCheckpoint('cli_bridge_path');
+    await ensureFastPathSettingsLoaded();
     const { enableConfigs } = await import('../utils/config.js');
     enableConfigs();
 
@@ -250,6 +268,7 @@ async function main(): Promise<void> {
   // subcommands under one namespace.
   if ((feature('DAEMON') || feature('BG_SESSIONS')) && args[0] === 'daemon') {
     profileCheckpoint('cli_daemon_path');
+    await ensureFastPathSettingsLoaded();
     const { enableConfigs } = await import('../utils/config.js');
     enableConfigs();
     const { setShellIfWindows } = await import('../utils/windowsPaths.js');
@@ -285,6 +304,7 @@ async function main(): Promise<void> {
   // Fast-path for `--bg`/`--background` shortcut → daemon bg.
   if (feature('BG_SESSIONS') && (args.includes('--bg') || args.includes('--background'))) {
     profileCheckpoint('cli_daemon_path');
+    await ensureFastPathSettingsLoaded();
     const { enableConfigs } = await import('../utils/config.js');
     enableConfigs();
     const { setShellIfWindows } = await import('../utils/windowsPaths.js');
@@ -294,14 +314,30 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Backward-compat: ps/logs/attach/kill → daemon <sub> (deprecated)
+  // `claude stop <id>` is the reference CLI's graceful background-session
+  // shortcut; daemon stop remains reserved for the supervisor.
+  if (feature('BG_SESSIONS') && args[0] === 'stop') {
+    profileCheckpoint('cli_daemon_path');
+    await ensureFastPathSettingsLoaded();
+    const { enableConfigs } = await import('../utils/config.js');
+    enableConfigs();
+    const bg = await import('../cli/bg.js');
+    await bg.stopHandler(args[1]);
+    return;
+  }
+
+  // Backward-compat: ps/logs/attach/kill → daemon <sub> (deprecated).
   if (
     feature('BG_SESSIONS') &&
-    (args[0] === 'ps' || args[0] === 'logs' || args[0] === 'attach' || args[0] === 'kill')
+    (args[0] === 'ps' ||
+      args[0] === 'logs' ||
+      args[0] === 'attach' ||
+      args[0] === 'kill')
   ) {
     const mapped = args[0] === 'ps' ? 'status' : args[0];
     console.error(`[deprecated] Use: claude daemon ${mapped}${args[1] ? ' ' + args[1] : ''}`);
     profileCheckpoint('cli_daemon_path');
+    await ensureFastPathSettingsLoaded();
     const { enableConfigs } = await import('../utils/config.js');
     enableConfigs();
     const { setShellIfWindows } = await import('../utils/windowsPaths.js');
@@ -367,14 +403,41 @@ async function main(): Promise<void> {
     process.env.CLAUDE_CODE_SIMPLE = '1';
   }
 
-  // No special flags detected, load and run the full CLI
+  // No special flags detected, load and run the full CLI. Only the official
+  // NON_REPL_SUBCOMMANDS set bypasses early input capture; other commands may
+  // still be interactive even when they have a subcommand-shaped argv.
   const { startCapturingEarlyInput } = await import('../utils/earlyInput.js');
-  startCapturingEarlyInput();
+  const nonReplSubcommands = new Set(['update', 'upgrade', 'doctor']);
+  const mcpIndex = args.indexOf('mcp');
+  const isMcpServe = mcpIndex !== -1 && args[mcpIndex + 1] === 'serve';
+  if (!nonReplSubcommands.has(args[0] ?? '') && !isMcpServe) {
+    startCapturingEarlyInput();
+  }
   profileCheckpoint('cli_before_main_import');
-  const { main: cliMain } = await import('../main.jsx');
+  const { main: cliMain } = await import('../main.tsx');
   profileCheckpoint('cli_after_main_import');
   await cliMain();
   profileCheckpoint('cli_after_main_complete');
+}
+
+/**
+ * Start the same policy/settings prefetch used by the official internal
+ * fast paths. The normal REPL gets this from main.tsx module evaluation; the
+ * lightweight daemon/PTY paths bypass that module and must explicitly load it.
+ */
+async function ensureFastPathSettingsLoaded(): Promise<void> {
+  const [{ startMdmRawRead }, mdm, keychain] = await Promise.all([
+    import('../utils/settings/mdm/rawRead.js'),
+    import('../utils/settings/mdm/settings.js'),
+    import('../utils/secureStorage/keychainPrefetch.js'),
+  ]);
+  startMdmRawRead();
+  keychain.startKeychainPrefetch();
+  mdm.startMdmSettingsLoad();
+  await Promise.all([
+    mdm.ensureMdmSettingsLoaded(),
+    keychain.ensureKeychainPrefetchCompleted(),
+  ]);
 }
 
 await main();

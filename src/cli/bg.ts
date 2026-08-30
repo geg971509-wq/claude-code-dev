@@ -1,6 +1,7 @@
 import { readdir, readFile, unlink } from 'fs/promises'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
+import { spawnSync } from 'node:child_process'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { isProcessRunning } from '../utils/genericProcessUtils.js'
 import { jsonParse } from '../utils/slowOperations.js'
@@ -71,6 +72,49 @@ function resolveSessionEngine(
 ): 'tmux' | 'detached' | 'pty' {
   if (session.engine) return session.engine
   return session.tmuxSessionName ? 'tmux' : 'detached'
+}
+
+/**
+ * Stop a background session without ever passing an untrusted/placeholder
+ * PID to process.kill(). Tmux sessions are addressed by their tmux name;
+ * process.kill(0) would target the current process group and can terminate
+ * the CLI that is handling the command.
+ */
+function signalSession(
+  session: SessionEntry,
+  signal: NodeJS.Signals,
+): { ok: boolean; reason?: string } {
+  const engine = resolveSessionEngine(session)
+
+  if (engine === 'tmux' && session.tmuxSessionName) {
+    const result = spawnSync(
+      'tmux',
+      ['kill-session', '-t', session.tmuxSessionName],
+      { stdio: 'ignore' },
+    )
+    if (result.error) return { ok: false, reason: result.error.message }
+    return result.status === 0
+      ? { ok: true }
+      : { ok: false, reason: 'tmux session is no longer available' }
+  }
+
+  if (
+    !Number.isSafeInteger(session.pid) ||
+    session.pid <= 1 ||
+    session.pid === process.pid
+  ) {
+    return { ok: false, reason: `refusing unsafe PID ${String(session.pid)}` }
+  }
+
+  try {
+    process.kill(session.pid, signal)
+    return { ok: true }
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : String(error),
+    }
+  }
 }
 
 /**
@@ -252,26 +296,69 @@ export async function killHandler(target: string | undefined): Promise<void> {
 
   console.log(`Killing session ${session.sessionId} (PID: ${session.pid})...`)
 
-  try {
-    process.kill(session.pid, 'SIGTERM')
-  } catch {
+  const stopped = signalSession(session, 'SIGTERM')
+  if (!stopped.ok) {
+    if (stopped.reason?.startsWith('refusing unsafe PID')) {
+      console.error(`Cannot kill session: ${stopped.reason}`)
+      process.exitCode = 1
+      return
+    }
     console.log('Session already exited.')
     return
   }
 
   await new Promise(resolve => setTimeout(resolve, 2000))
 
-  if (isProcessRunning(session.pid)) {
-    try {
-      process.kill(session.pid, 'SIGKILL')
+  if (resolveSessionEngine(session) === 'tmux') {
+    // tmux kill-session already tears down the process tree. Avoid probing or
+    // signalling the placeholder PID returned by TmuxEngine.start().
+    console.log('Session stopped.')
+  } else if (isProcessRunning(session.pid)) {
+    const forceStopped = signalSession(session, 'SIGKILL')
+    if (forceStopped.ok) {
       console.log('Session force-killed.')
-    } catch {
+    } else {
       console.log('Session exited during grace period.')
     }
   } else {
     console.log('Session stopped.')
   }
 
+  const pidFile = join(getSessionsDir(), `${session.pid}.json`)
+  void unlink(pidFile).catch(() => {})
+}
+
+/**
+ * `claude daemon stop <target>` — gracefully stop a background session.
+ *
+ * Unlike `kill`, this never escalates to SIGKILL. The child gets a chance to
+ * flush its transcript and remove its own registry entry, matching the
+ * reference CLI's “conversation is kept” behavior as closely as the dev
+ * session registry allows.
+ */
+export async function stopHandler(target: string | undefined): Promise<void> {
+  if (!target) {
+    console.error('Usage: claude stop <id>')
+    process.exitCode = 1
+    return
+  }
+
+  const sessions = await listLiveSessions()
+  const session = findSession(sessions, target)
+  if (!session) {
+    console.error(`Session not found: ${target}`)
+    process.exitCode = 1
+    return
+  }
+
+  const result = signalSession(session, 'SIGTERM')
+  if (!result.ok) {
+    console.error(`Cannot stop session: ${result.reason ?? 'unknown error'}`)
+    process.exitCode = 1
+    return
+  }
+
+  console.log(`stopped ${session.sessionId}`)
   const pidFile = join(getSessionsDir(), `${session.pid}.json`)
   void unlink(pidFile).catch(() => {})
 }

@@ -4,6 +4,7 @@ import type { MaskFunction } from '@langfuse/otel'
 import { setLangfuseTracerProvider } from '@langfuse/tracing'
 import { sanitizeGlobal } from './sanitize.js'
 import { logForDebugging } from 'src/utils/debug.js'
+import { isTelemetryOptedIn } from 'src/utils/privacyLevel.js'
 
 declare const MACRO: { VERSION: string }
 
@@ -11,7 +12,10 @@ let processor: LangfuseSpanProcessor | null = null
 let provider: BasicTracerProvider | null = null
 
 export function isLangfuseEnabled(): boolean {
-  return !!(process.env.LANGFUSE_PUBLIC_KEY && process.env.LANGFUSE_SECRET_KEY)
+  return (
+    isTelemetryOptedIn() &&
+    !!(process.env.LANGFUSE_PUBLIC_KEY && process.env.LANGFUSE_SECRET_KEY)
+  )
 }
 
 export function getLangfuseProcessor(): LangfuseSpanProcessor | null {

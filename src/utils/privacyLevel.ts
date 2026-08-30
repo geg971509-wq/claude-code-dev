@@ -5,7 +5,7 @@
  * Levels are ordered by restrictiveness:
  *   default < no-telemetry < essential-traffic
  *
- * - default:            Everything enabled.
+ * - default:            Telemetry was explicitly enabled.
  * - no-telemetry:       Analytics/telemetry disabled (Datadog, 1P events, feedback survey).
  * - essential-traffic:  ALL nonessential network traffic disabled
  *                       (telemetry + auto-updates, grove, release notes, model capabilities, etc.).
@@ -13,18 +13,33 @@
  * The resolved level is the most restrictive signal from:
  *   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC  →  essential-traffic
  *   DISABLE_TELEMETRY                         →  no-telemetry
+ *   no CLAUDE_CODE_ENABLE_TELEMETRY opt-in    →  no-telemetry
  */
+
+import { isEnvTruthy } from './envUtils.js'
 
 type PrivacyLevel = 'default' | 'no-telemetry' | 'essential-traffic'
 
 export function getPrivacyLevel(): PrivacyLevel {
-  if (process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) {
+  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)) {
     return 'essential-traffic'
   }
-  if (process.env.DISABLE_TELEMETRY) {
+  if (!isTelemetryOptedIn()) {
     return 'no-telemetry'
   }
   return 'default'
+}
+
+/**
+ * Telemetry is opt-in in this fork. Explicit disable switches always win,
+ * even when CLAUDE_CODE_ENABLE_TELEMETRY is also present.
+ */
+export function isTelemetryOptedIn(): boolean {
+  return (
+    isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_TELEMETRY) &&
+    !isEnvTruthy(process.env.DISABLE_TELEMETRY) &&
+    !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)
+  )
 }
 
 /**
@@ -48,7 +63,7 @@ export function isTelemetryDisabled(): boolean {
  * or null if unrestricted. Used for user-facing "unset X to re-enable" messages.
  */
 export function getEssentialTrafficOnlyReason(): string | null {
-  if (process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) {
+  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)) {
     return 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'
   }
   return null
