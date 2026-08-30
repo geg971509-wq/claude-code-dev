@@ -5,6 +5,31 @@ import {
   getCodexClient,
 } from '../client.js'
 
+function createResponsesFixture(
+  id: string,
+  headers?: HeadersInit,
+): Response {
+  return new Response(
+    JSON.stringify({
+      id,
+      object: 'response',
+      created_at: 0,
+      status: 'completed',
+      model: 'gpt-5.6-sol',
+      output: [],
+      output_text: '',
+      usage: null,
+    }),
+    {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        ...Object.fromEntries(new Headers(headers).entries()),
+      },
+    },
+  )
+}
+
 describe('Codex turn-state routing', () => {
   test('captures the first response token and replays it within the turn', async () => {
     const seen: Array<string | null> = []
@@ -22,13 +47,12 @@ describe('Codex turn-state routing', () => {
         const headers = new Headers(init?.headers as HeadersInit | undefined)
         seen.push(headers.get(CODEX_TURN_STATE_HEADER))
         requestCount += 1
-        return new Response('{}', {
-          status: 200,
-          headers:
-            requestCount === 1
-              ? { [CODEX_TURN_STATE_HEADER]: 'turn-state-1' }
-              : {},
-        })
+        return createResponsesFixture(
+          `resp_${requestCount}`,
+          requestCount === 1
+            ? { [CODEX_TURN_STATE_HEADER]: 'turn-state-1' }
+            : undefined,
+        )
       }) as unknown as typeof fetch,
     })
 
@@ -49,11 +73,8 @@ describe('Codex turn-state routing', () => {
       turnState,
       fetchOverride: (async () => {
         requestCount += 1
-        return new Response('{}', {
-          status: 200,
-          headers: {
-            [CODEX_TURN_STATE_HEADER]: `turn-state-${requestCount}`,
-          },
+        return createResponsesFixture(`resp_${requestCount}`, {
+          [CODEX_TURN_STATE_HEADER]: `turn-state-${requestCount}`,
         })
       }) as unknown as typeof fetch,
     })
