@@ -196,8 +196,8 @@ type State = {
   mainThreadAgentType: string | undefined
   // Remote mode (--remote flag)
   isRemoteMode: boolean
-  // Direct connect server URL (for display in header)
-  directConnectServerUrl: string | undefined
+  // Remote environment label (for display in header)
+  remoteEnvironmentLabel: string | undefined
   // System prompt section cache state
   systemPromptSectionCache: Map<string, string | null>
   // Last date emitted to the model (for detecting midnight date changes)
@@ -387,8 +387,8 @@ function getInitialState(): State {
           replBridgeActive: false,
         }
       : {}),
-    // Direct connect server URL
-    directConnectServerUrl: undefined,
+    // Remote environment label
+    remoteEnvironmentLabel: undefined,
     // System prompt section cache state
     systemPromptSectionCache: new Map(),
     // Last date emitted to the model
@@ -525,12 +525,12 @@ export function setCwdState(cwd: string): void {
   STATE.cwd = cwd.normalize('NFC')
 }
 
-export function getDirectConnectServerUrl(): string | undefined {
-  return STATE.directConnectServerUrl
+export function getRemoteEnvironmentLabel(): string | undefined {
+  return STATE.remoteEnvironmentLabel
 }
 
-export function setDirectConnectServerUrl(url: string): void {
-  STATE.directConnectServerUrl = url
+export function setRemoteEnvironmentLabel(label: string): void {
+  STATE.remoteEnvironmentLabel = label
 }
 
 export function addToTotalDurationState(

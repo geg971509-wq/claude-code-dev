@@ -21,6 +21,7 @@ export type OpenAIRawStreamRoute =
   | 'chat-completions'
   | 'chatgpt-responses'
   | 'official-responses'
+  | 'codex-responses'
 
 export type RawStreamContext = {
   route: OpenAIRawStreamRoute

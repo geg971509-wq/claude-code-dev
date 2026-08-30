@@ -25,6 +25,25 @@ const SECURITY_STDIN_LINE_LIMIT = 4096 - 64
 
 export const macOsKeychainStorage = {
   name: 'keychain',
+  readFresh(): SecureStorageData | null {
+    clearKeychainCache()
+    const storageServiceName = getMacOsKeychainStorageServiceName(
+      CREDENTIALS_SERVICE_SUFFIX,
+    )
+    const username = getUsername()
+    const result = execaSync(
+      'security',
+      ['find-generic-password', '-a', username, '-w', '-s', storageServiceName],
+      { stdio: ['ignore', 'pipe', 'pipe'], reject: false },
+    )
+    if (result.exitCode === 44) return null
+    if (result.exitCode !== 0 || !result.stdout) {
+      throw new Error('Failed to read credentials from macOS Keychain')
+    }
+    const data = jsonParse(result.stdout)
+    keychainCacheState.cache = { data, cachedAt: Date.now() }
+    return data
+  },
   read(): SecureStorageData | null {
     const prev = keychainCacheState.cache
     if (Date.now() - prev.cachedAt < KEYCHAIN_CACHE_TTL_MS) {
@@ -157,7 +176,6 @@ export const macOsKeychainStorage = {
     }
   },
   delete(): boolean {
-    // Invalidate cache before delete
     clearKeychainCache()
 
     try {
@@ -165,10 +183,12 @@ export const macOsKeychainStorage = {
         CREDENTIALS_SERVICE_SUFFIX,
       )
       const username = getUsername()
-      execSyncWithDefaults_DEPRECATED(
-        `security delete-generic-password -a "${username}" -s "${storageServiceName}"`,
+      const result = execaSync(
+        'security',
+        ['delete-generic-password', '-a', username, '-s', storageServiceName],
+        { stdio: ['ignore', 'pipe', 'pipe'], reject: false },
       )
-      return true
+      return result.exitCode === 0 || result.exitCode === 44
     } catch (_e) {
       return false
     }

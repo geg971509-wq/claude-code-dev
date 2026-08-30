@@ -26,8 +26,10 @@ import {
 import { logFileOperation } from 'src/utils/fileOperationAnalytics.js'
 import { readFileSyncWithMetadata } from 'src/utils/fileRead.js'
 import { getFsImplementation } from 'src/utils/fsOperations.js'
+import { isCompleteFileState } from 'src/utils/fileStateCache.js'
 import { fetchSingleFileGitDiff, type ToolUseDiff } from 'src/utils/gitDiff.js'
 import { lazySchema } from '@claude-code-best/core-utils/lazySchema'
+import { stripBOM } from 'src/utils/jsonRead.js'
 import { logError } from 'src/utils/log.js'
 import { expandPath } from 'src/utils/path.js'
 import {
@@ -83,6 +85,10 @@ const outputSchema = lazySchema(() =>
   }),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
+
+function normalizeContentForReadState(content: string): string {
+  return stripBOM(content).replace(/\r(?=\n|$)/g, '')
+}
 
 export type Output = z.infer<OutputSchema>
 export type FileWriteToolInput = InputSchema
@@ -174,7 +180,6 @@ export const FileWriteTool = buildTool({
     }
 
     const fs = getFsImplementation()
-    let fileMtimeMs: number
     try {
       const fileStat = await fs.stat(fullFilePath)
       // 预检：如果路径已是一个存在的目录，及时拒绝并给出指引
@@ -188,7 +193,6 @@ export const FileWriteTool = buildTool({
           errorCode: 5,
         }
       }
-      fileMtimeMs = fileStat.mtimeMs
     } catch (e) {
       if (isENOENT(e)) {
         return { result: true }
@@ -196,19 +200,13 @@ export const FileWriteTool = buildTool({
       throw e
     }
 
-    const readTimestamp = toolUseContext.readFileState.get(fullFilePath)
-
-    // Reuse mtime from the stat above — avoids a redundant statSync via
-    // getFileModificationTime.
-    if (readTimestamp) {
-      const lastWriteTime = Math.floor(fileMtimeMs)
-      if (lastWriteTime > readTimestamp.timestamp) {
-        return {
-          result: false,
-          message:
-            'File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.',
-          errorCode: 3,
-        }
+    const lastRead = toolUseContext.readFileState.get(fullFilePath)
+    if (!isCompleteFileState(lastRead)) {
+      return {
+        result: false,
+        message:
+          'File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.',
+        errorCode: 3,
       }
     }
 
@@ -216,7 +214,12 @@ export const FileWriteTool = buildTool({
   },
   async call(
     { file_path, content },
-    { readFileState, updateFileHistoryState, dynamicSkillDirTriggers },
+    {
+      readFileState,
+      updateFileHistoryState,
+      dynamicSkillDirTriggers,
+      assertMutationPathUnchanged,
+    },
     _,
     parentMessage,
   ) {
@@ -239,6 +242,7 @@ export const FileWriteTool = buildTool({
     activateConditionalSkillsForPaths([fullFilePath], cwd)
 
     await diagnosticTracker.beforeFileEdited(fullFilePath)
+    assertMutationPathUnchanged?.()
 
     // Ensure parent directory exists before the atomic read-modify-write section.
     // Must stay OUTSIDE the critical section below (a yield between the staleness
@@ -262,6 +266,7 @@ export const FileWriteTool = buildTool({
     // atomicity. The block is synchronous, which is what makes the read-check-write
     // sequence atomic on a single-threaded runtime; the IIFE only scopes it.
     const { oldContent } = (() => {
+      assertMutationPathUnchanged?.()
       let meta: ReturnType<typeof readFileSyncWithMetadata> | null
       try {
         meta = readFileSyncWithMetadata(fullFilePath)
@@ -273,22 +278,16 @@ export const FileWriteTool = buildTool({
         }
       }
 
+      const lastRead = readFileState.get(fullFilePath)
       if (meta !== null) {
-        const lastWriteTime = getFileModificationTime(fullFilePath)
-        const lastRead = readFileState.get(fullFilePath)
-        if (!lastRead || lastWriteTime > lastRead.timestamp) {
-          // Timestamp indicates modification, but on Windows timestamps can change
-          // without content changes (cloud sync, antivirus, etc.). For full reads,
-          // compare content as a fallback to avoid false positives.
-          const isFullRead =
-            lastRead &&
-            lastRead.offset === undefined &&
-            lastRead.limit === undefined
-          // meta.content is CRLF-normalized — matches readFileState's normalized form.
-          if (!isFullRead || meta.content !== lastRead.content) {
-            throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
-          }
+        if (
+          !isCompleteFileState(lastRead) ||
+          normalizeContentForReadState(meta.content) !== lastRead.content
+        ) {
+          throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
         }
+      } else if (lastRead !== undefined) {
+        throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
       }
 
       const enc = meta?.encoding ?? 'utf8'
@@ -327,7 +326,7 @@ export const FileWriteTool = buildTool({
 
       // Update read timestamp, to invalidate stale writes
       readFileState.set(fullFilePath, {
-        content,
+        content: normalizeContentForReadState(content),
         timestamp: getFileModificationTime(fullFilePath),
         offset: undefined,
         limit: undefined,

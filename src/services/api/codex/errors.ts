@@ -71,7 +71,7 @@ export function getCodexConfigurationError(): NormalizedCodexError | null {
       error: 'authentication_failed',
     }
   }
-  if (auth?.apiKey || auth?.accessToken || process.env.CODEX_API_KEY) {
+  if (process.env.CODEX_API_KEY) {
     return null
   }
   return {

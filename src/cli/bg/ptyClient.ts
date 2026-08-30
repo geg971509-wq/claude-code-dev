@@ -31,7 +31,7 @@ export async function attachPtySession(session: SessionEntry): Promise<void> {
   }
   const onInput = (data: Buffer) => {
     if (data.includes(0x1d)) {
-      socket.end()
+      socket.destroy()
       return
     }
     send({ type: 'input', data: data.toString('utf8') })

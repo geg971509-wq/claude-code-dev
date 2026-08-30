@@ -49,7 +49,12 @@ import {
 } from '../../utils/contextAnalysis.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage, hasExactErrorMessage } from '../../utils/errors.js'
-import { cacheToObject } from '../../utils/fileStateCache.js'
+import { stripLineNumberPrefix } from '../../utils/file.js'
+import {
+  createFileStateCacheWithSizeLimit,
+  type FileState,
+  type FileStateCache,
+} from '../../utils/fileStateCache.js'
 import {
   type CacheSafeParams,
   runForkedAgent,
@@ -212,13 +217,23 @@ const REGENERABLE_ATTACHMENT_TYPES = new Set([
 export function dropRegenerableAttachments(
   attachments: AttachmentMessage[],
   turnsSincePreviousCompact: number | undefined,
+  readFileState?: FileStateCache,
 ): AttachmentMessage[] {
   if (turnsSincePreviousCompact !== 0) {
     return attachments
   }
-  return attachments.filter(
-    message => !REGENERABLE_ATTACHMENT_TYPES.has(message.attachment.type),
-  )
+  return attachments.filter(message => {
+    if (!REGENERABLE_ATTACHMENT_TYPES.has(message.attachment.type)) {
+      return true
+    }
+    if (
+      message.attachment.type === 'file' &&
+      typeof message.attachment.filename === 'string'
+    ) {
+      readFileState?.delete(message.attachment.filename)
+    }
+    return false
+  })
 }
 
 /**
@@ -888,6 +903,7 @@ export async function compactConversation(
     const postCompactFileAttachments = dropRegenerableAttachments(
       builtAttachments,
       recompactionInfo?.turnsSincePreviousCompact,
+      context.readFileState,
     )
 
     // Create the compact boundary marker and summary messages before the
@@ -1721,10 +1737,9 @@ async function streamCompactSummary({
  * need fixing twice, and a half-applied fix doesn't fail loudly.
  *
  * The clear() between snapshot and rebuild is load-bearing and must stay
- * ordered: createPostCompactFileAttachments re-reads through FileReadTool,
- * which writes back into readFileState, so its writes ARE the post-compact
- * cache contents. Rebuilding before the clear would wipe them, leaving the
- * model unable to edit files whose content it can see.
+ * ordered. File restoration reads into temporary caches; only credentials for
+ * final kept file attachments (plus exact states for preserved Reads) are then
+ * committed to the cleared active cache.
  *
  * @param deltaBaseline Messages to diff the re-announcement against. Full
  *   compact passes [] (compaction ate the prior deltas, so re-announce the
@@ -1741,10 +1756,9 @@ async function buildPostCompactAttachments(
   postCompactFileAttachments: AttachmentMessage[]
   hookMessages: HookResultMessage[]
 }> {
-  // Store the current file state before clearing
-  let preCompactReadFileState = cacheToObject(context.readFileState)
+  // Snapshot every field and the LRU order before clearing.
+  let preCompactReadFileState = Array.from(context.readFileState.entries())
 
-  // Clear the cache
   context.readFileState.clear()
   context.loadedNestedMemoryPaths?.clear()
 
@@ -1842,30 +1856,35 @@ async function buildPostCompactAttachments(
  * @returns Array of attachment messages for the most recently accessed files that fit within token budget
  */
 export async function createPostCompactFileAttachments(
-  readFileState: Record<string, { content: string; timestamp: number }>,
+  readFileState: Array<[string, FileState]>,
   toolUseContext: ToolUseContext,
   maxFiles: number,
   preservedMessages: Message[] = [],
 ): Promise<AttachmentMessage[]> {
-  const preservedReadPaths = collectReadToolFilePaths(preservedMessages)
-  const recentFiles = Object.entries(readFileState)
-    .map(([filename, state]) => ({ filename, ...state }))
+  const snapshotEntries = readFileState
+  const preservedReadPaths = collectPreservedReadFilePaths(
+    preservedMessages,
+    snapshotEntries,
+  )
+  const recentFiles = snapshotEntries
     .filter(
-      file =>
+      ([filename]) =>
         !shouldExcludeFromPostCompactRestore(
-          file.filename,
+          filename,
           toolUseContext.agentId,
-        ) && !preservedReadPaths.has(expandPath(file.filename)),
+        ) && !preservedReadPaths.has(expandPath(filename)),
     )
-    .sort((a, b) => b.timestamp - a.timestamp)
     .slice(0, maxFiles)
-
   const results = await Promise.all(
-    recentFiles.map(async file => {
+    recentFiles.map(async ([filename]) => {
+      const temporaryReadFileState = createFileStateCacheWithSizeLimit(
+        Math.max(maxFiles, 1),
+      )
       const attachment = await generateFileAttachment(
-        file.filename,
+        filename,
         {
           ...toolUseContext,
+          readFileState: temporaryReadFileState,
           fileReadingLimits: {
             maxTokens: POST_COMPACT_MAX_TOKENS_PER_FILE,
           },
@@ -1874,22 +1893,46 @@ export async function createPostCompactFileAttachments(
         'tengu_post_compact_file_restore_error',
         'compact',
       )
-      return attachment ? createAttachmentMessage(attachment) : null
+      return {
+        message: attachment ? createAttachmentMessage(attachment) : null,
+        state: temporaryReadFileState.get(expandPath(filename)),
+      }
     }),
   )
 
   let usedTokens = 0
-  return results.filter((result): result is AttachmentMessage<Attachment> => {
-    if (result === null) {
-      return false
+  const keptAttachments: AttachmentMessage<Attachment>[] = []
+  const refreshedStates = new Map<string, FileState>()
+  for (const result of results) {
+    if (result.message === null) continue
+    const attachmentTokens = roughTokenCountEstimation(
+      jsonStringify(result.message),
+    )
+    if (usedTokens + attachmentTokens > POST_COMPACT_TOKEN_BUDGET) continue
+    usedTokens += attachmentTokens
+    keptAttachments.push(result.message)
+    if (result.message.attachment.type === 'file' && result.state) {
+      refreshedStates.set(
+        expandPath(result.message.attachment.filename),
+        result.state,
+      )
     }
-    const attachmentTokens = roughTokenCountEstimation(jsonStringify(result))
-    if (usedTokens + attachmentTokens <= POST_COMPACT_TOKEN_BUDGET) {
-      usedTokens += attachmentTokens
-      return true
+  }
+  const statesToCommit: Array<[string, FileState]> = []
+  for (const [filename, priorState] of snapshotEntries) {
+    const normalizedFilename = expandPath(filename)
+    if (preservedReadPaths.has(normalizedFilename)) {
+      statesToCommit.push([filename, priorState])
+      continue
     }
-    return false
-  })
+    const refreshedState = refreshedStates.get(normalizedFilename)
+    if (refreshedState) statesToCommit.push([filename, refreshedState])
+  }
+  for (const [filename, state] of statesToCommit.reverse()) {
+    toolUseContext.readFileState.set(filename, state)
+  }
+
+  return keptAttachments
 }
 
 /**
@@ -2036,7 +2079,11 @@ export async function createAsyncAgentAttachmentsIfNeeded(
  * earlier full Read that may have been compacted away, so we want
  * createPostCompactFileAttachments to re-inject the real content.
  */
-function collectReadToolFilePaths(messages: Message[]): Set<string> {
+function collectPreservedReadFilePaths(
+  messages: Message[],
+  snapshotEntries: Array<[string, FileState]>,
+): Set<string> {
+  const visibleResults = new Map<string, string>()
   const stubIds = new Set<string>()
   for (const message of messages) {
     if (message.type !== 'user' || !Array.isArray(message.message!.content)) {
@@ -2044,16 +2091,25 @@ function collectReadToolFilePaths(messages: Message[]): Set<string> {
     }
     for (const block of message.message!.content) {
       if (
-        block.type === 'tool_result' &&
-        typeof block.content === 'string' &&
-        block.content.startsWith(FILE_UNCHANGED_STUB)
+        block.type !== 'tool_result' ||
+        block.is_error === true ||
+        typeof block.content !== 'string'
       ) {
+        continue
+      }
+      if (block.content.startsWith(FILE_UNCHANGED_STUB)) {
         stubIds.add(block.tool_use_id)
+      } else {
+        visibleResults.set(block.tool_use_id, block.content)
       }
     }
   }
 
+  const snapshot = new Map(
+    snapshotEntries.map(([filename, state]) => [expandPath(filename), state]),
+  )
   const paths = new Set<string>()
+  const stubPaths = new Set<string>()
   for (const message of messages) {
     if (
       message.type !== 'assistant' ||
@@ -2062,25 +2118,56 @@ function collectReadToolFilePaths(messages: Message[]): Set<string> {
       continue
     }
     for (const block of message.message!.content) {
-      if (
-        block.type !== 'tool_use' ||
-        block.name !== FILE_READ_TOOL_NAME ||
-        stubIds.has(block.id)
-      ) {
+      if (block.type !== 'tool_use' || block.name !== FILE_READ_TOOL_NAME) {
         continue
       }
       const input = block.input
       if (
-        input &&
-        typeof input === 'object' &&
-        'file_path' in input &&
-        typeof input.file_path === 'string'
+        !input ||
+        typeof input !== 'object' ||
+        !('file_path' in input) ||
+        typeof input.file_path !== 'string'
       ) {
-        paths.add(expandPath(input.file_path))
+        continue
+      }
+      const filename = expandPath(input.file_path)
+      if (stubIds.has(block.id)) {
+        stubPaths.add(filename)
+        continue
+      }
+      const result = visibleResults.get(block.id)
+      const state = snapshot.get(filename)
+      const offset =
+        'offset' in input && typeof input.offset === 'number' ? input.offset : 1
+      const limit =
+        'limit' in input && typeof input.limit === 'number'
+          ? input.limit
+          : undefined
+      if (
+        result !== undefined &&
+        state?.offset === offset &&
+        state.limit === limit &&
+        reconstructReadContent(result, offset) === state.content
+      ) {
+        paths.add(filename)
       }
     }
   }
+  for (const filename of stubPaths) paths.delete(filename)
   return paths
+}
+
+function reconstructReadContent(
+  result: string,
+  startLine: number,
+): string | null {
+  const content: string[] = []
+  for (const [index, line] of result.split('\n').entries()) {
+    const match = line.match(/^\s*(\d+)[→\t](.*)$/)
+    if (!match || Number(match[1]) !== startLine + index) return null
+    content.push(stripLineNumberPrefix(line))
+  }
+  return content.join('\n')
 }
 
 const SKILL_TRUNCATION_MARKER =

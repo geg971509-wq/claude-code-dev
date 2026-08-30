@@ -159,6 +159,25 @@ function getToolResultFromCell(cell: NotebookCellSource) {
   return [contentResult, ...(outputResults ?? [])]
 }
 
+export function projectNotebookCells(
+  notebook: NotebookContent,
+  cellId?: string,
+): NotebookCellSource[] {
+  const language = notebook.metadata.language_info?.name ?? 'python'
+  if (cellId) {
+    const cell = notebook.cells.find(
+      (candidate: NotebookCell) => candidate.id === cellId,
+    )
+    if (!cell) {
+      throw new Error(`Cell with ID "${cellId}" not found in notebook`)
+    }
+    return [processCell(cell, notebook.cells.indexOf(cell), language, true)]
+  }
+  return notebook.cells.map((cell: NotebookCell, index: number) =>
+    processCell(cell, index, language, false),
+  )
+}
+
 /**
  * Reads and parses a Jupyter notebook file into processed cell data
  */
@@ -170,17 +189,7 @@ export async function readNotebook(
   const buffer = await getFsImplementation().readFileBytes(fullPath)
   const content = buffer.toString('utf-8')
   const notebook = jsonParse(content) as NotebookContent
-  const language = notebook.metadata.language_info?.name ?? 'python'
-  if (cellId) {
-    const cell = notebook.cells.find((c: NotebookCell) => c.id === cellId)
-    if (!cell) {
-      throw new Error(`Cell with ID "${cellId}" not found in notebook`)
-    }
-    return [processCell(cell, notebook.cells.indexOf(cell), language, true)]
-  }
-  return notebook.cells.map((cell: NotebookCell, index: number) =>
-    processCell(cell, index, language, false),
-  )
+  return projectNotebookCells(notebook, cellId)
 }
 
 /**

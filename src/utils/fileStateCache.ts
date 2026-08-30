@@ -14,6 +14,17 @@ export type FileState = {
   isPartialView?: boolean
 }
 
+export function isCompleteFileState(
+  state: FileState | undefined,
+): state is FileState {
+  return (
+    state !== undefined &&
+    state.limit === undefined &&
+    state.isPartialView !== true &&
+    (state.offset === undefined || state.offset === 0 || state.offset === 1)
+  )
+}
+
 // Default max entries for read file state caches
 export const READ_FILE_STATE_CACHE_SIZE = 100
 

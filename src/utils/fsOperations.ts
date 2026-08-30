@@ -285,6 +285,44 @@ export function resolveDeepestExistingAncestorSync(
  * @param path - The path to check (will be converted to absolute)
  * @returns An array of absolute paths to check permissions for
  */
+export type FileMutationPathEvidence = {
+  logicalPath: string
+  paths: readonly string[]
+}
+
+function normalizePermissionEvidencePath(path: string): string {
+  return nodePath.normalize(path).normalize('NFC')
+}
+
+export function captureFileMutationPathEvidence(
+  path: string,
+): FileMutationPathEvidence {
+  return {
+    logicalPath: normalizePermissionEvidencePath(path),
+    paths: Array.from(
+      new Set(
+        getPathsForPermissionCheck(path).map(normalizePermissionEvidencePath),
+      ),
+    ).sort(),
+  }
+}
+
+export function assertFileMutationPathUnchanged(
+  evidence: FileMutationPathEvidence,
+  path: string,
+): void {
+  const current = captureFileMutationPathEvidence(path)
+  if (
+    current.logicalPath !== evidence.logicalPath ||
+    current.paths.length !== evidence.paths.length ||
+    current.paths.some((value, index) => value !== evidence.paths[index])
+  ) {
+    throw new Error(
+      'File target changed after permission approval. Retry the operation.',
+    )
+  }
+}
+
 export function getPathsForPermissionCheck(inputPath: string): string[] {
   // Expand tilde notation defensively - tools should do this in getPath(),
   // but we normalize here as defense in depth for permission checking

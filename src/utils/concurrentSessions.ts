@@ -98,11 +98,12 @@ export async function registerSession(): Promise<boolean> {
     await chmod(dir, 0o700)
     const launchArgs = getSessionLaunchArgs()
     const launchMode = getSessionLaunchMode()
-    const existingJob = feature('BG_SESSIONS') && kind === 'bg'
-      ? await readFile(join(dir, 'jobs', `${getSessionId()}.json`), 'utf8')
-          .then(raw => jsonParse(raw) as Record<string, unknown>)
-          .catch(() => undefined)
-      : undefined
+    const existingJob =
+      feature('BG_SESSIONS') && kind === 'bg'
+        ? await readFile(join(dir, 'jobs', `${getSessionId()}.json`), 'utf8')
+            .then(raw => jsonParse(raw) as Record<string, unknown>)
+            .catch(() => undefined)
+        : undefined
     const metadata = {
       // The parent writes the durable job record before the child has
       // necessarily registered its PID. Merge that record when available so
@@ -133,7 +134,7 @@ export async function registerSession(): Promise<boolean> {
             engine: process.env.CLAUDE_CODE_SESSION_ENGINE,
             tmuxSessionName: process.env.CLAUDE_CODE_TMUX_SESSION,
             ptySocketPath: process.env.CLAUDE_CODE_PTY_SOCKET,
-          ptyTokenPath: process.env.CLAUDE_CODE_PTY_TOKEN,
+            ptyTokenPath: process.env.CLAUDE_CODE_PTY_TOKEN,
             jobId:
               typeof existingJob?.jobId === 'string'
                 ? existingJob.jobId
@@ -151,15 +152,16 @@ export async function registerSession(): Promise<boolean> {
             // A routine with no prompt intentionally remains idle; all other
             // registered background sessions are now running.
             status:
-              existingJob?.status === 'idle' ? 'idle' : kind === 'bg' ? 'running' : existingJob?.status,
+              existingJob?.status === 'idle'
+                ? 'idle'
+                : kind === 'bg'
+                  ? 'running'
+                  : existingJob?.status,
             updatedAt: Date.now(),
-        }
-      : {}),
+          }
+        : {}),
     }
-    await writeFile(
-      pidFile,
-      jsonStringify(metadata),
-    )
+    await writeFile(pidFile, jsonStringify(metadata))
     if (feature('BG_SESSIONS') && launchArgs) {
       try {
         const jobsDir = join(dir, 'jobs')

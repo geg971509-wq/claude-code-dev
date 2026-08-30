@@ -21,4 +21,3 @@ export async function selectEngine(): Promise<import('../engine.js').BgEngine> {
   const { DetachedEngine } = await import('./detached.js')
   return new DetachedEngine()
 }
-

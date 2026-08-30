@@ -23,7 +23,11 @@ import {
   type KimiDeviceCode,
 } from '../services/api/openai/kimiAuth.js';
 import { persistCodexLogin, readCodexAuth } from '../services/api/codex/credentials.js';
-import { parseManualCodeInput, performOpenAICodexLogin } from '../services/oauth/openai-codex.js';
+import {
+  type CodexManualCodeInput,
+  parseManualCodeInput,
+  performOpenAICodexLogin,
+} from '../services/oauth/openai-codex.js';
 import { OAuthService } from '../services/oauth/index.js';
 import { getOauthAccountInfo, validateForceLoginOrg } from '../utils/auth.js';
 import { openBrowser } from '../utils/browser.js';
@@ -149,7 +153,8 @@ export function ConsoleOAuthFlow({
   const [codexUrlCopied, setCodexUrlCopied] = useState(false);
   const [codexPastedCode, setCodexPastedCode] = useState('');
   const [codexPastedCursor, setCodexPastedCursor] = useState(0);
-  const codexManualCodeResolveRef = useRef<((code: string) => void) | null>(null);
+  const [codexPasteError, setCodexPasteError] = useState<string | null>(null);
+  const codexManualCodeResolveRef = useRef<((input: CodexManualCodeInput) => void) | null>(null);
   const codexAbortRef = useRef<AbortController | null>(null);
 
   const textInputColumns = useTerminalSize().columns - PASTE_HERE_MSG.length - 1;
@@ -246,19 +251,21 @@ export function ConsoleOAuthFlow({
     }
   }, [codexPastedCode, oauthStatus, showCodexPastePrompt, codexUrlCopied]);
 
-  const handleCodexPasteSubmit = useCallback((value: string) => {
-    const code = parseManualCodeInput(value);
-    if (!code) {
-      setOAuthStatus({
-        state: 'error',
-        message: 'Invalid code. Paste the full redirect URL or just the authorization code.',
-        toRetry: { state: 'codex_oauth_start' },
-      });
-      return;
-    }
-    codexManualCodeResolveRef.current?.(code);
-    codexManualCodeResolveRef.current = null;
-  }, []);
+  const handleCodexPasteSubmit = useCallback(
+    (value: string) => {
+      const input = parseManualCodeInput(value);
+      const expectedState =
+        oauthStatus.state === 'codex_oauth_waiting' ? new URL(oauthStatus.url).searchParams.get('state') : null;
+      if (!input || input.state !== expectedState) {
+        setCodexPasteError('Invalid callback. Paste the full redirect URL or matching code#state.');
+        return;
+      }
+      setCodexPasteError(null);
+      codexManualCodeResolveRef.current?.(input);
+      codexManualCodeResolveRef.current = null;
+    },
+    [oauthStatus],
+  );
 
   async function handleSubmitCode(value: string, url: string) {
     try {
@@ -409,13 +416,14 @@ export function ConsoleOAuthFlow({
 
     const controller = new AbortController();
     codexAbortRef.current = controller;
-    const manualCodePromise = new Promise<string>(resolve => {
+    const manualCodePromise = new Promise<CodexManualCodeInput>(resolve => {
       codexManualCodeResolveRef.current = resolve;
     });
 
     try {
       await performOpenAICodexLogin({
         onUrl: url => {
+          setCodexPasteError(null);
           setOAuthStatus({ state: 'codex_oauth_waiting', url });
           setTimeout(setShowCodexPastePrompt, 3000, true);
         },
@@ -565,6 +573,7 @@ export function ConsoleOAuthFlow({
           setCodexPastedCode={setCodexPastedCode}
           codexPastedCursor={codexPastedCursor}
           setCodexPastedCursor={setCodexPastedCursor}
+          codexPasteError={codexPasteError}
           handleCodexPasteSubmit={handleCodexPasteSubmit}
         />
       </Box>
@@ -593,6 +602,7 @@ type OAuthStatusMessageProps = {
   setCodexPastedCode: (value: string) => void;
   codexPastedCursor: number;
   setCodexPastedCursor: (offset: number) => void;
+  codexPasteError: string | null;
   handleCodexPasteSubmit: (value: string) => void;
 };
 
@@ -617,6 +627,7 @@ function OAuthStatusMessage({
   setCodexPastedCode,
   codexPastedCursor,
   setCodexPastedCursor,
+  codexPasteError,
   handleCodexPasteSubmit,
 }: OAuthStatusMessageProps): React.ReactNode {
   switch (oauthStatus.state) {
@@ -1342,17 +1353,20 @@ function OAuthStatusMessage({
             </Box>
           )}
           {showCodexPastePrompt && (
-            <Box>
-              <Text>{PASTE_HERE_MSG}</Text>
-              <TextInput
-                value={codexPastedCode}
-                onChange={setCodexPastedCode}
-                onSubmit={handleCodexPasteSubmit}
-                cursorOffset={codexPastedCursor}
-                onChangeCursorOffset={setCodexPastedCursor}
-                columns={codexPasteColumns}
-                mask="*"
-              />
+            <Box flexDirection="column">
+              <Box>
+                <Text>{PASTE_HERE_MSG}</Text>
+                <TextInput
+                  value={codexPastedCode}
+                  onChange={setCodexPastedCode}
+                  onSubmit={handleCodexPasteSubmit}
+                  cursorOffset={codexPastedCursor}
+                  onChangeCursorOffset={setCodexPastedCursor}
+                  columns={codexPasteColumns}
+                  mask="*"
+                />
+              </Box>
+              {codexPasteError && <Text color="error">{codexPasteError}</Text>}
             </Box>
           )}
           <Text dimColor>

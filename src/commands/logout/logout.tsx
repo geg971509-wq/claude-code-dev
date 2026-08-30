@@ -9,75 +9,101 @@ import { clearRemoteManagedSettingsCache } from '../../services/remoteManagedSet
 import { removeChatGPTAuth } from '../../services/api/openai/chatgptAuth.js';
 import { removeKimiAuth } from '../../services/api/openai/kimiAuth.js';
 import { clearCodexClientCache } from '../../services/api/codex/client.js';
-import { clearCodexAuth } from '../../services/api/codex/credentials.js';
 import { getClaudeAIOAuthTokens, removeApiKey } from '../../utils/auth.js';
 import { clearBetasCaches } from '../../utils/betas.js';
 import { saveGlobalConfig } from '../../utils/config.js';
 import { gracefulShutdownSync } from '../../utils/gracefulShutdown.js';
+import { withAuthMutationLock } from '../../utils/secureStorage/authLock.js';
 import { getSecureStorage } from '../../utils/secureStorage/index.js';
 import { getSettingsForSource, updateSettingsForSource } from '../../utils/settings/settings.js';
 import { clearToolSchemaCache } from '../../utils/toolSchemaCache.js';
 import { resetUserCache } from '../../utils/user.js';
 
 export async function performLogout({ clearOnboarding = false }): Promise<void> {
-  // Flush telemetry BEFORE clearing credentials to prevent org data leakage
-  const { flushTelemetry } = await import('../../utils/telemetry/instrumentation.js');
-  await flushTelemetry();
-
-  await removeApiKey();
-  await removeChatGPTAuth();
-  await removeKimiAuth();
-  clearChatGPTSettingsAuthMode();
-  clearCodexSettingsAuth();
-
-  // Wipe all secure storage data on logout
-  const secureStorage = getSecureStorage();
-  secureStorage.delete();
-
-  await clearAuthRelatedCaches();
-  saveGlobalConfig(current => {
-    const updated = { ...current };
-    if (clearOnboarding) {
-      updated.hasCompletedOnboarding = false;
-      updated.subscriptionNoticeCount = 0;
-      updated.hasAvailableSubscription = false;
-      if (updated.customApiKeyResponses?.approved) {
-        updated.customApiKeyResponses = {
-          ...updated.customApiKeyResponses,
-          approved: [],
-        };
-      }
+  const errors: unknown[] = [];
+  const attempt = async (action: () => void | Promise<void>): Promise<void> => {
+    try {
+      await action();
+    } catch (error) {
+      errors.push(error);
     }
-    updated.oauthAccount = undefined;
-    return updated;
+  };
+
+  // Flush telemetry BEFORE clearing credentials to prevent org data leakage.
+  await attempt(async () => {
+    const { flushTelemetry } = await import('../../utils/telemetry/instrumentation.js');
+    await flushTelemetry();
   });
+
+  await attempt(() => removeApiKey({ strict: true }));
+  await attempt(removeChatGPTAuth);
+  await attempt(removeKimiAuth);
+  await attempt(clearChatGPTSettingsAuthMode);
+  await attempt(clearCodexSettingsAuth);
+
+  // This authoritative wipe must run even if a provider-specific cleanup failed.
+  await attempt(() =>
+    withAuthMutationLock(async () => {
+      if (!getSecureStorage().delete()) {
+        throw new Error('Failed to delete credentials from secure storage');
+      }
+    }),
+  );
+
+  await attempt(clearAuthRelatedCaches);
+  await attempt(() => {
+    const saved = saveGlobalConfig(current => {
+      const updated = { ...current, primaryApiKey: undefined };
+      if (clearOnboarding) {
+        updated.hasCompletedOnboarding = false;
+        updated.subscriptionNoticeCount = 0;
+        updated.hasAvailableSubscription = false;
+        if (updated.customApiKeyResponses?.approved) {
+          updated.customApiKeyResponses = {
+            ...updated.customApiKeyResponses,
+            approved: [],
+          };
+        }
+      }
+      updated.oauthAccount = undefined;
+      return updated;
+    });
+    if (!saved) throw new Error('Failed to clear global authentication config');
+  });
+
+  if (errors.length > 0) {
+    throw new AggregateError(errors, 'Logout did not clear all credentials');
+  }
 }
 
 function clearCodexSettingsAuth(): void {
-  clearCodexAuth();
   clearCodexClientCache();
   delete process.env.CODEX_LOGIN_METHOD;
   delete process.env.CODEX_ACCESS_TOKEN;
   delete process.env.CODEX_REFRESH_TOKEN;
   delete process.env.CODEX_API_KEY;
+  delete process.env.CODEX_ACCOUNT_ID;
   const userSettings = getSettingsForSource('userSettings') ?? {};
   const env = userSettings.env ?? {};
   if (
     env.CODEX_LOGIN_METHOD === undefined &&
     env.CODEX_ACCESS_TOKEN === undefined &&
     env.CODEX_REFRESH_TOKEN === undefined &&
-    env.CODEX_API_KEY === undefined
+    env.CODEX_API_KEY === undefined &&
+    env.CODEX_ACCOUNT_ID === undefined
   ) {
     return;
   }
-  updateSettingsForSource('userSettings', {
+  const { error } = updateSettingsForSource('userSettings', {
     env: {
       CODEX_LOGIN_METHOD: undefined,
       CODEX_ACCESS_TOKEN: undefined,
       CODEX_REFRESH_TOKEN: undefined,
       CODEX_API_KEY: undefined,
+      CODEX_ACCOUNT_ID: undefined,
     } as unknown as Record<string, string>,
   });
+  if (error) throw error;
 }
 
 function clearChatGPTSettingsAuthMode(): void {
@@ -93,7 +119,8 @@ function clearChatGPTSettingsAuthMode(): void {
       OPENAI_AUTH_MODE: undefined,
     } as unknown as Record<string, string>,
   };
-  updateSettingsForSource('userSettings', settingsUpdate);
+  const { error } = updateSettingsForSource('userSettings', settingsUpdate);
+  if (error) throw error;
 }
 
 // clearing anything memoized that must be invalidated when user/session/auth changes

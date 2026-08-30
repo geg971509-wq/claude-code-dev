@@ -76,8 +76,6 @@ export const DEFAULT_BUILD_FEATURES = [
   'CONNECTOR_TEXT', // Connector 文本块类型，扩展 API 内容格式
   // Attribution tracking
   'COMMIT_ATTRIBUTION', // Git 提交归属追踪（记录 AI 辅助贡献）
-  // Server mode (claude server / claude open)
-  'DIRECT_CONNECT', // 直连模式（claude server / claude open）
   // Skill search & learning — feature flags compiled in (so the slash
   // commands /skill-* etc. exist), but the runtime "enabled" toggle
   // defaults to OFF (see featureCheck.ts). Operators turn on via the

@@ -4,7 +4,7 @@ import type {
   ResponseInputItem,
   Tool,
 } from 'openai/resources/responses/responses.mjs'
-import { normalizeCodexCallId } from '@ant/model-provider'
+import { normalizeResponsesCallId } from '@ant/model-provider'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -34,7 +34,7 @@ function sanitizeMessageItem(item: Record<string, unknown>): ResponseInputItem {
 function sanitizeFunctionCallItem(
   item: Record<string, unknown>,
 ): ResponseInputItem {
-  const callId = normalizeCodexCallId(item.call_id)
+  const callId = normalizeResponsesCallId(item.call_id)
   const name = assertString(item.name, 'function_call.name').trim()
   const argumentsValue = item.arguments
 
@@ -61,7 +61,7 @@ function sanitizeFunctionCallItem(
 function sanitizeFunctionCallOutputItem(
   item: Record<string, unknown>,
 ): ResponseInputItem {
-  const callId = normalizeCodexCallId(item.call_id)
+  const callId = normalizeResponsesCallId(item.call_id)
   const output = item.output
 
   if (!callId) {
@@ -128,12 +128,12 @@ function sanitizeInputItem(item: unknown): ResponseInputItem {
   switch (item.type) {
     case 'message':
       return sanitizeMessageItem(item)
+    case 'reasoning':
+      return sanitizeReasoningItem(item)
     case 'function_call':
       return sanitizeFunctionCallItem(item)
     case 'function_call_output':
       return sanitizeFunctionCallOutputItem(item)
-    case 'reasoning':
-      return sanitizeReasoningItem(item)
     default:
       throw new Error(
         `Codex preflight: unsupported input item type "${item.type}".`,

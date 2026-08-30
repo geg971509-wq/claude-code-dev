@@ -1,5 +1,7 @@
-import { describe, expect, mock, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test'
 import type { ToolUseBlock } from '@anthropic-ai/sdk/resources/index.mjs'
+import { mkdir, readFile, rm, symlink, unlink, writeFile } from 'fs/promises'
+import { join } from 'path'
 import type { Tool, ToolUseContext, Tools } from '../../../Tool.js'
 import type { AssistantMessage } from '../../../types/message.js'
 import { debugMock } from '../../../../tests/mocks/debug'
@@ -41,6 +43,16 @@ const { isMalformedToolInput, normalizeContentFromAPI } = await import(
   '../../../utils/messages.js'
 )
 
+const testDir = join(process.cwd(), `.tmp-tool-execution-path-${process.pid}`)
+
+beforeAll(async () => {
+  await mkdir(testDir, { recursive: true })
+})
+
+afterAll(async () => {
+  await rm(testDir, { recursive: true, force: true })
+})
+
 function makeTool(name: string): Tool {
   let called = 0
   const tool = {
@@ -71,6 +83,22 @@ function makeTool(name: string): Tool {
     getCallCount: () => called,
   }
   return tool as unknown as Tool
+}
+
+function makeFileMutationTool(): Tool {
+  return {
+    ...makeTool('Write'),
+    isReadOnly: () => false,
+    getPath: (input: Record<string, unknown>) => String(input.file_path),
+    call: async (input: Record<string, unknown>, context: ToolUseContext) => {
+      context.assertMutationPathUnchanged?.()
+      await writeFile(
+        String((input as { file_path: string }).file_path),
+        'changed\n',
+      )
+      return { data: 'ok' }
+    },
+  } as unknown as Tool
 }
 
 function makeContext(tools: Tools, refreshTools?: () => Tools): ToolUseContext {
@@ -109,7 +137,11 @@ function makeContext(tools: Tools, refreshTools?: () => Tools): ToolUseContext {
   } as unknown as ToolUseContext
 }
 
-function makeAssistantMessage(toolName: string, id: string): AssistantMessage {
+function makeAssistantMessage(
+  toolName: string,
+  id: string,
+  input: Record<string, unknown> = {},
+): AssistantMessage {
   return {
     type: 'assistant',
     uuid: 'assistant-1',
@@ -120,7 +152,7 @@ function makeAssistantMessage(toolName: string, id: string): AssistantMessage {
           type: 'tool_use',
           id,
           name: toolName,
-          input: {},
+          input,
         },
       ],
     },
@@ -136,6 +168,95 @@ async function collect(
   }
   return messages
 }
+
+describe('file mutation permission path evidence', () => {
+  test.skipIf(process.platform === 'win32')(
+    'rejects a symlink target changed while permission is pending',
+    async () => {
+      const approved = join(testDir, 'approved.txt')
+      const outside = join(testDir, 'outside.txt')
+      const link = join(testDir, 'target.txt')
+      await writeFile(approved, 'original\n')
+      await writeFile(outside, 'outside\n')
+      await rm(link, { force: true })
+      await symlink(approved, link)
+
+      const tool = makeFileMutationTool()
+      const ctx = makeContext([tool])
+      const input = { file_path: link, content: 'changed\n' }
+      const block = {
+        type: 'tool_use',
+        id: 'tu-path-swap',
+        name: 'Write',
+        input,
+      } as ToolUseBlock
+
+      const messages = await collect(
+        runToolUse(
+          block,
+          makeAssistantMessage('Write', 'tu-path-swap', input),
+          async () => {
+            await unlink(link)
+            await symlink(outside, link)
+            return { behavior: 'allow' } as any
+          },
+          ctx,
+          [tool],
+        ),
+      )
+
+      expect(await readFile(outside, 'utf8')).toBe('outside\n')
+      expect(
+        messages.some(message =>
+          String(message.toolUseResult).includes(
+            'File target changed after permission approval',
+          ),
+        ),
+      ).toBe(true)
+    },
+  )
+
+  test('rejects an approved input whose file path is replaced', async () => {
+    const original = join(testDir, 'original-input.txt')
+    const replacement = join(testDir, 'replacement-input.txt')
+    await writeFile(original, 'original\n')
+    await writeFile(replacement, 'replacement\n')
+
+    const tool = makeFileMutationTool()
+    const ctx = makeContext([tool])
+    const input = { file_path: original, content: 'changed\n' }
+    const block = {
+      type: 'tool_use',
+      id: 'tu-updated-path',
+      name: 'Write',
+      input,
+    } as ToolUseBlock
+
+    const messages = await collect(
+      runToolUse(
+        block,
+        makeAssistantMessage('Write', 'tu-updated-path', input),
+        async () =>
+          ({
+            behavior: 'allow',
+            updatedInput: { ...input, file_path: replacement },
+          }) as any,
+        ctx,
+        [tool],
+      ),
+    )
+
+    expect(await readFile(original, 'utf8')).toBe('original\n')
+    expect(await readFile(replacement, 'utf8')).toBe('replacement\n')
+    expect(
+      messages.some(message =>
+        String(message.toolUseResult).includes(
+          'File target changed after permission approval',
+        ),
+      ),
+    ).toBe(true)
+  })
+})
 
 describe('runToolUse request tool identity', () => {
   test('executes when request and current tool are the same object', async () => {

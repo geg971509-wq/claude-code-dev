@@ -33,4 +33,3 @@ describe('resolveJobTarget', () => {
     expect(resolveJobTarget([record], 'nightly')).toBe(record)
   })
 })
-

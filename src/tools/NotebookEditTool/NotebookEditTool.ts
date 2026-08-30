@@ -11,12 +11,14 @@ import { getCwd } from 'src/utils/cwd.js'
 import { isENOENT } from 'src/utils/errors.js'
 import { getFileModificationTime, writeTextContent } from 'src/utils/file.js'
 import { readFileSyncWithMetadata } from 'src/utils/fileRead.js'
+import { isCompleteFileState } from 'src/utils/fileStateCache.js'
 import { safeParseJSON } from 'src/utils/json.js'
 import { lazySchema } from '@claude-code-best/core-utils/lazySchema'
-import { parseCellId } from 'src/utils/notebook.js'
+import { parseCellId, projectNotebookCells } from 'src/utils/notebook.js'
 import { checkWritePermissionForTool } from 'src/utils/permissions/filesystem.js'
 import type { PermissionDecision } from 'src/utils/permissions/PermissionResult.js'
 import { jsonParse, jsonStringify } from 'src/utils/slowOperations.js'
+import { FILE_UNEXPECTEDLY_MODIFIED_ERROR } from '../FileEditTool/constants.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, PROMPT } from './prompt.js'
 import {
@@ -218,21 +220,13 @@ export const NotebookEditTool = buildTool({
     // Require Read-before-Edit (matches FileEditTool/FileWriteTool). Without
     // this, the model could edit a notebook it never saw, or edit against a
     // stale view after an external change — silent data loss.
-    const readTimestamp = toolUseContext.readFileState.get(fullPath)
-    if (!readTimestamp) {
+    const lastRead = toolUseContext.readFileState.get(fullPath)
+    if (!isCompleteFileState(lastRead)) {
       return {
         result: false,
         message:
-          'File has not been read yet. Read it first before writing to it.',
+          'File has not been fully read yet. Read it again before attempting to write it.',
         errorCode: 9,
-      }
-    }
-    if (getFileModificationTime(fullPath) > readTimestamp.timestamp) {
-      return {
-        result: false,
-        message:
-          'File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.',
-        errorCode: 10,
       }
     }
 
@@ -255,6 +249,14 @@ export const NotebookEditTool = buildTool({
         result: false,
         message: 'Notebook is not valid JSON.',
         errorCode: 6,
+      }
+    }
+    if (jsonStringify(projectNotebookCells(notebook)) !== lastRead.content) {
+      return {
+        result: false,
+        message:
+          'File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.',
+        errorCode: 10,
       }
     }
     if (!cell_id) {
@@ -302,7 +304,7 @@ export const NotebookEditTool = buildTool({
       cell_type,
       edit_mode: originalEditMode,
     },
-    { readFileState, updateFileHistoryState },
+    { readFileState, updateFileHistoryState, assertMutationPathUnchanged },
     _,
     parentMessage,
   ) {
@@ -310,6 +312,7 @@ export const NotebookEditTool = buildTool({
       ? notebook_path
       : resolve(getCwd(), notebook_path)
 
+    assertMutationPathUnchanged?.()
     if (fileHistoryEnabled()) {
       await fileHistoryTrackEdit(
         updateFileHistoryState,
@@ -322,6 +325,7 @@ export const NotebookEditTool = buildTool({
       // The section is synchronous; the IIFE preserves the return semantics
       // and scoping of the original block without adding any lock overhead.
       return (() => {
+        assertMutationPathUnchanged?.()
         // readFileSyncWithMetadata gives content + encoding + line endings in
         // one safeResolvePath + readFileSync pass, replacing the previous
         // detectFileEncoding + readFile + detectLineEndings chain (each of
@@ -350,6 +354,14 @@ export const NotebookEditTool = buildTool({
               updated_file: '',
             },
           }
+        }
+
+        const lastRead = readFileState.get(fullPath)
+        if (
+          !isCompleteFileState(lastRead) ||
+          jsonStringify(projectNotebookCells(notebook)) !== lastRead.content
+        ) {
+          throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
         }
 
         let cellIndex
@@ -443,7 +455,7 @@ export const NotebookEditTool = buildTool({
         // without this, Read→NotebookEdit→Read in the same millisecond would
         // return the file_unchanged stub against stale in-context content.
         readFileState.set(fullPath, {
-          content: updatedContent,
+          content: jsonStringify(projectNotebookCells(notebook)),
           timestamp: getFileModificationTime(fullPath),
           offset: undefined,
           limit: undefined,

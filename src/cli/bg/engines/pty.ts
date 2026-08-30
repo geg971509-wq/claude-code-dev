@@ -43,7 +43,12 @@ export class PtyEngine implements BgEngine {
   }
 
   async start(opts: BgStartOptions): Promise<BgStartResult> {
-    const hostDir = join(getClaudeConfigHomeDir(), 'sessions', 'pty', opts.sessionName)
+    const hostDir = join(
+      getClaudeConfigHomeDir(),
+      'sessions',
+      'pty',
+      opts.sessionName,
+    )
     const socketPath = join(hostDir, 'host.sock')
     const tokenPath = join(hostDir, 'host.token')
     const readyPath = join(hostDir, 'host.ready.json')
@@ -98,7 +103,12 @@ export class PtyEngine implements BgEngine {
       const pid = await waitForReady(readyPath)
       await atomicWriteFile(ackPath, '', { mode: 0o600 })
       await rm(readyPath, { force: true })
-      return { pid, sessionName: opts.sessionName, logPath: opts.logPath, engineUsed: 'pty' }
+      return {
+        pid,
+        sessionName: opts.sessionName,
+        logPath: opts.logPath,
+        engineUsed: 'pty',
+      }
     } catch (error) {
       host.kill('SIGTERM')
       await rm(hostDir, { recursive: true, force: true })

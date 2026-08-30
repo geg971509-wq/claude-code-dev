@@ -3,15 +3,13 @@ import type {
   ChatCompletionCreateParamsStreaming,
 } from 'openai/resources/chat/completions/completions.mjs'
 import { getSessionId } from '../../../bootstrap/state.js'
+import { CODEX_ORIGINATOR } from '../codex/credentials.js'
 import {
   adaptOpenAIStreamToAnthropic,
   parseRetryAfterMs,
 } from '@ant/model-provider'
 import { getOrCreateUserID } from '../../../utils/config.js'
-import {
-  isChatGPTAuthEnabled,
-  refreshChatGPTAuthAfterUnauthorized,
-} from './chatgptAuth.js'
+import { isChatGPTAuthEnabled } from './chatgptAuth.js'
 import { getOpenAIClient } from './client.js'
 import { applyKimiAuthToEnv, isKimiAuthEnabled } from './kimiAuth.js'
 import { getOfficialOpenAIPromptCacheKey } from './openaiShared.js'
@@ -28,17 +26,20 @@ import {
   buildOfficialResponsesRequest,
   createChatGPTResponsesStream,
   createOfficialResponsesStream,
-  type OpenAIStreamAttempt,
+  type ResponsesInputItem,
   type ResponsesReasoningEffort,
 } from './responsesAdapter.js'
 import {
   applyCodexReasoningToRequest,
   resolveCodexResponsesReasoningEffort,
 } from './codexReasoning.js'
+import type { PreparedOpenAIStreamAttempt } from './streamExecutor.js'
 
 export type OpenAIStreamRequest = {
   model: string
   messages: unknown[]
+  responsesInput?: ResponsesInputItem[]
+  responsesInstructions?: string
   tools: unknown[]
   toolChoice: unknown
   enableThinking: boolean
@@ -51,21 +52,8 @@ export type OpenAIStreamRequest = {
   source?: string
 }
 
-export type PreparedOpenAIStreamRequest = {
-  route: OpenAIRawStreamRoute
+export type PreparedOpenAIStreamRequest = PreparedOpenAIStreamAttempt & {
   promptCacheKey?: string
-  createAttempt: (signal: AbortSignal) => Promise<OpenAIStreamAttempt>
-}
-
-function getHttpErrorStatus(error: unknown): number | null {
-  if (
-    error &&
-    typeof error === 'object' &&
-    typeof (error as { status?: unknown }).status === 'number'
-  ) {
-    return (error as { status: number }).status
-  }
-  return null
 }
 
 function normalizeBuiltResponsesReasoning<T extends object>(
@@ -75,9 +63,6 @@ function normalizeBuiltResponsesReasoning<T extends object>(
 ): T {
   const requestRecord = builtRequest as Record<string, unknown>
   if (effort) {
-    // Builders retain legacy compatibility transforms. Reset to the resolved
-    // model-catalog value before the shared Codex normalizer decides whether a
-    // summary parameter is valid for this effort.
     requestRecord.reasoning = { effort }
   } else {
     delete requestRecord.reasoning
@@ -121,6 +106,7 @@ export function prepareOpenAIStreamRequest(
           configured: request.reasoningEffort,
           provider: 'openai',
         }) as ResponsesReasoningEffort | undefined)
+  const unauthorizedReplay = { used: false }
 
   return {
     route,
@@ -131,6 +117,8 @@ export function prepareOpenAIStreamRequest(
           buildChatGPTResponsesRequest({
             model: request.model,
             messages: request.messages,
+            input: request.responsesInput,
+            instructions: request.responsesInstructions,
             tools: request.tools,
             toolChoice: request.toolChoice,
             reasoningEffort: responsesReasoningEffort,
@@ -143,23 +131,14 @@ export function prepareOpenAIStreamRequest(
           request.model,
           responsesReasoningEffort,
         )
-        const createChatGPTAttempt = () =>
-          createChatGPTResponsesStream({
-            request: chatGPTRequest,
-            signal,
-            sessionId,
-            fetchOverride: request.fetchOverride,
-          })
-
-        try {
-          return await createChatGPTAttempt()
-        } catch (error) {
-          if (getHttpErrorStatus(error) !== 401) {
-            throw error
-          }
-          await refreshChatGPTAuthAfterUnauthorized()
-          return createChatGPTAttempt()
-        }
+        return createChatGPTResponsesStream({
+          request: chatGPTRequest,
+          signal,
+          sessionId,
+          fetchOverride: request.fetchOverride,
+          originator: CODEX_ORIGINATOR,
+          unauthorizedReplay,
+        })
       }
 
       if (useOfficialResponses) {
@@ -167,6 +146,8 @@ export function prepareOpenAIStreamRequest(
           buildOfficialResponsesRequest({
             model: request.model,
             messages: request.messages,
+            input: request.responsesInput,
+            instructions: request.responsesInstructions,
             tools: request.tools,
             toolChoice: request.toolChoice,
             reasoningEffort: responsesReasoningEffort,
@@ -180,7 +161,7 @@ export function prepareOpenAIStreamRequest(
         return createOfficialResponsesStream({
           request: officialRequest,
           signal,
-          sessionId,
+          sessionId: defaultPromptCacheKey ? sessionId : undefined,
           fetchOverride: request.fetchOverride,
           source: request.source,
         })

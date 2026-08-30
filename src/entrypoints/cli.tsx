@@ -104,7 +104,7 @@ async function main(): Promise<void> {
       // failure must not strand the PTY host before it can acknowledge exit.
       process.stderr.write(
         `ptyHost: settings bootstrap threw (continuing; supervisor already gated): ${
-          error instanceof Error ? error.stack ?? error.message : String(error)
+          error instanceof Error ? (error.stack ?? error.message) : String(error)
         }\n`,
       );
     }
@@ -326,10 +326,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (
-    feature('BG_SESSIONS') &&
-    (args[0] === 'respawn' || args[0] === 'rm')
-  ) {
+  if (feature('BG_SESSIONS') && (args[0] === 'respawn' || args[0] === 'rm')) {
     profileCheckpoint('cli_daemon_path');
     await ensureFastPathSettingsLoaded();
     const { enableConfigs } = await import('../utils/config.js');
@@ -346,10 +343,7 @@ async function main(): Promise<void> {
   // Backward-compat: ps/logs/attach/kill → daemon <sub> (deprecated).
   if (
     feature('BG_SESSIONS') &&
-    (args[0] === 'ps' ||
-      args[0] === 'logs' ||
-      args[0] === 'attach' ||
-      args[0] === 'kill')
+    (args[0] === 'ps' || args[0] === 'logs' || args[0] === 'attach' || args[0] === 'kill')
   ) {
     const mapped = args[0] === 'ps' ? 'status' : args[0];
     console.error(`[deprecated] Use: claude daemon ${mapped}${args[1] ? ' ' + args[1] : ''}`);
@@ -425,14 +419,12 @@ async function main(): Promise<void> {
   // still be interactive even when they have a subcommand-shaped argv.
   const { startCapturingEarlyInput } = await import('../utils/earlyInput.js');
   const nonReplSubcommands = new Set(['update', 'upgrade', 'doctor']);
-  const isMcpServe = args.some(
-    (arg, index) => arg === 'mcp' && args[index + 1] === 'serve',
-  );
+  const isMcpServe = args.some((arg, index) => arg === 'mcp' && args[index + 1] === 'serve');
   if (!nonReplSubcommands.has(args[0] ?? '') && !isMcpServe) {
     startCapturingEarlyInput();
   }
   profileCheckpoint('cli_before_main_import');
-  const { main: cliMain } = await import('../main.tsx');
+  const { main: cliMain } = await import('../main.js');
   profileCheckpoint('cli_after_main_import');
   await cliMain();
   profileCheckpoint('cli_after_main_complete');
@@ -452,10 +444,7 @@ async function ensureFastPathSettingsLoaded(): Promise<void> {
   startMdmRawRead();
   keychain.startKeychainPrefetch();
   mdm.startMdmSettingsLoad();
-  await Promise.all([
-    mdm.ensureMdmSettingsLoaded(),
-    keychain.ensureKeychainPrefetchCompleted(),
-  ]);
+  await Promise.all([mdm.ensureMdmSettingsLoaded(), keychain.ensureKeychainPrefetchCompleted()]);
 }
 
 await main();

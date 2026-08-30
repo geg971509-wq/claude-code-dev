@@ -75,6 +75,9 @@ const NODE_18_PLUS_BUILTINS = new Set(['undici'])
 // Bun 专用模块（仅在 Bun 运行时可用，Node.js 环境会失败）
 const BUN_MODULES = new Set(['bun', 'bun:ffi', 'bun:test', 'bun:sqlite'])
 
+// Optional runtime integrations whose call sites catch load failure and fall back.
+const OPTIONAL_RUNTIME_MODULES = new Set(['@napi-rs/keyring'])
+
 // macOS JXA / native 框架（通过 ObjC.import，非真正的 require）
 const NATIVE_FRAMEWORKS = new Set([
   'AppKit',
@@ -165,6 +168,7 @@ async function main() {
           NODE_BUILTINS.has(mod) ||
           NODE_18_PLUS_BUILTINS.has(mod) ||
           PKG_DEPS.has(mod) ||
+          OPTIONAL_RUNTIME_MODULES.has(mod) ||
           mod.startsWith('node:')
         )
           continue
@@ -202,6 +206,7 @@ async function main() {
           NODE_BUILTINS.has(mod) ||
           NODE_18_PLUS_BUILTINS.has(mod) ||
           PKG_DEPS.has(mod) ||
+          OPTIONAL_RUNTIME_MODULES.has(mod) ||
           mod.startsWith('node:')
         )
           continue
@@ -237,6 +242,7 @@ async function main() {
           NODE_BUILTINS.has(mod) ||
           NODE_18_PLUS_BUILTINS.has(mod) ||
           PKG_DEPS.has(mod) ||
+          OPTIONAL_RUNTIME_MODULES.has(mod) ||
           mod.startsWith('node:')
         )
           continue

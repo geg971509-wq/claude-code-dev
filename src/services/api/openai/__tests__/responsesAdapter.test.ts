@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { resolve } from 'path'
+import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { ProviderAPIError, ProviderStreamError } from '@ant/model-provider'
 import { calculateCacheHitRate } from '../../../../utils/cacheWarning.js'
 import {
@@ -23,17 +24,27 @@ import {
   toProviderHttpError,
 } from '../openaiShared.js'
 
-async function collectStopReason(
+async function collectAdaptedEvents(
   events: Array<Record<string, unknown>>,
-): Promise<string | null | undefined> {
+): Promise<BetaRawMessageStreamEvent[]> {
   async function* stream() {
     for (const event of events) yield event
   }
-  let stopReason: string | null | undefined
+  const adapted: BetaRawMessageStreamEvent[] = []
   for await (const event of adaptResponsesStreamToAnthropic(
     stream(),
     'gpt-5.5',
   )) {
+    adapted.push(event)
+  }
+  return adapted
+}
+
+async function collectStopReason(
+  events: Array<Record<string, unknown>>,
+): Promise<string | null | undefined> {
+  let stopReason: string | null | undefined
+  for (const event of await collectAdaptedEvents(events)) {
     if (event.type === 'message_delta') {
       stopReason = (event as { delta?: { stop_reason?: string | null } }).delta
         ?.stop_reason
@@ -303,7 +314,7 @@ describe('Responses request route contracts', () => {
     }) as Record<string, unknown>
 
     expect(request).toMatchObject({
-      store: true,
+      store: false,
       include: ['reasoning.encrypted_content'],
       prompt_cache_key: 'session-abc',
       // Codex client_metadata baseline keys (responses_metadata.rs).
@@ -378,7 +389,25 @@ describe('Responses request route contracts', () => {
     expect(request).not.toHaveProperty('client_metadata')
   })
 
-  test('includes encrypted reasoning by default; store false unless Azure', () => {
+  test('keeps ChatGPT subscription stateless even when OpenAI base is Azure', () => {
+    const saved = process.env.OPENAI_BASE_URL
+    process.env.OPENAI_BASE_URL =
+      'https://example.openai.azure.com/openai/responses'
+    try {
+      const request = buildChatGPTResponsesRequest({
+        model: 'gpt-5',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+        toolChoice: undefined,
+      })
+      expect(request.store).toBe(false)
+    } finally {
+      if (saved === undefined) delete process.env.OPENAI_BASE_URL
+      else process.env.OPENAI_BASE_URL = saved
+    }
+  })
+
+  test('includes encrypted reasoning by default with store false', () => {
     const request = buildChatGPTResponsesRequest({
       model: 'gpt-5',
       messages: [{ role: 'user', content: 'hello' }],
@@ -393,7 +422,7 @@ describe('Responses request route contracts', () => {
     expect(request).not.toHaveProperty('tool_choice')
   })
 
-  test('store true when explicitly set (Azure Responses)', () => {
+  test('ignores explicit store true for ChatGPT subscriptions', () => {
     const request = buildChatGPTResponsesRequest({
       model: 'gpt-5',
       messages: [{ role: 'user', content: 'hello' }],
@@ -402,7 +431,7 @@ describe('Responses request route contracts', () => {
       store: true,
     }) as Record<string, unknown>
 
-    expect(request.store).toBe(true)
+    expect(request.store).toBe(false)
   })
 
   test('includes prompt_cache_key when provided', () => {
@@ -488,6 +517,35 @@ describe('Responses request route contracts', () => {
       summary: [],
     })
   })
+
+  test('uses lossless Responses input without converting through Chat messages', () => {
+    const input = [
+      { type: 'reasoning', encrypted_content: 'enc_1', summary: [] },
+      { type: 'reasoning', encrypted_content: 'enc_2', summary: [] },
+      {
+        type: 'function_call_output',
+        call_id: 'call_1',
+        output: [
+          {
+            type: 'input_image',
+            image_url: 'data:image/png;base64,abc',
+            detail: 'high',
+          },
+        ],
+      },
+    ]
+    const request = buildChatGPTResponsesRequest({
+      model: 'gpt-5',
+      messages: [{ role: 'user', content: 'lossy fallback' }],
+      input,
+      instructions: 'Follow instructions.',
+      tools: [],
+      toolChoice: undefined,
+    })
+
+    expect(request.input).toEqual(input)
+    expect(request.instructions).toBe('Follow instructions.')
+  })
 })
 
 describe('adaptResponsesStreamToAnthropic stop_reason', () => {
@@ -568,27 +626,48 @@ describe('adaptResponsesStreamToAnthropic stop_reason', () => {
     })
   })
 
-  test('incomplete_details.max_output_tokens is retryable like Codex', async () => {
+  test('incomplete_details.max_output_tokens completes with durable truncation metadata', async () => {
+    const events = await collectAdaptedEvents([
+      {
+        type: 'response.output_text.delta',
+        delta: 'partial',
+      },
+      {
+        type: 'response.incomplete',
+        response: {
+          status: 'incomplete',
+          incomplete_details: { reason: 'max_output_tokens' },
+          usage: { input_tokens: 3, output_tokens: 1 },
+        },
+      },
+    ])
+
+    expect(events.at(-1)?.type).toBe('message_stop')
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'message_delta',
+        delta: expect.objectContaining({ stop_reason: 'max_tokens' }),
+        usage: expect.objectContaining({ input_tokens: 3, output_tokens: 1 }),
+      }),
+    )
+  })
+
+  test('unsupported incomplete reason fails closed without retry', async () => {
     await expect(
       collectStopReason([
-        {
-          type: 'response.output_text.delta',
-          delta: 'partial',
-        },
         {
           type: 'response.incomplete',
           response: {
             status: 'incomplete',
-            incomplete_details: { reason: 'max_output_tokens' },
-            usage: { input_tokens: 3, output_tokens: 1 },
+            incomplete_details: { reason: 'content_filter' },
           },
         },
       ]),
     ).rejects.toMatchObject({
       name: 'ProviderStreamError',
       kind: 'incomplete',
-      retryable: true,
-      incompleteReason: 'max_output_tokens',
+      retryable: false,
+      incompleteReason: 'content_filter',
     })
   })
 })
@@ -747,6 +826,175 @@ describe('adaptResponsesStreamToAnthropic errors', () => {
   })
 })
 
+describe('adaptResponsesStreamToAnthropic authoritative done events', () => {
+  const completed = {
+    type: 'response.completed',
+    response: { status: 'completed' },
+  }
+
+  test('materializes done-only output text and refusal', async () => {
+    const events = await collectAdaptedEvents([
+      {
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: {
+          type: 'message',
+          id: 'msg_1',
+          content: [{ type: 'output_text', text: 'done-only text' }],
+        },
+      },
+      {
+        type: 'response.output_item.done',
+        output_index: 1,
+        item: {
+          type: 'message',
+          id: 'msg_2',
+          content: [{ type: 'refusal', refusal: 'cannot comply' }],
+        },
+      },
+      completed,
+    ])
+    const text = events
+      .filter(
+        event =>
+          event.type === 'content_block_delta' &&
+          event.delta.type === 'text_delta',
+      )
+      .map(event =>
+        event.type === 'content_block_delta' &&
+        event.delta.type === 'text_delta'
+          ? event.delta.text
+          : '',
+      )
+      .join('')
+
+    expect(text).toBe('done-only textcannot comply')
+  })
+
+  test('emits only the trailing final tool argument suffix', async () => {
+    const events = await collectAdaptedEvents([
+      {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: {
+          type: 'function_call',
+          id: 'fc_1',
+          call_id: 'call_1',
+          name: 'Bash',
+        },
+      },
+      {
+        type: 'response.function_call_arguments.delta',
+        output_index: 0,
+        delta: '{"command":"pw',
+      },
+      {
+        type: 'response.function_call_arguments.done',
+        output_index: 0,
+        arguments: '{"command":"pwd"}',
+      },
+      {
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: {
+          type: 'function_call',
+          id: 'fc_1',
+          call_id: 'call_1',
+          name: 'Bash',
+          arguments: '{"command":"pwd"}',
+        },
+      },
+      completed,
+    ])
+    const fragments = events
+      .filter(
+        event =>
+          event.type === 'content_block_delta' &&
+          event.delta.type === 'input_json_delta',
+      )
+      .map(event =>
+        event.type === 'content_block_delta' &&
+        event.delta.type === 'input_json_delta'
+          ? event.delta.partial_json
+          : '',
+      )
+
+    expect(fragments).toEqual(['{"command":"pw', 'd"}'])
+  })
+
+  test('materializes final tool metadata and args when deltas are missing', async () => {
+    const events = await collectAdaptedEvents([
+      {
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: {
+          type: 'function_call',
+          id: 'fc_1',
+          call_id: 'call_1',
+          name: 'Bash',
+          arguments: '{"command":"pwd"}',
+        },
+      },
+      completed,
+    ])
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'content_block_start',
+        content_block: expect.objectContaining({
+          type: 'tool_use',
+          id: 'call_1',
+          name: 'Bash',
+        }),
+      }),
+    )
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'content_block_delta',
+        delta: {
+          type: 'input_json_delta',
+          partial_json: '{"command":"pwd"}',
+        },
+      }),
+    )
+  })
+
+  test('rejects final tool arguments that conflict with streamed prefix', async () => {
+    await expect(
+      collectAdaptedEvents([
+        {
+          type: 'response.output_item.added',
+          output_index: 0,
+          item: {
+            type: 'function_call',
+            call_id: 'call_1',
+            name: 'Bash',
+          },
+        },
+        {
+          type: 'response.function_call_arguments.delta',
+          output_index: 0,
+          delta: '{"command":"pwd"}',
+        },
+        {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: {
+            type: 'function_call',
+            call_id: 'call_1',
+            name: 'Bash',
+            arguments: '{"command":"ls"}',
+          },
+        },
+      ]),
+    ).rejects.toMatchObject({
+      name: 'ProviderStreamError',
+      kind: 'protocol',
+      retryable: false,
+    })
+  })
+})
+
 describe('adaptResponsesStreamToAnthropic item_id tool deltas', () => {
   test('function_call_arguments.delta keyed by item_id still streams args', async () => {
     async function* stream() {
@@ -801,6 +1049,90 @@ describe('adaptResponsesStreamToAnthropic item_id tool deltas', () => {
 })
 
 describe('adaptResponsesStreamToAnthropic tool JSON + encrypted reasoning', () => {
+  test('keeps interleaved parallel function arguments separated', async () => {
+    const events = await collectAdaptedEvents([
+      {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: {
+          type: 'function_call',
+          id: 'item_shell',
+          call_id: 'call_shell',
+          name: 'Bash',
+        },
+      },
+      {
+        type: 'response.output_item.added',
+        output_index: 1,
+        item: {
+          type: 'function_call',
+          id: 'item_read',
+          call_id: 'call_read',
+          name: 'Read',
+        },
+      },
+      {
+        type: 'response.function_call_arguments.delta',
+        output_index: 0,
+        item_id: 'item_shell',
+        delta: '{"command":"git ',
+      },
+      {
+        type: 'response.function_call_arguments.delta',
+        output_index: 1,
+        item_id: 'item_read',
+        delta: '{"file_path":"/tmp/',
+      },
+      {
+        type: 'response.function_call_arguments.delta',
+        output_index: 0,
+        item_id: 'item_shell',
+        delta: 'status"}',
+      },
+      {
+        type: 'response.function_call_arguments.delta',
+        output_index: 1,
+        item_id: 'item_read',
+        delta: 'a"}',
+      },
+      {
+        type: 'response.function_call_arguments.done',
+        output_index: 0,
+        item_id: 'item_shell',
+        name: 'Bash',
+        arguments: '{"command":"git status"}',
+      },
+      {
+        type: 'response.function_call_arguments.done',
+        output_index: 1,
+        item_id: 'item_read',
+        name: 'Read',
+        arguments: '{"file_path":"/tmp/a"}',
+      },
+      {
+        type: 'response.completed',
+        response: { id: 'resp_parallel', status: 'completed' },
+      },
+    ])
+    const argumentsByIndex = new Map<number, string>()
+    for (const event of events) {
+      if (
+        event.type === 'content_block_delta' &&
+        event.delta.type === 'input_json_delta'
+      ) {
+        argumentsByIndex.set(
+          event.index,
+          (argumentsByIndex.get(event.index) ?? '') + event.delta.partial_json,
+        )
+      }
+    }
+
+    expect([...argumentsByIndex.values()]).toEqual([
+      '{"command":"git status"}',
+      '{"file_path":"/tmp/a"}',
+    ])
+  })
+
   test('soft-fails invalid tool arguments at finish', async () => {
     async function* stream() {
       yield {
@@ -903,12 +1235,143 @@ describe('adaptResponsesStreamToAnthropic tool JSON + encrypted reasoning', () =
     expect(delta.usage?.reasoning_tokens).toBe(3)
   })
 
-  test('separates reasoning summary parts and items', async () => {
+  test('renders atomic reasoning done events and ignores stale completions', async () => {
+    const events = await collectAdaptedEvents([
+      {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: { type: 'reasoning', id: 'rs_1' },
+      },
+      {
+        type: 'response.reasoning_summary_text.delta',
+        delta: 'partial',
+      },
+      {
+        type: 'response.reasoning_summary_text.done',
+        item_id: 'rs_1',
+        summary_index: 0,
+        text: 'step one',
+      },
+      {
+        type: 'response.reasoning_summary_text.done',
+        item_id: 'rs_1',
+        summary_index: 1,
+        text: 'step two',
+      },
+      {
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: {
+          type: 'reasoning',
+          id: 'rs_1',
+          summary: [
+            { type: 'summary_text', text: 'step one' },
+            { type: 'summary_text', text: 'step two' },
+          ],
+          encrypted_content: 'enc_1',
+        },
+      },
+      {
+        type: 'response.reasoning_summary_text.done',
+        item_id: 'rs_1',
+        summary_index: 2,
+        text: 'late step',
+      },
+      {
+        type: 'response.completed',
+        response: { id: 'resp_1', status: 'completed' },
+      },
+    ])
+    const thinking = events
+      .filter(
+        event =>
+          event.type === 'content_block_delta' &&
+          event.delta.type === 'thinking_delta',
+      )
+      .map(event =>
+        event.type === 'content_block_delta' &&
+        event.delta.type === 'thinking_delta'
+          ? event.delta.thinking
+          : '',
+      )
+      .join('')
+
+    expect(thinking).toBe('step one\n\nstep two')
+  })
+
+  test('rejects authoritative reasoning that conflicts with streamed text', async () => {
+    await expect(
+      collectAdaptedEvents([
+        {
+          type: 'response.output_item.added',
+          output_index: 0,
+          item: { type: 'reasoning', id: 'rs_1' },
+        },
+        {
+          type: 'response.reasoning_summary_text.delta',
+          item_id: 'rs_1',
+          summary_index: 0,
+          delta: 'draft',
+        },
+        {
+          type: 'response.reasoning_summary_text.done',
+          item_id: 'rs_1',
+          summary_index: 0,
+          text: 'final',
+        },
+      ]),
+    ).rejects.toThrow('did not extend streamed prefix')
+  })
+
+  test('uses final reasoning arrays when no text events arrived', async () => {
+    const events = await collectAdaptedEvents([
+      {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: { type: 'reasoning', id: 'rs_1' },
+      },
+      {
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: {
+          type: 'reasoning',
+          id: 'rs_1',
+          content: [{ type: 'reasoning_text', text: 'raw reasoning' }],
+          encrypted_content: 'enc_1',
+        },
+      },
+      {
+        type: 'response.completed',
+        response: { id: 'resp_1', status: 'completed' },
+      },
+    ])
+    const thinking = events
+      .filter(
+        event =>
+          event.type === 'content_block_delta' &&
+          event.delta.type === 'thinking_delta',
+      )
+      .map(event =>
+        event.type === 'content_block_delta' &&
+        event.delta.type === 'thinking_delta'
+          ? event.delta.thinking
+          : '',
+      )
+      .join('')
+
+    expect(thinking).toBe('raw reasoning')
+  })
+
+  test('separates reasoning summary parts and item signatures', async () => {
     async function* stream() {
       yield {
         type: 'response.output_item.added',
         output_index: 0,
-        item: { type: 'reasoning', id: 'rs_1' },
+        item: {
+          type: 'reasoning',
+          id: 'rs_1',
+          encrypted_content: 'enc_1',
+        },
       }
       yield {
         type: 'response.reasoning_summary_text.delta',
@@ -934,12 +1397,20 @@ describe('adaptResponsesStreamToAnthropic tool JSON + encrypted reasoning', () =
       yield {
         type: 'response.output_item.done',
         output_index: 0,
-        item: { type: 'reasoning', id: 'rs_1' },
+        item: {
+          type: 'reasoning',
+          id: 'rs_1',
+          encrypted_content: 'enc_1',
+        },
       }
       yield {
         type: 'response.output_item.added',
         output_index: 1,
-        item: { type: 'reasoning', id: 'rs_2' },
+        item: {
+          type: 'reasoning',
+          id: 'rs_2',
+          encrypted_content: 'enc_2',
+        },
       }
       yield {
         type: 'response.reasoning_summary_text.delta',
@@ -957,24 +1428,33 @@ describe('adaptResponsesStreamToAnthropic tool JSON + encrypted reasoning', () =
       }
     }
 
-    const fragments: string[] = []
+    const events = []
     for await (const event of adaptResponsesStreamToAnthropic(
       stream(),
       'gpt-5',
     )) {
-      if (
-        event.type === 'content_block_delta' &&
-        event.delta.type === 'thinking_delta'
-      ) {
-        fragments.push(event.delta.thinking)
-      }
+      events.push(event)
     }
-
-    expect(fragments.join('')).toBe(
-      '**Inspecting WireGuard runtime API**\n\n' +
-        '**Planning exact dependency reads**\n\n' +
-        '**Checking runtime exports**',
+    const thinkingStarts = events.filter(
+      event =>
+        event.type === 'content_block_start' &&
+        event.content_block.type === 'thinking',
     )
+    const signatures = events
+      .filter(
+        event =>
+          event.type === 'content_block_delta' &&
+          event.delta.type === 'signature_delta',
+      )
+      .map(event =>
+        event.type === 'content_block_delta' &&
+        event.delta.type === 'signature_delta'
+          ? event.delta.signature
+          : '',
+      )
+
+    expect(thinkingStarts).toHaveLength(2)
+    expect(signatures).toEqual(['enc_1', 'enc_2'])
   })
 
   test('keeps reasoning item identity across partial identifiers', async () => {

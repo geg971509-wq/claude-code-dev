@@ -204,6 +204,7 @@ export type ToolUseContext = {
   }
   abortController: AbortController
   readFileState: FileStateCache
+  assertMutationPathUnchanged?: () => void
   getAppState(): AppState
   setAppState(f: (prev: AppState) => AppState): void
   /**

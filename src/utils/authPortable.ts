@@ -8,7 +8,7 @@ export async function maybeRemoveApiKeyFromMacOSKeychainThrows(): Promise<void> 
       `security delete-generic-password -a $USER -s "${storageServiceName}"`,
       { shell: true, reject: false },
     )
-    if (result.exitCode !== 0) {
+    if (result.exitCode !== 0 && result.exitCode !== 44) {
       throw new Error('Failed to delete keychain entry')
     }
   }

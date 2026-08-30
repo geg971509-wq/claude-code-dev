@@ -58,10 +58,16 @@ export class TmuxEngine implements BgEngine {
   async attach(session: SessionEntry): Promise<void> {
     if (!session.tmuxSessionName)
       throw new Error(`Session ${session.sessionId} has no tmux session name.`)
-    const result = spawnSync('tmux', ['attach-session', '-t', session.tmuxSessionName], {
-      stdio: 'inherit',
-    })
+    const result = spawnSync(
+      'tmux',
+      ['attach-session', '-t', session.tmuxSessionName],
+      {
+        stdio: 'inherit',
+      },
+    )
     if (result.status !== 0)
-      throw new Error(`Failed to attach to tmux session '${session.tmuxSessionName}'.`)
+      throw new Error(
+        `Failed to attach to tmux session '${session.tmuxSessionName}'.`,
+      )
   }
 }

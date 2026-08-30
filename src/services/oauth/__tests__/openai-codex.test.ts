@@ -1,5 +1,9 @@
 import { describe, expect, test, mock, beforeEach, afterEach } from 'bun:test'
-import { _internal, performOpenAICodexLogin } from '../openai-codex.js'
+import {
+  _internal,
+  parseManualCodeInput,
+  performOpenAICodexLogin,
+} from '../openai-codex.js'
 
 describe('openai-codex OAuth', () => {
   describe('constants', () => {
@@ -74,6 +78,100 @@ describe('openai-codex OAuth', () => {
         await pending
         await new Promise<void>(resolve => blocker.close(() => resolve()))
       }
+    })
+  })
+
+  describe('callback validation', () => {
+    test('ignores wrong state and still accepts the valid callback', async () => {
+      const server = await _internal.startCallbackServer('expected-state')
+      try {
+        const response = await fetch(
+          `http://127.0.0.1:${server.port}/auth/callback?state=wrong&error=access_denied&error_description=%3Cscript%3Ebad%3C%2Fscript%3E`,
+        )
+        expect(response.status).toBe(400)
+        expect(await response.text()).toContain('State mismatch')
+
+        await fetch(
+          `http://127.0.0.1:${server.port}/auth/callback?state=expected-state&code=valid-code`,
+        )
+        expect(await server.waitForCode()).toBe('valid-code')
+      } finally {
+        server.close()
+      }
+    })
+
+    test('HTML-escapes reflected OAuth error descriptions', async () => {
+      const server = await _internal.startCallbackServer('expected-state')
+      const result = server.waitForCode().catch(() => undefined)
+      try {
+        const description = `<script>alert("x")</script>&'`
+        const response = await fetch(
+          `http://127.0.0.1:${server.port}/auth/callback?state=expected-state&error=access_denied&error_description=${encodeURIComponent(description)}`,
+        )
+        const html = await response.text()
+        expect(html).not.toContain(description)
+        expect(html).toContain(
+          '&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;&amp;&#39;',
+        )
+        await result
+      } finally {
+        server.close()
+      }
+    })
+
+    test('settles callback promise only once', async () => {
+      const server = await _internal.startCallbackServer('expected-state')
+      try {
+        const result = server.waitForCode()
+        await fetch(
+          `http://127.0.0.1:${server.port}/auth/callback?state=expected-state&code=first-code`,
+        )
+        await fetch(
+          `http://127.0.0.1:${server.port}/auth/callback?state=expected-state&error=access_denied`,
+        )
+        expect(await result).toBe('first-code')
+      } finally {
+        server.close()
+      }
+    })
+  })
+
+  describe('manual callback parsing', () => {
+    test('requires a state-bound callback', async () => {
+      expect(
+        parseManualCodeInput(
+          'http://localhost:1455/auth/callback?code=code-1&state=state-1',
+        ),
+      ).toEqual({ code: 'code-1', state: 'state-1' })
+      expect(parseManualCodeInput('code-2#state-2')).toEqual({
+        code: 'code-2',
+        state: 'state-2',
+      })
+      expect(parseManualCodeInput('raw-code')).toBeNull()
+      expect(
+        parseManualCodeInput(
+          'http://localhost:1455/auth/callback?code=missing-state',
+        ),
+      ).toBeNull()
+    })
+
+    test('wrong manual state stays pending so a valid callback can win', async () => {
+      const wrong = _internal.waitForManualCode(
+        Promise.resolve({ code: 'bad', state: 'wrong' }),
+        'expected',
+      )
+      expect(
+        await Promise.race([
+          wrong.then(() => 'resolved'),
+          Bun.sleep(20).then(() => 'pending'),
+        ]),
+      ).toBe('pending')
+      await expect(
+        _internal.waitForManualCode(
+          Promise.resolve({ code: 'good', state: 'expected' }),
+          'expected',
+        ),
+      ).resolves.toEqual({ source: 'manual', code: 'good' })
     })
   })
 

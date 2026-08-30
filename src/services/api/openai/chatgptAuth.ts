@@ -1,11 +1,19 @@
-import { chmod, mkdir, readFile, unlink, writeFile } from 'fs/promises'
+import { mkdir, readFile, unlink, writeFile } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
+import { abortable } from 'src/utils/abort.js'
 import { logForDebugging } from 'src/utils/debug.js'
+import {
+  readSecureStorageFresh,
+  withAuthMutationLock,
+} from 'src/utils/secureStorage/authLock.js'
+import { getSecureStorage } from 'src/utils/secureStorage/index.js'
 
 const ISSUER = 'https://auth.openai.com'
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 const AUTH_FILE = 'openai-chatgpt-auth.json'
+const MIGRATION_MARKER_FILE = '.openai-chatgpt-auth-migrated'
+const STORAGE_KEY = 'openaiChatgptOauth'
 const REFRESH_SKEW_MS = 5 * 60 * 1000
 
 export type ChatGPTDeviceCode = {
@@ -21,6 +29,7 @@ export type ChatGPTAuthTokens = {
   refreshToken: string
   accountId?: string
   lastRefresh?: string
+  generation?: number
 }
 
 export type ChatGPTAuth = {
@@ -43,17 +52,14 @@ function authFilePath(): string {
   return join(getClaudeConfigHomeDirLocal(), AUTH_FILE)
 }
 
+function migrationMarkerPath(): string {
+  return join(getClaudeConfigHomeDirLocal(), MIGRATION_MARKER_FILE)
+}
+
 function getClaudeConfigHomeDirLocal(): string {
   return (
     process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
   ).normalize('NFC')
-}
-
-function codexAuthFilePath(): string {
-  return join(
-    process.env.CODEX_HOME ?? join(process.env.HOME ?? '', '.codex'),
-    'auth.json',
-  )
 }
 
 function asString(value: unknown): string | undefined {
@@ -102,11 +108,6 @@ function getTokenExpiryMs(token: string): number | null {
   return typeof exp === 'number' ? exp * 1000 : null
 }
 
-function isTokenFresh(token: string): boolean {
-  const expiresAt = getTokenExpiryMs(token)
-  return expiresAt !== null && expiresAt > Date.now() + REFRESH_SKEW_MS
-}
-
 function extractAccountId(tokens: {
   idToken?: string
   accessToken?: string
@@ -125,7 +126,7 @@ function extractAccountId(tokens: {
   return undefined
 }
 
-async function readStoredAuth(path: string): Promise<ChatGPTAuthTokens | null> {
+async function readAuthFile(path: string): Promise<ChatGPTAuthTokens | null> {
   try {
     const raw = await readFile(path, 'utf8')
     const parsed = JSON.parse(raw) as StoredAuthFile
@@ -150,36 +151,101 @@ async function readStoredAuth(path: string): Promise<ChatGPTAuthTokens | null> {
   }
 }
 
-async function readAvailableTokens(options?: {
-  logCodexFallback?: boolean
-}): Promise<ChatGPTAuthTokens | null> {
-  const local = await readStoredAuth(authFilePath())
-  if (local) return local
-
-  const codex = await readStoredAuth(codexAuthFilePath())
-  if (codex && options?.logCodexFallback !== false) {
-    logForDebugging('[OpenAI] Using ChatGPT auth from Codex auth.json')
+function parseSecureAuth(raw: unknown): ChatGPTAuthTokens | null {
+  if (!raw || typeof raw !== 'object') return null
+  const value = raw as Record<string, unknown>
+  const idToken = asString(value.idToken)
+  const accessToken = asString(value.accessToken)
+  const refreshToken = asString(value.refreshToken)
+  if (!idToken || !accessToken || !refreshToken) return null
+  return {
+    idToken,
+    accessToken,
+    refreshToken,
+    accountId: asString(value.accountId),
+    lastRefresh: asString(value.lastRefresh),
+    generation:
+      typeof value.generation === 'number' ? value.generation : undefined,
   }
-  return codex
 }
 
-async function saveStoredAuth(tokens: ChatGPTAuthTokens): Promise<void> {
-  const path = authFilePath()
-  await mkdir(getClaudeConfigHomeDirLocal(), { recursive: true })
-  const body: StoredAuthFile = {
-    auth_mode: 'chatgpt',
-    tokens: {
-      id_token: tokens.idToken,
-      access_token: tokens.accessToken,
-      refresh_token: tokens.refreshToken,
-      account_id: extractAccountId(tokens),
-    },
-    last_refresh: new Date().toISOString(),
+function readSecureAuth(fresh = false): ChatGPTAuthTokens | null {
+  const data = ((fresh
+    ? readSecureStorageFresh()
+    : getSecureStorage().read()) ?? {}) as Record<string, unknown>
+  return parseSecureAuth(data[STORAGE_KEY])
+}
+
+function updateSecureStorage(
+  data: Record<string, unknown>,
+  operation: string,
+): void {
+  const result = getSecureStorage().update(data)
+  if (!result.success) {
+    throw new Error(`Failed to ${operation} in secure storage`)
   }
-  await writeFile(path, `${JSON.stringify(body, null, 2)}\n`, {
-    mode: 0o600,
+  if (result.warning) {
+    logForDebugging(`[OpenAI] ${result.warning}`, { level: 'warn' })
+  }
+}
+
+async function writeMigrationMarker(): Promise<void> {
+  await mkdir(getClaudeConfigHomeDirLocal(), { recursive: true })
+  await writeFile(migrationMarkerPath(), '', { mode: 0o600 })
+}
+
+async function hasMigrationMarker(): Promise<boolean> {
+  try {
+    await readFile(migrationMarkerPath(), 'utf8')
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+}
+
+async function saveStoredAuthUnlocked(
+  tokens: ChatGPTAuthTokens,
+): Promise<ChatGPTAuthTokens> {
+  const current = (readSecureStorageFresh() ?? {}) as Record<string, unknown>
+  const previous = parseSecureAuth(current[STORAGE_KEY])
+  const stored = {
+    ...tokens,
+    accountId: extractAccountId(tokens),
+    lastRefresh: new Date().toISOString(),
+    generation: tokens.generation ?? (previous?.generation ?? 0) + 1,
+  }
+  updateSecureStorage(
+    { ...current, [STORAGE_KEY]: stored },
+    'save ChatGPT credentials',
+  )
+  await writeMigrationMarker()
+  return stored
+}
+
+function saveStoredAuth(tokens: ChatGPTAuthTokens): Promise<ChatGPTAuthTokens> {
+  return withAuthMutationLock(() => saveStoredAuthUnlocked(tokens))
+}
+
+async function loadStoredAuth(): Promise<ChatGPTAuthTokens | null> {
+  const stored = readSecureAuth()
+  if (stored || (await hasMigrationMarker())) return stored
+
+  return withAuthMutationLock(async () => {
+    const latest = readSecureAuth(true)
+    if (latest || (await hasMigrationMarker())) return latest
+
+    const legacy = await readAuthFile(authFilePath())
+    if (!legacy) {
+      await writeMigrationMarker()
+      return null
+    }
+
+    const saved = await saveStoredAuthUnlocked(legacy)
+    await unlink(authFilePath())
+    logForDebugging('[OpenAI] Imported legacy ChatGPT auth into secure storage')
+    return saved
   })
-  await chmod(path, 0o600).catch(() => undefined)
 }
 
 async function postJSON<T>(
@@ -304,7 +370,7 @@ async function exchangeAuthorizationCode(params: {
   }
 }
 
-async function refreshTokens(
+async function requestRefreshedTokens(
   tokens: ChatGPTAuthTokens,
 ): Promise<ChatGPTAuthTokens> {
   type TokenResponse = {
@@ -320,65 +386,109 @@ async function refreshTokens(
       'openid profile email offline_access api.connectors.read api.connectors.invoke',
   })
   const data = await postForm<TokenResponse>(`${ISSUER}/oauth/token`, body)
+  const refreshedAccountId = extractAccountId({
+    idToken: data.id_token,
+    accessToken: data.access_token,
+  })
+  if (
+    tokens.accountId &&
+    refreshedAccountId &&
+    refreshedAccountId !== tokens.accountId
+  ) {
+    throw new Error('ChatGPT token refresh returned a different account')
+  }
   return {
     idToken: data.id_token,
     accessToken: data.access_token,
     refreshToken: data.refresh_token ?? tokens.refreshToken,
-    accountId: extractAccountId({
-      idToken: data.id_token,
-      accessToken: data.access_token,
-      accountId: tokens.accountId,
-    }),
+    accountId: refreshedAccountId ?? tokens.accountId,
   }
 }
 
-let refreshInFlight: Promise<ChatGPTAuthTokens> | null = null
-
-export function _resetChatGPTAuthForTests(): void {
-  refreshInFlight = null
+function authSnapshotKey(tokens: ChatGPTAuthTokens): string {
+  return JSON.stringify([
+    tokens.accountId ?? '',
+    tokens.generation ?? 0,
+    tokens.accessToken,
+    tokens.refreshToken,
+  ])
 }
 
-async function refreshAndPersist(
-  staleTokens: ChatGPTAuthTokens,
-): Promise<ChatGPTAuthTokens> {
-  const latestBefore = await readAvailableTokens({ logCodexFallback: false })
-  if (
-    latestBefore?.accessToken &&
-    latestBefore.accessToken !== staleTokens.accessToken &&
-    isTokenFresh(latestBefore.accessToken)
-  ) {
-    return latestBefore
-  }
+const refreshInFlight = new Map<string, Promise<ChatGPTAuthTokens | null>>()
 
-  const refreshed = await refreshTokens(staleTokens)
-  const latestAfter = await readAvailableTokens({ logCodexFallback: false })
-  if (
-    latestAfter?.accessToken &&
-    latestAfter.accessToken !== staleTokens.accessToken &&
-    latestAfter.accessToken !== refreshed.accessToken &&
-    isTokenFresh(latestAfter.accessToken)
-  ) {
-    return latestAfter
-  }
+async function refreshStoredAuth(
+  tokens: ChatGPTAuthTokens,
+  expectedAccountId?: string,
+  rejectedAccessToken?: string,
+): Promise<ChatGPTAuthTokens | null> {
+  return withAuthMutationLock(async () => {
+    const latestBefore = readSecureAuth(true)
+    if (expectedAccountId && latestBefore?.accountId !== expectedAccountId) {
+      throw new Error('ChatGPT account changed before token refresh')
+    }
+    if (
+      rejectedAccessToken &&
+      latestBefore?.accessToken !== rejectedAccessToken
+    ) {
+      return latestBefore
+    }
+    if (
+      !latestBefore ||
+      authSnapshotKey(latestBefore) !== authSnapshotKey(tokens)
+    ) {
+      return latestBefore
+    }
 
-  await saveStoredAuth(refreshed)
-  logForDebugging('[OpenAI] Rotated ChatGPT access token')
-  return refreshed
-}
+    const refreshed = await requestRefreshedTokens(tokens)
+    const latestAfter = readSecureAuth(true)
+    if (
+      !latestAfter ||
+      authSnapshotKey(latestAfter) !== authSnapshotKey(tokens)
+    ) {
+      if (expectedAccountId && latestAfter?.accountId !== expectedAccountId) {
+        throw new Error('ChatGPT account changed during token refresh')
+      }
+      return latestAfter
+    }
 
-function startRefresh(tokens: ChatGPTAuthTokens): Promise<ChatGPTAuthTokens> {
-  if (refreshInFlight) return refreshInFlight
-  refreshInFlight = refreshAndPersist(tokens).finally(() => {
-    refreshInFlight = null
+    return saveStoredAuthUnlocked({
+      ...refreshed,
+      generation: (tokens.generation ?? 0) + 1,
+    })
   })
-  return refreshInFlight
 }
 
-function toChatGPTAuth(tokens: ChatGPTAuthTokens): ChatGPTAuth {
-  return {
-    accessToken: tokens.accessToken,
-    accountId: tokens.accountId ?? extractAccountId(tokens),
+async function refreshChatGPTAuth(
+  force: boolean,
+  expectedAccountId?: string,
+  rejectedAccessToken?: string,
+): Promise<ChatGPTAuthTokens | null> {
+  const tokens = await loadStoredAuth()
+  if (!tokens) return null
+  if (expectedAccountId && tokens.accountId !== expectedAccountId) {
+    throw new Error('ChatGPT account changed before token refresh')
   }
+  const expiresAt = getTokenExpiryMs(tokens.accessToken)
+  if (
+    !force &&
+    (expiresAt === null || expiresAt > Date.now() + REFRESH_SKEW_MS)
+  ) {
+    return tokens
+  }
+
+  const key = `${authSnapshotKey(tokens)}:${expectedAccountId ?? ''}`
+  const existing = refreshInFlight.get(key)
+  if (existing) return existing
+
+  const refresh = refreshStoredAuth(
+    tokens,
+    expectedAccountId,
+    rejectedAccessToken,
+  ).finally(() => {
+    refreshInFlight.delete(key)
+  })
+  refreshInFlight.set(key, refresh)
+  return refresh
 }
 
 export async function completeChatGPTDeviceLogin(
@@ -387,58 +497,82 @@ export async function completeChatGPTDeviceLogin(
 ): Promise<ChatGPTAuthTokens> {
   const code = await pollForAuthorizationCode(deviceCode, signal)
   const tokens = await exchangeAuthorizationCode(code)
-  await saveStoredAuth(tokens)
-  return tokens
+  return saveStoredAuth(tokens)
 }
 
 export function isChatGPTAuthEnabled(): boolean {
   return process.env.OPENAI_AUTH_MODE === 'chatgpt'
 }
 
-export async function removeChatGPTAuth(): Promise<void> {
-  await unlink(authFilePath()).catch(error => {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw error
+export function removeChatGPTAuth(): Promise<void> {
+  return withAuthMutationLock(async () => {
+    const errors: unknown[] = []
+
+    try {
+      await writeMigrationMarker()
+    } catch (error) {
+      errors.push(error)
+    }
+
+    try {
+      const current = (readSecureStorageFresh() ?? {}) as Record<
+        string,
+        unknown
+      >
+      if (STORAGE_KEY in current) {
+        const { [STORAGE_KEY]: _removed, ...rest } = current
+        updateSecureStorage(rest, 'clear ChatGPT credentials')
+      }
+    } catch (error) {
+      errors.push(error)
+    }
+
+    try {
+      await unlink(authFilePath())
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        errors.push(error)
+      }
+    }
+
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'Failed to clear ChatGPT credentials')
     }
   })
 }
 
-export async function getValidChatGPTAuth(): Promise<ChatGPTAuth> {
-  let tokens = await readAvailableTokens()
-  if (!tokens) {
-    throw new Error(
-      'ChatGPT account is not logged in. Run /login and select ChatGPT account with subscription.',
-    )
-  }
-  const expiresAt = getTokenExpiryMs(tokens.accessToken)
-  if (expiresAt !== null && expiresAt <= Date.now() + REFRESH_SKEW_MS) {
-    tokens = await startRefresh(tokens)
-  }
-  return toChatGPTAuth(tokens)
-}
-
-/**
- * Reload shared credentials and recover once when ChatGPT rejects a bearer.
- * A server-side revocation may happen before the JWT expiry, so this path
- * deliberately forces refresh only when the rejected token is still current.
- */
-export async function refreshChatGPTAuthAfterUnauthorized(
+export async function forceRefreshChatGPTAuth(
+  expectedAccountId?: string,
   rejectedAccessToken?: string,
 ): Promise<ChatGPTAuth> {
-  const tokens = await readAvailableTokens({ logCodexFallback: false })
+  const tokens = await refreshChatGPTAuth(
+    true,
+    expectedAccountId,
+    rejectedAccessToken,
+  )
   if (!tokens) {
     throw new Error(
       'ChatGPT account is not logged in. Run /login and select ChatGPT account with subscription.',
     )
   }
-
-  if (rejectedAccessToken && tokens.accessToken !== rejectedAccessToken) {
-    logForDebugging(
-      '[OpenAI] Reusing ChatGPT credentials rotated by another request after 401',
-    )
-    return toChatGPTAuth(tokens)
+  return {
+    accessToken: tokens.accessToken,
+    accountId: tokens.accountId ?? extractAccountId(tokens),
   }
+}
 
-  logForDebugging('[OpenAI] Refreshing ChatGPT credentials after 401')
-  return toChatGPTAuth(await startRefresh(tokens))
+export async function getValidChatGPTAuth(
+  signal?: AbortSignal,
+): Promise<ChatGPTAuth> {
+  const refresh = refreshChatGPTAuth(false)
+  const tokens = signal ? await abortable(refresh, signal) : await refresh
+  if (!tokens) {
+    throw new Error(
+      'ChatGPT account is not logged in. Run /login and select ChatGPT account with subscription.',
+    )
+  }
+  return {
+    accessToken: tokens.accessToken,
+    accountId: tokens.accountId ?? extractAccountId(tokens),
+  }
 }

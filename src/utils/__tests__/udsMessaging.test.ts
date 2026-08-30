@@ -691,7 +691,7 @@ describe('UDS inbox retention', () => {
       await mkdir(dirname(path), { recursive: true })
     }
     const receiver = createServer(socket => {
-      socket.end()
+      socket.once('data', () => socket.end())
     })
     await new Promise<void>((resolve, reject) => {
       receiver.on('error', reject)

@@ -1,4 +1,4 @@
-import { mock, describe, test, expect, beforeEach } from 'bun:test'
+import { mock, describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { debugMock } from '../../../../tests/mocks/debug'
 
 // Mock @langfuse/otel before any imports
@@ -87,11 +87,14 @@ mock.module('src/utils/user.js', () => ({
 }))
 
 describe('Langfuse integration', () => {
+  const originalTelemetryOptIn = process.env.CLAUDE_CODE_ENABLE_TELEMETRY
+
   beforeEach(() => {
     // Reset env
     delete process.env.LANGFUSE_PUBLIC_KEY
     delete process.env.LANGFUSE_SECRET_KEY
     delete process.env.LANGFUSE_BASE_URL
+    process.env.CLAUDE_CODE_ENABLE_TELEMETRY = '1'
     mockStartObservation.mockClear()
     mockChildStartObservation.mockClear()
     mockChildUpdate.mockClear()
@@ -101,6 +104,14 @@ describe('Langfuse integration', () => {
     mockForceFlush.mockClear()
     mockShutdown.mockClear()
     mockSetAttribute.mockClear()
+  })
+
+  afterEach(() => {
+    if (originalTelemetryOptIn === undefined) {
+      delete process.env.CLAUDE_CODE_ENABLE_TELEMETRY
+    } else {
+      process.env.CLAUDE_CODE_ENABLE_TELEMETRY = originalTelemetryOptIn
+    }
   })
 
   // ── sanitize tests ──────────────────────────────────────────────────────────

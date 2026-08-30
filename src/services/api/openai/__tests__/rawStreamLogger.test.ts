@@ -144,6 +144,29 @@ describe('logOpenAIRawStream', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
+  test('logs codex-responses with the Responses protocol', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openai-raw-log-'))
+    const path = join(root, 'events.openai.jsonl')
+    _setOpenAIRawStreamLoggerForTesting({ enabled: true, path })
+
+    for await (const _event of logOpenAIRawStream(
+      fromEvents([{ type: 'response.completed' }]),
+      {
+        route: 'codex-responses',
+        model: 'gpt-5.5-codex',
+      },
+    )) {
+      // Drain.
+    }
+    _flushOpenAIRawStreamLogForTesting()
+
+    expect(readRows(path)[0]).toMatchObject({
+      route: 'codex-responses',
+      protocol: 'responses',
+    })
+    rmSync(root, { recursive: true, force: true })
+  })
+
   test('logs start and error for a first-event failure and preserves its identity', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openai-raw-log-'))
     const path = join(root, 'events.openai.jsonl')

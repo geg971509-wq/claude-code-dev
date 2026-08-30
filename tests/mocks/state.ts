@@ -27,9 +27,9 @@ export function stateMock() {
     setOriginalCwd: noop,
     setProjectRoot: noop,
 
-    // Direct-connect
-    getDirectConnectServerUrl: () => undefined,
-    setDirectConnectServerUrl: noop,
+    // Remote environment
+    getRemoteEnvironmentLabel: () => undefined,
+    setRemoteEnvironmentLabel: noop,
 
     // Duration / cost accumulators
     addToTotalDurationState: noop,

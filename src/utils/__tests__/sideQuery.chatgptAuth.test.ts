@@ -31,6 +31,7 @@ let chatCompletionsCreateCount = 0
 let responsesCreateCount = 0
 let lastChatCompletionsArgs: Record<string, unknown> | null = null
 let lastResponsesArgs: Record<string, unknown> | null = null
+let lastResponsesOptions: Record<string, unknown> | null = null
 let chatCompletionsUsage: Record<string, unknown> = {}
 
 function asyncStream<T>(events: T[]): AsyncIterable<T> {
@@ -97,9 +98,13 @@ mock.module('src/services/api/openai/client.js', () => ({
         },
       },
       responses: {
-        create: (args: Record<string, unknown>) => {
+        create: (
+          args: Record<string, unknown>,
+          options?: Record<string, unknown>,
+        ) => {
           responsesCreateCount++
           lastResponsesArgs = args
+          lastResponsesOptions = options ?? null
           return {
             asResponse: async () =>
               new Response(
@@ -127,6 +132,10 @@ mock.module('src/services/api/openai/client.js', () => ({
 mock.module('src/services/api/openai/chatgptAuth.js', () => ({
   isChatGPTAuthEnabled: () => process.env.OPENAI_AUTH_MODE === 'chatgpt',
   getValidChatGPTAuth: async () => ({
+    accessToken: 'test-access-token-not-real',
+    accountId: 'acct_test',
+  }),
+  forceRefreshChatGPTAuth: async () => ({
     accessToken: 'test-access-token-not-real',
     accountId: 'acct_test',
   }),
@@ -186,6 +195,12 @@ function buildFunctionCallSse(toolName: string, argsJson: string): string {
     `data: ${JSON.stringify({
       type: 'response.output_item.done',
       output_index: 0,
+      item: {
+        type: 'function_call',
+        call_id: 'call_chatgpt_1',
+        name: toolName,
+        arguments: argsJson,
+      },
     })}`,
     '',
     `data: ${JSON.stringify({
@@ -222,6 +237,7 @@ beforeEach(() => {
   responsesCreateCount = 0
   lastChatCompletionsArgs = null
   lastResponsesArgs = null
+  lastResponsesOptions = null
   chatCompletionsUsage = { prompt_tokens: 3, completion_tokens: 2 }
   capturedFetch = null
   enableOpenAIProvider()
@@ -418,10 +434,7 @@ describe('sideQuery OpenAI ChatGPT OAuth path', () => {
     expect(lastResponsesArgs?.model).toBe('gpt-5.1')
     expect(lastResponsesArgs?.max_output_tokens).toBe(321)
     expect(lastResponsesArgs).not.toHaveProperty('client_metadata')
-    expect(lastResponsesArgs?.reasoning).toEqual({
-      effort: 'none',
-      summary: 'auto',
-    })
+    expect(lastResponsesArgs?.reasoning).toEqual({ effort: 'none' })
     expect(lastResponsesArgs?.text).toEqual({
       format: {
         type: 'json_schema',
@@ -443,6 +456,31 @@ describe('sideQuery OpenAI ChatGPT OAuth path', () => {
     )
     expect(result.usage.input_tokens).toBe(12)
     expect(result.usage.output_tokens).toBe(4)
+  })
+
+  test('forced custom Responses omits session identity headers', async () => {
+    delete process.env.OPENAI_AUTH_MODE
+    process.env.OPENAI_BASE_URL = 'https://proxy.example/v1'
+    process.env.OPENAI_API_KEY = 'sk-test-not-real'
+    process.env.OPENAI_USE_RESPONSES = '1'
+    const { sideQuery } = await import('../sideQuery.js')
+
+    await sideQuery({
+      querySource: 'memdir_relevance',
+      model: 'gpt-4o',
+      messages: [{ role: 'user', content: 'select memories' }],
+    })
+
+    expect(responsesCreateCount).toBe(1)
+    expect(lastResponsesArgs).not.toHaveProperty('prompt_cache_key')
+    const headers = (lastResponsesOptions?.headers ?? {}) as Record<
+      string,
+      string
+    >
+    expect(headers['session-id']).toBeUndefined()
+    expect(headers['thread-id']).toBeUndefined()
+    expect(headers['x-client-request-id']).toBeUndefined()
+    expect(headers.originator).toBeUndefined()
   })
 
   test('compatible API key mode maps chat-only request options', async () => {

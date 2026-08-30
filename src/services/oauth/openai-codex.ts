@@ -197,12 +197,29 @@ const SUCCESS_HTML = `<!DOCTYPE html>
 h1{color:#4ade80;font-size:1.5rem}p{color:#94a3b8;margin-top:.5rem}</style></head>
 <body><div class="card"><h1>Authentication Complete</h1><p>You can close this window.</p></div></body></html>`
 
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, char => {
+    switch (char) {
+      case '&':
+        return '&amp;'
+      case '<':
+        return '&lt;'
+      case '>':
+        return '&gt;'
+      case '"':
+        return '&quot;'
+      default:
+        return '&#39;'
+    }
+  })
+}
+
 const ERROR_HTML = (msg: string) => `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Login Error</title>
 <style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#1a1a2e;color:#eee}
 .card{text-align:center;padding:2rem;border-radius:12px;background:#16213e;box-shadow:0 4px 24px rgba(0,0,0,.3)}
 h1{color:#f87171;font-size:1.5rem}p{color:#94a3b8;margin-top:.5rem}</style></head>
-<body><div class="card"><h1>Authentication Failed</h1><p>${msg}</p></div></body></html>`
+<body><div class="card"><h1>Authentication Failed</h1><p>${escapeHtml(msg)}</p></div></body></html>`
 
 // ─── Local callback server ──────────────────────────────────────────────────
 
@@ -214,15 +231,21 @@ function listenCallbackServer(
   close: () => void
   port: number
 }> {
-  let settlePromise:
-    | ((code: string) => void)
-    | ((error: Error) => void)
-    | null = null
+  let settled = false
+  let resolveCode: (code: string) => void = () => undefined
+  let rejectCode: (error: Error) => void = () => undefined
 
   const codePromise = new Promise<string>((resolve, reject) => {
-    settlePromise = resolve
-    // Also store reject for error cases
-    ;(settlePromise as any).__reject = reject
+    resolveCode = code => {
+      if (settled) return
+      settled = true
+      resolve(code)
+    }
+    rejectCode = error => {
+      if (settled) return
+      settled = true
+      reject(error)
+    }
   })
 
   const server: Server = createServer(
@@ -236,24 +259,18 @@ function listenCallbackServer(
           return
         }
 
-        // Check for OAuth error
+        if (url.searchParams.get('state') !== state) {
+          res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' })
+          res.end(ERROR_HTML('State mismatch'))
+          return
+        }
+
         const error = url.searchParams.get('error')
         if (error) {
           const desc = url.searchParams.get('error_description') ?? error
           res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' })
           res.end(ERROR_HTML(desc))
-          ;((settlePromise as any).__reject as (e: Error) => void)?.(
-            new Error(`OAuth error: ${desc}`),
-          )
-          return
-        }
-
-        if (url.searchParams.get('state') !== state) {
-          res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' })
-          res.end(ERROR_HTML('State mismatch'))
-          ;((settlePromise as any).__reject as (e: Error) => void)?.(
-            new Error('State mismatch'),
-          )
+          rejectCode(new Error(`OAuth error: ${desc}`))
           return
         }
 
@@ -261,18 +278,19 @@ function listenCallbackServer(
         if (!code) {
           res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' })
           res.end(ERROR_HTML('Missing authorization code'))
-          ;((settlePromise as any).__reject as (e: Error) => void)?.(
-            new Error('Missing authorization code'),
-          )
+          rejectCode(new Error('Missing authorization code'))
           return
         }
 
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
         res.end(SUCCESS_HTML)
-        ;(settlePromise as (code: string) => void)?.(code)
-      } catch {
+        resolveCode(code)
+      } catch (error) {
         res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' })
         res.end(ERROR_HTML('Internal error'))
+        rejectCode(
+          error instanceof Error ? error : new Error('OAuth callback failed'),
+        )
       }
     },
   )
@@ -284,9 +302,7 @@ function listenCallbackServer(
         close: () => {
           server.close()
           server.removeAllListeners()
-          ;(
-            settlePromise as { __reject?: (e: Error) => void } | null
-          )?.__reject?.(new Error('Codex login cancelled'))
+          rejectCode(new Error('Codex login cancelled'))
         },
         port,
       })
@@ -323,43 +339,46 @@ async function startCallbackServer(state: string): Promise<{
 
 // ─── Manual code parsing ────────────────────────────────────────────────────
 
-/**
- * Parse manual user input to extract an authorization code.
- * Accepts:
- * - A full redirect URL: http://localhost:1455/auth/callback?code=XXX&state=YYY
- * - A raw authorization code: XXX
- * - code#state format: XXX#YYY
- */
-export function parseManualCodeInput(input: string): string | null {
+export type CodexManualCodeInput = {
+  code: string
+  state: string
+}
+
+export function parseManualCodeInput(
+  input: string,
+): CodexManualCodeInput | null {
   const value = input.trim()
   if (!value) return null
 
-  // Try as URL
   try {
     const url = new URL(value)
     const code = url.searchParams.get('code')
-    return code ?? null
+    const state = url.searchParams.get('state')
+    return code && state ? { code, state } : null
   } catch {
-    // Not a URL, continue
+    const [code, state] = value.split('#', 2)
+    return code && state ? { code, state } : null
   }
-
-  // Try code#state format — return just the code part
-  if (value.includes('#')) {
-    const [code] = value.split('#', 2)
-    return code ?? null
-  }
-
-  // Return as raw code
-  return value
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
+function waitForManualCode(
+  manualCode: Promise<CodexManualCodeInput>,
+  expectedState: string,
+): Promise<{ source: 'manual'; code: string }> {
+  return manualCode.then(input =>
+    input.state === expectedState
+      ? { source: 'manual', code: input.code }
+      : new Promise<never>(() => undefined),
+  )
+}
+
 export type CodexLoginOptions = {
   /** Called with the authorize URL when the flow starts */
   onUrl: (url: string) => void
-  /** Optional: provide a manual authorization code (headless fallback) */
-  manualCode?: Promise<string>
+  /** Optional: provide a state-bound manual callback (headless fallback) */
+  manualCode?: Promise<CodexManualCodeInput>
   signal?: AbortSignal
 }
 
@@ -413,9 +432,7 @@ export async function performOpenAICodexLogin(
         .then(c => ({ source: 'callback' as const, code: c })),
     ]
     if (manualCode) {
-      waiters.push(
-        manualCode.then(c => ({ source: 'manual' as const, code: c })),
-      )
+      waiters.push(waitForManualCode(manualCode, state))
     }
     const settled = abortPromise
       ? await Promise.race([...waiters, abortPromise])
@@ -472,4 +489,5 @@ export const _internal = {
   getAccountId,
   exchangeCodeForTokens,
   obtainApiKey,
+  waitForManualCode,
 }

@@ -44,7 +44,10 @@ import {
   matchingRuleForInput,
 } from 'src/utils/permissions/filesystem.js'
 import type { PermissionDecision } from 'src/utils/permissions/PermissionResult.js'
-import type { FileState } from 'src/utils/fileStateCache.js'
+import {
+  type FileState,
+  isCompleteFileState,
+} from 'src/utils/fileStateCache.js'
 import { matchWildcardPattern } from 'src/utils/permissions/shellRuleMatching.js'
 import { validateInputForSettingsFileEdit } from 'src/utils/settings/validateEditTool.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from '../NotebookEditTool/constants.js'
@@ -384,6 +387,7 @@ export const FileEditTool = buildTool({
       userModified,
       updateFileHistoryState,
       dynamicSkillDirTriggers,
+      assertMutationPathUnchanged,
     },
     _,
     parentMessage,
@@ -416,6 +420,7 @@ export const FileEditTool = buildTool({
     }
 
     await diagnosticTracker.beforeFileEdited(absoluteFilePath)
+    assertMutationPathUnchanged?.()
 
     // Ensure parent directory exists before the atomic read-modify-write section.
     // These awaits must stay OUTSIDE the critical section below — a yield between
@@ -439,6 +444,7 @@ export const FileEditTool = buildTool({
     // IIFE only scopes it.
     const { originalFileContents, patch, actualOldString, staleRecovered } =
       (() => {
+        assertMutationPathUnchanged?.()
         const {
           content: originalFileContents,
           fileExists,
@@ -623,15 +629,6 @@ function classifyStaleEdit(
     return 'recoverable'
   }
   return 'conflict'
-}
-
-function isCompleteFileState(state: FileState | undefined): state is FileState {
-  return (
-    state !== undefined &&
-    state.limit === undefined &&
-    state.isPartialView !== true &&
-    (state.offset === undefined || state.offset === 0 || state.offset === 1)
-  )
 }
 
 function canAutoReadForStaleEdit(

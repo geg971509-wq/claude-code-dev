@@ -802,15 +802,14 @@ function wouldLoseAuthState(fresh: {
 
 export function saveGlobalConfig(
   updater: (currentConfig: GlobalConfig) => GlobalConfig,
-): void {
+): boolean {
   if (process.env.NODE_ENV === 'test') {
     const config = updater(TEST_GLOBAL_CONFIG_FOR_TESTING)
-    // Skip if no changes (same reference returned)
     if (config === TEST_GLOBAL_CONFIG_FOR_TESTING) {
-      return
+      return false
     }
     Object.assign(TEST_GLOBAL_CONFIG_FOR_TESTING, config)
-    return
+    return true
   }
 
   let written: GlobalConfig | null = null
@@ -837,6 +836,7 @@ export function saveGlobalConfig(
     if (didWrite && written) {
       writeThroughGlobalConfigCache(written)
     }
+    return didWrite
   } catch (error) {
     logForDebugging(`Failed to save config with lock: ${error}`, {
       level: 'error',
@@ -855,12 +855,12 @@ export function saveGlobalConfig(
         { level: 'error' },
       )
       logEvent('tengu_config_auth_loss_prevented', {})
-      return
+      return false
     }
     const config = updater(currentConfig)
     // Skip if no changes (same reference returned)
     if (config === currentConfig) {
-      return
+      return false
     }
     written = {
       ...config,
@@ -868,6 +868,7 @@ export function saveGlobalConfig(
     }
     saveConfig(getGlobalClaudeFile(), written, DEFAULT_GLOBAL_CONFIG)
     writeThroughGlobalConfigCache(written)
+    return true
   }
 }
 

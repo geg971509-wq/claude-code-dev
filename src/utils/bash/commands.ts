@@ -252,7 +252,7 @@ export function filterControlOperators(
   commandsAndOperators: string[],
 ): string[] {
   return commandsAndOperators.filter(
-    part => !(ALL_SUPPORTED_CONTROL_OPERATORS as Set<string>).has(part),
+    part => !ALL_SUPPORTED_CONTROL_OPERATORS.has(part),
   )
 }
 
@@ -520,7 +520,9 @@ export function clearCommandPrefixCaches(): void {
   getCommandSubcommandPrefix.cache.clear()
 }
 
-const COMMAND_LIST_SEPARATORS = new Set<ControlOperator>([
+type ControlOperatorName = ControlOperator['op']
+
+const COMMAND_LIST_SEPARATORS = new Set<ControlOperatorName>([
   '&&',
   '||',
   ';',
@@ -528,12 +530,12 @@ const COMMAND_LIST_SEPARATORS = new Set<ControlOperator>([
   '|',
 ])
 
-const ALL_SUPPORTED_CONTROL_OPERATORS = new Set<ControlOperator>([
+const ALL_SUPPORTED_CONTROL_OPERATORS = new Set<string>([
   ...COMMAND_LIST_SEPARATORS,
   '>&',
   '>',
   '>>',
-])
+] satisfies ControlOperatorName[])
 
 // Checks if this is just a list of commands
 function isCommandList(command: string): boolean {

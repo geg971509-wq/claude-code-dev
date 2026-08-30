@@ -1177,15 +1177,21 @@ export function isCustomApiKeyApproved(apiKey: string): boolean {
   )
 }
 
-export async function removeApiKey(): Promise<void> {
-  await maybeRemoveApiKeyFromMacOSKeychain()
+export async function removeApiKey(options?: {
+  strict?: boolean
+}): Promise<void> {
+  if (options?.strict) await maybeRemoveApiKeyFromMacOSKeychainThrows()
+  else await maybeRemoveApiKeyFromMacOSKeychain()
 
   // Also remove from config instead of returning early, for older clients
   // that set keys before we supported keychain.
-  saveGlobalConfig(current => ({
+  const saved = saveGlobalConfig(current => ({
     ...current,
     primaryApiKey: undefined,
   }))
+  if (options?.strict && !saved) {
+    throw new Error('Failed to clear API key from global config')
+  }
 
   // Clear memo cache
   getApiKeyFromConfigOrMacOSKeychain.cache.clear?.()

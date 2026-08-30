@@ -179,9 +179,8 @@ export type ConvertedMessage =
 
 type ConvertOptions = {
   /** Convert user messages containing tool_result content blocks into UserMessages.
-   * Used by direct connect mode where tool results come from the remote server
-   * and need to be rendered locally. CCR mode ignores user messages since they
-   * are handled differently. */
+   * Used when tool results come from a remote server and need to be rendered
+   * locally. CCR mode ignores user messages since they are handled differently. */
   convertToolResults?: boolean
   /**
    * Convert user text messages into UserMessages for display. Used when

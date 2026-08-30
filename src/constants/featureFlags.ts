@@ -49,7 +49,6 @@ export const FEATURE_FLAGS = [
   'COWORKER_TYPE_TELEMETRY', // Coworker 类型遥测
   'CROSS_SESSION_MESSAGING', // 跨会话 Agent 发现、寻址、收发与回执
   'DAEMON', // 守护进程模式，长驻 supervisor 管理后台 worker
-  'DIRECT_CONNECT', // 直连模式（claude server / claude open）
   'DOWNLOAD_USER_SETTINGS', // 下载用户设置
   'DUMP_SYSTEM_PROMPT', // --dump-system-prompt 快速路径
   'ENHANCED_TELEMETRY_BETA', // 增强遥测 beta

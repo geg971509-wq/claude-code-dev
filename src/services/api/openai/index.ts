@@ -1,7 +1,5 @@
 import type {
   BetaToolUnion,
-  BetaMessage,
-  BetaRawMessageStreamEvent,
   BetaUsage,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { SystemPrompt } from '../../../utils/systemPromptType.js'
@@ -12,28 +10,13 @@ import type {
   AssistantMessage,
   UserMessage,
 } from '../../../types/message.js'
-import type { AgentId } from '../../../types/ids.js'
 import type { Tools } from '../../../Tool.js'
 import {
-  asOpenAIRetryError,
   formatOpenAIAssistantAPIError,
   formatOpenAIErrorMessage,
   formatOpenAIErrorStack,
-  getOpenAIRequestMaxRetries,
-  getOpenAIRetryDelayMs,
-  getOpenAIStreamMaxRetries,
-  getThinkingLoopBackoffMs,
-  getThinkingLoopMaxRetries,
   isOpenAIUserAbortError,
-  createThinkingLoopDetector,
-  createThinkingLoopError,
-  isSemanticOpenAIEvent,
-  isThinkingLoopError,
-  isTransientOpenAIError,
   toProviderHttpError,
-  updateOpenAIUsage,
-  withOpenAIStreamIdleTimeout,
-  type OpenAIUsageCounters,
 } from './openaiShared.js'
 import {
   getAssistantMessageFromError,
@@ -45,24 +28,18 @@ import {
 import { APIUserAbortError } from '@anthropic-ai/sdk'
 import {
   anthropicMessagesToOpenAI,
+  anthropicMessagesToResponsesInput,
   resolveOpenAIModel,
   anthropicToolsToOpenAI,
   anthropicToolChoiceToOpenAI,
-  ProviderStreamError,
 } from '@ant/model-provider'
-import type {
-  OpenAIStreamAttempt,
-  ResponsesReasoningEffort,
-} from './responsesAdapter.js'
+import type { ResponsesReasoningEffort } from './responsesAdapter.js'
+import { isChatGPTAuthEnabled } from './chatgptAuth.js'
 import {
   adaptPreparedOpenAIStream,
   prepareOpenAIStreamRequest,
 } from './streamAttempt.js'
-import {
-  logOpenAIRawLifecycle,
-  logOpenAIRawStream,
-  type OpenAIRawStreamRoute,
-} from './rawStreamLogger.js'
+import { executeOpenAIStream } from './streamExecutor.js'
 import { normalizeMessagesForAPI } from '../../../utils/messages.js'
 import { toolToAPISchema } from '../../../utils/api.js'
 import {
@@ -95,15 +72,10 @@ export {
 import { getModelMaxOutputTokens } from '../../../utils/context.js'
 import { queryCheckpoint } from '../../../utils/queryProfiler.js'
 import type { Options } from '../claude.js'
-import { randomUUID } from 'crypto'
 import {
   createAssistantAPIErrorMessage,
-  createSystemAPIErrorMessage,
   createUserMessage,
-  normalizeContentFromAPI,
 } from '../../../utils/messages.js'
-import { createCombinedAbortSignal } from '../../../utils/combinedAbortSignal.js'
-import { sleep } from '../../../utils/sleep.js'
 import type { SDKAssistantMessageError } from '../../../entrypoints/agentSdkTypes.js'
 import {
   isSearchExtraToolsEnabled,
@@ -176,76 +148,6 @@ function isOpenAIConvertibleMessage(
   msg: Message,
 ): msg is AssistantMessage | UserMessage {
   return msg.type === 'assistant' || msg.type === 'user'
-}
-
-function asRetryError(error: unknown, includeStack: boolean): Error {
-  return asOpenAIRetryError(error, includeStack)
-}
-
-/**
- * Assemble the final AssistantMessage (and optional max_tokens error) from
- * accumulated stream state after a validated message_stop terminal event.
- */
-function assembleFinalAssistantOutputs(params: {
-  partialMessage: BetaMessage | null
-  contentBlocks: Record<number, Record<string, unknown>>
-  tools: Tools
-  agentId: string | undefined
-  usage: OpenAIUsageCounters
-  stopReason: string | null
-  maxTokens: number
-  requestId: string | null
-}): (AssistantMessage | SystemAPIErrorMessage)[] {
-  const {
-    partialMessage,
-    contentBlocks,
-    tools,
-    agentId,
-    usage,
-    stopReason,
-    maxTokens,
-    requestId,
-  } = params
-  const outputs: (AssistantMessage | SystemAPIErrorMessage)[] = []
-
-  const allBlocks = Object.keys(contentBlocks)
-    .sort((a, b) => Number(a) - Number(b))
-    .map(k => contentBlocks[Number(k)])
-    .filter(Boolean)
-
-  if (allBlocks.length > 0 && partialMessage) {
-    outputs.push({
-      message: {
-        ...partialMessage,
-        content: normalizeContentFromAPI(
-          allBlocks as unknown as BetaMessage['content'],
-          tools,
-          agentId as AgentId | undefined,
-        ),
-        usage,
-        stop_reason: stopReason,
-        stop_sequence: null,
-      } as AssistantMessage['message'],
-      requestId: requestId ?? undefined,
-      type: 'assistant',
-      uuid: randomUUID(),
-      timestamp: new Date().toISOString(),
-    } as AssistantMessage)
-  }
-
-  if (stopReason === 'max_tokens') {
-    outputs.push(
-      createAssistantAPIErrorMessage({
-        content:
-          `Output truncated: response exceeded the ${maxTokens} token limit. ` +
-          `Set OPENAI_MAX_TOKENS or CLAUDE_CODE_MAX_OUTPUT_TOKENS to override.`,
-        apiError: 'max_output_tokens',
-        error: 'max_output_tokens',
-      }),
-    )
-  }
-
-  return outputs
 }
 
 /**
@@ -362,6 +264,15 @@ export async function* queryModelOpenAI(
       systemPrompt,
       { enableThinking },
     )
+    const useChatGPTResponses = isChatGPTAuthEnabled()
+    const useOfficialResponses =
+      !useChatGPTResponses && shouldUseOpenAIResponsesAPI(openaiModel)
+    const responsesInput =
+      useChatGPTResponses || useOfficialResponses
+        ? anthropicMessagesToResponsesInput(messagesWithDeferredToolList, {
+            allowRemoteImageUrls: useOfficialResponses,
+          })
+        : undefined
     const openaiTools = anthropicToolsToOpenAI(standardTools)
     queryCheckpoint('query_openai_message_conversion_end', {
       messageCount: openaiMessages.length,
@@ -417,6 +328,11 @@ export async function* queryModelOpenAI(
     const preparedRequest = prepareOpenAIStreamRequest({
       model: openaiModel,
       messages: openaiMessages,
+      responsesInput,
+      responsesInstructions:
+        responsesInput && systemPrompt.length > 0
+          ? systemPrompt.join('\n\n')
+          : undefined,
       tools: openaiTools,
       toolChoice: openaiToolChoice,
       enableThinking,
@@ -429,390 +345,65 @@ export async function* queryModelOpenAI(
     queryCheckpoint('query_openai_request_prepared', {
       route: preparedRequest.route,
     })
-    const openaiRoute: OpenAIRawStreamRoute = preparedRequest.route
     logForDebugging(
-      `[OpenAI] route=${openaiRoute} model=${openaiModel} messages=${openaiMessages.length}, tools=${openaiTools.length}, thinking=${enableThinking}, maxTokens=${maxTokens}, prompt_cache_key=${preparedRequest.promptCacheKey}`,
+      `[OpenAI] route=${preparedRequest.route} model=${openaiModel} messages=${openaiMessages.length}, tools=${openaiTools.length}, thinking=${enableThinking}, maxTokens=${maxTokens}, prompt_cache_key=${preparedRequest.promptCacheKey}`,
     )
 
-    const requestMaxRetries = getOpenAIRequestMaxRetries()
-    const streamMaxRetries = getOpenAIStreamMaxRetries()
-    const thinkingLoopMaxRetries = getThinkingLoopMaxRetries()
-    const collectedMessages: AssistantMessage[] = []
     const start = Date.now()
-    let finalUsage: OpenAIUsageCounters = {
-      input_tokens: 0,
-      output_tokens: 0,
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-    }
-    let finalTtftMs = 0
-    let requestRetries = 0
-    let streamRetries = 0
-    let thinkingLoopRetries = 0
-    let requestAttempt = 0
-
-    for (;;) {
-      requestAttempt++
-      const streamId = randomUUID()
-      const attemptController = new AbortController()
-      const combinedSignal = createCombinedAbortSignal(signal, {
-        signalB: attemptController.signal,
-      })
-      let attempt: OpenAIStreamAttempt
-
-      try {
-        queryCheckpoint('query_openai_request_start', { requestAttempt })
-        attempt = await preparedRequest.createAttempt(combinedSignal.signal)
-        queryCheckpoint('query_openai_request_end', {
-          requestAttempt,
-          status: attempt.status,
-        })
-      } catch (error) {
-        combinedSignal.cleanup()
-        attemptController.abort()
-        logOpenAIRawLifecycle({
-          lifecycle: 'error',
-          route: openaiRoute,
-          model: openaiModel,
-          source: options.querySource,
-          streamId,
-          requestAttempt,
-          streamAttempt: streamRetries + 1,
-          phase: 'request',
-          error,
-        })
-        if (
-          signal.aborted ||
-          isOpenAIUserAbortError(error) ||
-          !isTransientOpenAIError(error) ||
-          requestRetries >= requestMaxRetries
-        ) {
-          throw error
-        }
-
-        requestRetries++
-        const delayMs = getOpenAIRetryDelayMs(error, requestRetries)
-        logOpenAIRawLifecycle({
-          lifecycle: 'retry',
-          route: openaiRoute,
-          model: openaiModel,
-          source: options.querySource,
-          streamId,
-          requestAttempt,
-          streamAttempt: streamRetries + 1,
-          phase: 'request',
-          attempt: requestRetries,
-          maxRetries: requestMaxRetries,
-          delayMs,
-          error,
-        })
-        yield createSystemAPIErrorMessage(
-          asRetryError(error, includeErrorStack),
-          delayMs,
-          requestRetries,
-          requestMaxRetries,
-        )
-        await sleep(delayMs, signal, { throwOnAbort: true })
-        continue
-      }
-
-      let partialMessage: BetaMessage | null = null
-      const contentBlocks: Record<number, Record<string, unknown>> = {}
-      let usage: OpenAIUsageCounters = {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_creation_input_tokens: 0,
-        cache_read_input_tokens: 0,
-      }
-      let stopReason: string | null = null
-      let ttftMs = 0
-      let committed = false
-      let completed = false
-      let eventCount = 0
-      let streamError: unknown
-      const prelude: StreamEvent[] = []
-      const thinkingLoop =
-        thinkingLoopRetries < thinkingLoopMaxRetries
-          ? createThinkingLoopDetector()
-          : null
-
-      try {
-        const timedStream = withOpenAIStreamIdleTimeout(attempt.stream, {
-          abortAttempt: () => attemptController.abort(),
-          userSignal: signal,
-          requestId: attempt.requestId,
-        })
-        const rawStream = logOpenAIRawStream(timedStream, {
-          route: openaiRoute,
-          model: openaiModel,
-          source: options.querySource,
-          streamId,
-          requestAttempt,
-          streamAttempt: streamRetries + 1,
-          status: String(attempt.status),
-          requestId: attempt.requestId ?? undefined,
-        })
-        const adaptedStream: AsyncIterable<BetaRawMessageStreamEvent> =
-          adaptPreparedOpenAIStream(preparedRequest, rawStream, openaiModel)
-
-        for await (const event of adaptedStream) {
-          eventCount++
-          if (
-            !committed &&
-            (isSemanticOpenAIEvent(event) || event.type === 'message_stop')
-          ) {
-            committed = true
-            for (const bufferedEvent of prelude) yield bufferedEvent
-            prelude.length = 0
-          }
-
-          switch (event.type) {
-            case 'message_start': {
-              partialMessage = event.message
-              ttftMs = Date.now() - start
-              if (event.message.usage) {
-                usage = {
-                  ...usage,
-                  ...(event.message.usage as unknown as typeof usage),
-                }
-              }
-              break
-            }
-            case 'content_block_start': {
-              const idx = event.index
-              const cb = event.content_block
-              if (cb.type === 'tool_use') {
-                contentBlocks[idx] = { ...cb, input: '' }
-              } else if (cb.type === 'text') {
-                contentBlocks[idx] = { ...cb, text: '' }
-              } else if (cb.type === 'thinking') {
-                contentBlocks[idx] = { ...cb, thinking: '', signature: '' }
-              } else {
-                contentBlocks[idx] = { ...cb }
-              }
-              break
-            }
-            case 'content_block_delta': {
-              const idx = event.index
-              const delta = event.delta
-              const block = contentBlocks[idx]
-              if (!block) break
-              if (delta.type === 'text_delta') {
-                block.text =
-                  ((block.text as string | undefined) || '') + delta.text
-              } else if (delta.type === 'input_json_delta') {
-                block.input =
-                  ((block.input as string | undefined) || '') +
-                  delta.partial_json
-              } else if (delta.type === 'thinking_delta') {
-                block.thinking =
-                  ((block.thinking as string | undefined) || '') +
-                  delta.thinking
-                if (thinkingLoop?.push(delta.thinking)) {
-                  throw createThinkingLoopError(attempt.requestId)
-                }
-              } else if (delta.type === 'signature_delta') {
-                block.signature = delta.signature
-              }
-              break
-            }
-            case 'content_block_stop':
-              break
-            case 'message_delta': {
-              if (event.usage) {
-                usage = updateOpenAIUsage(
-                  usage,
-                  event.usage as unknown as Parameters<
-                    typeof updateOpenAIUsage
-                  >[1],
-                )
-              }
-              if (event.delta.stop_reason != null) {
-                stopReason = event.delta.stop_reason
-              }
-              break
-            }
-            case 'message_stop': {
-              completed = true
-              if (partialMessage) {
-                for (const output of assembleFinalAssistantOutputs({
-                  partialMessage,
-                  contentBlocks,
-                  tools,
-                  agentId: options.agentId,
-                  usage,
-                  stopReason,
-                  maxTokens,
-                  requestId: attempt.requestId,
-                })) {
-                  if (output.type === 'assistant') {
-                    collectedMessages.push(output)
-                  }
-                  yield output
-                }
-              }
-              finalUsage = usage
-              finalTtftMs = ttftMs
-              if (usage.input_tokens + usage.output_tokens > 0) {
-                const costUSD = calculateUSDCost(
-                  openaiModel,
-                  usage as unknown as BetaUsage,
-                )
-                addToTotalSessionCost(
-                  costUSD,
-                  usage as unknown as BetaUsage,
-                  options.model,
-                )
-              }
-              break
-            }
-          }
-
-          const streamEvent = {
-            type: 'stream_event',
-            event,
-            ...(event.type === 'message_start' ? { ttftMs } : undefined),
-          } as StreamEvent
-          if (committed) yield streamEvent
-          else prelude.push(streamEvent)
-        }
-
-        if (!completed) {
-          throw new ProviderStreamError(
-            'OpenAI stream ended before message_stop',
-            {
-              kind: 'premature_eof',
-              retryable: true,
-              terminal: false,
-              completionState: 'open',
-              requestId: attempt.requestId,
-            },
+    const execution = yield* executeOpenAIStream({
+      preparedAttempt: preparedRequest,
+      adapter: (stream, model) =>
+        adaptPreparedOpenAIStream(preparedRequest, stream, model),
+      model: openaiModel,
+      tools,
+      signal,
+      options: {
+        agentId: options.agentId,
+        source: options.querySource,
+        includeErrorStack,
+        startTimeMs: start,
+        onCompleted: usage => {
+          if (usage.input_tokens + usage.output_tokens === 0) return
+          const costUSD = calculateUSDCost(
+            openaiModel,
+            usage as unknown as BetaUsage,
           )
-        }
-      } catch (error) {
-        streamError = error
-        logOpenAIRawLifecycle({
-          lifecycle: 'error',
-          route: openaiRoute,
-          model: openaiModel,
-          source: options.querySource,
-          streamId,
-          requestAttempt,
-          streamAttempt: streamRetries + 1,
-          status: String(attempt.status),
-          requestId: attempt.requestId ?? undefined,
-          phase: 'stream',
-          eventCount,
-          error,
-        })
-      } finally {
-        attempt.cleanup()
-        combinedSignal.cleanup()
-        attemptController.abort()
-      }
-
-      if (streamError !== undefined) {
-        // A committed attempt is still retryable: nothing durable escapes
-        // before message_stop (the assistant message is assembled there, and
-        // the REPL's streamed text is transient state the retry's first
-        // content_block_start clears). Refusing to retry here made every
-        // mid-stream drop fatal — 91 of 92 stream failures in the raw logs
-        // died without a second attempt.
-        if (signal.aborted || isOpenAIUserAbortError(streamError)) {
-          throw streamError
-        }
-        if (
-          isThinkingLoopError(streamError) &&
-          thinkingLoopRetries < thinkingLoopMaxRetries
-        ) {
-          thinkingLoopRetries++
-          const delayMs = getThinkingLoopBackoffMs()
-          logOpenAIRawLifecycle({
-            lifecycle: 'retry',
-            route: openaiRoute,
-            model: openaiModel,
-            source: options.querySource,
-            streamId,
-            requestAttempt,
-            streamAttempt: streamRetries + 1,
-            status: String(attempt.status),
-            requestId: attempt.requestId ?? undefined,
-            phase: 'stream',
-            attempt: thinkingLoopRetries,
-            maxRetries: thinkingLoopMaxRetries,
-            delayMs,
-            error: streamError,
-          })
-          logForDebugging(
-            `[OpenAI] Thinking loop (attempt ${thinkingLoopRetries}/${thinkingLoopMaxRetries}, resampling in ${delayMs}ms)`,
-            { level: 'error' },
+          addToTotalSessionCost(
+            costUSD,
+            usage as unknown as BetaUsage,
+            options.model,
           )
-          await sleep(delayMs, signal, { throwOnAbort: true })
-          continue
-        }
-        if (
-          !isTransientOpenAIError(streamError) ||
-          streamRetries >= streamMaxRetries
-        ) {
-          throw streamError
-        }
-
-        streamRetries++
-        const delayMs = getOpenAIRetryDelayMs(
-          streamError,
-          streamRetries,
-          attempt.retryAfterMs,
-        )
-        logOpenAIRawLifecycle({
-          lifecycle: 'retry',
-          route: openaiRoute,
-          model: openaiModel,
-          source: options.querySource,
-          streamId,
-          requestAttempt,
-          streamAttempt: streamRetries,
-          status: String(attempt.status),
-          requestId: attempt.requestId ?? undefined,
-          phase: 'stream',
-          attempt: streamRetries,
-          maxRetries: streamMaxRetries,
-          delayMs,
-          error: streamError,
-        })
-        yield createSystemAPIErrorMessage(
-          asRetryError(streamError, includeErrorStack),
-          delayMs,
-          streamRetries,
-          streamMaxRetries,
-        )
-        await sleep(delayMs, signal, { throwOnAbort: true })
-        continue
-      }
-
-      break
-    }
+        },
+      },
+      maxTokenDisplayLimit: maxTokens,
+    })
 
     recordLLMObservation(options.langfuseTrace ?? null, {
       model: openaiModel,
       provider: 'openai',
       input: convertMessagesToLangfuse(openaiMessages),
-      output: convertOutputToLangfuse(collectedMessages),
+      output: convertOutputToLangfuse(execution.collectedMessages),
       usage: {
-        input_tokens: finalUsage.input_tokens,
-        output_tokens: finalUsage.output_tokens,
-        cache_creation_input_tokens: finalUsage.cache_creation_input_tokens,
-        cache_read_input_tokens: finalUsage.cache_read_input_tokens,
+        input_tokens: execution.usage.input_tokens,
+        output_tokens: execution.usage.output_tokens,
+        cache_creation_input_tokens:
+          execution.usage.cache_creation_input_tokens,
+        cache_read_input_tokens: execution.usage.cache_read_input_tokens,
       },
       startTime: new Date(start),
       endTime: new Date(),
       completionStartTime:
-        finalTtftMs > 0 ? new Date(start + finalTtftMs) : undefined,
+        execution.ttftMs > 0 ? new Date(start + execution.ttftMs) : undefined,
       tools: convertToolsToLangfuse(toolSchemas as unknown[]),
       ...(enableThinking && { thinking: { type: 'enabled' } }),
     })
   } catch (error) {
     // ESC / AbortSignal must not become "API Error: …" (Anthropic path rethrows).
-    if (signal.aborted || isOpenAIUserAbortError(error)) {
+    if (
+      signal.aborted ||
+      error instanceof APIUserAbortError ||
+      isOpenAIUserAbortError(error)
+    ) {
       logForDebugging('[OpenAI] Aborted by user/signal', { level: 'info' })
       if (error instanceof APIUserAbortError) throw error
       throw new APIUserAbortError()

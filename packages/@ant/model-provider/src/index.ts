@@ -106,15 +106,20 @@ export {
   type AnthropicUsage,
 } from './shared/openaiUsage.js'
 
-// Codex provider utilities
+// Responses utilities
 export {
-  normalizeCodexCallId,
-  resolveCodexCallId,
-  createCodexFallbackCallId,
-} from './providers/codex/callIds.js'
+  normalizeResponsesCallId,
+  resolveResponsesCallId,
+  createResponsesFallbackCallId,
+} from './shared/responsesCallIds.js'
+export {
+  anthropicMessagesToResponsesInput,
+  type ResponsesMessageConversionOptions,
+} from './shared/responsesConvertMessages.js'
+
+// Codex provider utilities
 export {
   resolveCodexModel,
   resolveCodexMaxTokens,
 } from './providers/codex/modelMapping.js'
-export { anthropicMessagesToCodexInput } from './providers/codex/convertMessages.js'
 export { anthropicToolsToCodex } from './providers/codex/convertTools.js'

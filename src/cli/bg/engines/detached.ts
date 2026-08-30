@@ -69,7 +69,8 @@ export class DetachedEngine implements BgEngine {
   }
 
   async attach(session: SessionEntry): Promise<void> {
-    if (!session.logPath) throw new Error(`Session ${session.sessionId} has no log path.`)
+    if (!session.logPath)
+      throw new Error(`Session ${session.sessionId} has no log path.`)
     await tailLog(session.logPath)
   }
 }

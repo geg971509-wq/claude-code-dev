@@ -17,6 +17,13 @@ export function createFallbackStorage(
       }
       return secondary.read() || {}
     },
+    readFresh(): SecureStorageData {
+      const result = primary.readFresh?.() ?? primary.read()
+      if (result !== null && result !== undefined) {
+        return result
+      }
+      return secondary.readFresh?.() ?? secondary.read() ?? {}
+    },
     async readAsync(): Promise<SecureStorageData | null> {
       const result = await primary.readAsync()
       if (result !== null && result !== undefined) {
@@ -25,17 +32,11 @@ export function createFallbackStorage(
       return (await secondary.readAsync()) || {}
     },
     update(data: SecureStorageData): { success: boolean; warning?: string } {
-      // Capture state before update
-      const primaryDataBefore = primary.read()
-
       const result = primary.update(data)
 
       if (result.success) {
-        // Delete secondary when migrating to primary for the first time
-        // This preserves credentials when sharing .claude between host and containers
-        // See: https://github.com/anthropics/claude-code/issues/1414
-        if (primaryDataBefore === null) {
-          secondary.delete()
+        if (!secondary.delete()) {
+          return { success: false }
         }
         return result
       }
@@ -49,8 +50,8 @@ export function createFallbackStorage(
         // e.g. a refresh token the server has already rotated away, causing a
         // /login loop (#30337). Best-effort delete; if this also fails the
         // user's keychain is in a bad state we can't fix from here.
-        if (primaryDataBefore !== null) {
-          primary.delete()
+        if (!primary.delete()) {
+          return { success: false }
         }
         return {
           success: true,
@@ -63,8 +64,7 @@ export function createFallbackStorage(
     delete(): boolean {
       const primarySuccess = primary.delete()
       const secondarySuccess = secondary.delete()
-
-      return primarySuccess || secondarySuccess
+      return primarySuccess && secondarySuccess
     },
   }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { AssistantMessage } from '../../../types/message.js'
-import { anthropicMessagesToCodexInput } from '../convertMessages.js'
+import { anthropicMessagesToResponsesInput } from '../../../shared/responsesConvertMessages.js'
 
 function makeAssistantMsg(content: any[]): AssistantMessage {
   return {
@@ -10,9 +10,9 @@ function makeAssistantMsg(content: any[]): AssistantMessage {
   } as AssistantMessage
 }
 
-describe('anthropicMessagesToCodexInput reasoning replay', () => {
+describe('anthropicMessagesToResponsesInput reasoning replay', () => {
   test('preserves encrypted reasoning and summary in original item order', () => {
-    const items = anthropicMessagesToCodexInput([
+    const items = anthropicMessagesToResponsesInput([
       makeAssistantMsg([
         {
           type: 'thinking',
@@ -61,7 +61,7 @@ describe('anthropicMessagesToCodexInput reasoning replay', () => {
   })
 
   test('replays redacted thinking data as encrypted reasoning', () => {
-    const items = anthropicMessagesToCodexInput([
+    const items = anthropicMessagesToResponsesInput([
       makeAssistantMsg([
         {
           type: 'redacted_thinking',
@@ -80,7 +80,7 @@ describe('anthropicMessagesToCodexInput reasoning replay', () => {
   })
 
   test('does not send unsigned thinking as a reasoning input item', () => {
-    const items = anthropicMessagesToCodexInput([
+    const items = anthropicMessagesToResponsesInput([
       makeAssistantMsg([
         { type: 'thinking', thinking: 'local summary only', signature: '' },
         { type: 'text', text: 'answer' },

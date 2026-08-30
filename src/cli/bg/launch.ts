@@ -8,7 +8,11 @@ export function buildShellLaunch(
   if (process.platform === 'win32') {
     return {
       execPath:
-        env.COMSPEC || env.ComSpec || process.env.COMSPEC || process.env.ComSpec || 'cmd.exe',
+        env.COMSPEC ||
+        env.ComSpec ||
+        process.env.COMSPEC ||
+        process.env.ComSpec ||
+        'cmd.exe',
       args: ['/d', '/s', '/c', command],
       env: { ...env },
       windowsHide: true,

@@ -77,7 +77,11 @@ function isManagedProcessRunning(
       return false
     }
   }
-  return Number.isSafeInteger(session.pid) && session.pid > 1 && isProcessRunning(session.pid)
+  return (
+    Number.isSafeInteger(session.pid) &&
+    session.pid > 1 &&
+    isProcessRunning(session.pid)
+  )
 }
 
 export async function listLiveSessions(): Promise<SessionEntry[]> {
@@ -127,7 +131,11 @@ export async function listLiveSessions(): Promise<SessionEntry[]> {
       job.status === 'idle' ||
       job.status === 'waiting'
     )
-      void writeJobRecord({ ...job, status: 'exited', updatedAt: Date.now() }).catch(() => {})
+      void writeJobRecord({
+        ...job,
+        status: 'exited',
+        updatedAt: Date.now(),
+      }).catch(() => {})
   }
 
   return sessions
@@ -323,7 +331,13 @@ export async function psHandler(_args: string[]): Promise<void> {
  */
 export async function logsHandler(target: string | undefined): Promise<void> {
   warnIgnoredSessionArgs('logs')
-  if (!requireSessionTarget(target, 'claude logs <id>', "Print the background session's recent terminal output."))
+  if (
+    !requireSessionTarget(
+      target,
+      'claude logs <id>',
+      "Print the background session's recent terminal output.",
+    )
+  )
     return
   const sessions = await listLiveSessions()
   const storedJobs = await listStoredJobs()
@@ -360,11 +374,13 @@ export async function logsHandler(target: string | undefined): Promise<void> {
  */
 export async function attachHandler(target: string | undefined): Promise<void> {
   warnIgnoredSessionArgs('attach')
-  if (!requireSessionTarget(
-    target,
-    'claude attach <id>',
-    'Open the background session in this terminal.',
-  ))
+  if (
+    !requireSessionTarget(
+      target,
+      'claude attach <id>',
+      'Open the background session in this terminal.',
+    )
+  )
     return
   const sessions = await listLiveSessions()
 
@@ -407,7 +423,13 @@ export async function attachHandler(target: string | undefined): Promise<void> {
  */
 export async function killHandler(target: string | undefined): Promise<void> {
   warnIgnoredSessionArgs('kill')
-  if (!requireSessionTarget(target, 'claude kill <id>', 'Kill a background session.'))
+  if (
+    !requireSessionTarget(
+      target,
+      'claude kill <id>',
+      'Kill a background session.',
+    )
+  )
     return
   const sessions = await listLiveSessions()
 
@@ -460,11 +482,13 @@ export async function killHandler(target: string | undefined): Promise<void> {
  */
 export async function stopHandler(target: string | undefined): Promise<void> {
   warnIgnoredSessionArgs('stop')
-  if (!requireSessionTarget(
-    target,
-    'claude stop <id>',
-    'Stop a background session. Its conversation is kept.',
-  ))
+  if (
+    !requireSessionTarget(
+      target,
+      'claude stop <id>',
+      'Stop a background session. Its conversation is kept.',
+    )
+  )
     return
 
   const sessions = await listLiveSessions()
@@ -512,11 +536,15 @@ export async function respawnHandler(
 ): Promise<void> {
   warnIgnoredSessionArgs('respawn')
   if (target === '--help' || target === '-h') {
-    console.log('Usage: claude respawn <id>|--all\n\n  Restart a background session with the current Claude binary.')
+    console.log(
+      'Usage: claude respawn <id>|--all\n\n  Restart a background session with the current Claude binary.',
+    )
     return
   }
   if (target?.startsWith('-') && target !== '--all') {
-    console.error(`unknown option '${target}'\nUsage: claude respawn <id>|--all`)
+    console.error(
+      `unknown option '${target}'\nUsage: claude respawn <id>|--all`,
+    )
     process.exitCode = 1
     return
   }
@@ -530,7 +558,7 @@ export async function respawnHandler(
   const storedJobs = await listStoredJobs()
   const jobs: BgJobRecord[] =
     target === '--all'
-      ? liveSessions.filter(s => s.kind === 'bg') as BgJobRecord[]
+      ? (liveSessions.filter(s => s.kind === 'bg') as BgJobRecord[])
       : (() => {
           const all = [...storedJobs]
           for (const live of liveSessions) {
@@ -580,7 +608,9 @@ export async function respawnHandler(
       ) {
         const forceStopped = signalSession(live, 'SIGKILL')
         if (!forceStopped.ok) {
-          console.error(`Cannot respawn ${live.sessionId}: ${forceStopped.reason}`)
+          console.error(
+            `Cannot respawn ${live.sessionId}: ${forceStopped.reason}`,
+          )
           failures++
           continue
         }
@@ -592,7 +622,8 @@ export async function respawnHandler(
     try {
       const engine = await getEngineForSession(job)
       const sessionName =
-        job.tmuxSessionName ?? `claude-bg-${(job.jobId ?? job.sessionId).slice(0, 8)}`
+        job.tmuxSessionName ??
+        `claude-bg-${(job.jobId ?? job.sessionId).slice(0, 8)}`
       const logPath =
         job.logPath ?? join(getSessionsDir(), 'logs', `${sessionName}.log`)
       const respawnArgs =
@@ -621,7 +652,9 @@ export async function respawnHandler(
         status: 'starting',
         updatedAt: Date.now(),
       })
-      console.log(`respawned ${job.jobId ?? job.sessionId.slice(0, 8)} (${result.engineUsed})`)
+      console.log(
+        `respawned ${job.jobId ?? job.sessionId.slice(0, 8)} (${result.engineUsed})`,
+      )
     } catch (error) {
       console.error(
         `Failed to respawn ${job.sessionId}: ${
@@ -643,7 +676,9 @@ export async function respawnHandler(
 export async function rmHandler(target: string | undefined): Promise<void> {
   warnIgnoredSessionArgs('rm')
   if (target === '--help' || target === '-h') {
-    console.log('Usage: claude rm <id>\n\n  Delete a background job record. Logs are retained.')
+    console.log(
+      'Usage: claude rm <id>\n\n  Delete a background job record. Logs are retained.',
+    )
     return
   }
   if (target?.startsWith('-')) {
@@ -717,7 +752,9 @@ async function readBackgroundStdin(): Promise<string> {
   process.stdin.off('data', onData)
   if (timedOut && data.length === 0) return ''
   if (truncated)
-    console.error(`Warning: piped background input exceeds ${MAX_BACKGROUND_STDIN_BYTES} bytes; truncated.`)
+    console.error(
+      `Warning: piped background input exceeds ${MAX_BACKGROUND_STDIN_BYTES} bytes; truncated.`,
+    )
   return data.replace(/\r?\n$/, '')
 }
 
@@ -796,7 +833,10 @@ function isFlag(value: string): boolean {
 function extractInitialPrompt(args: string[]): string | undefined {
   const terminator = args.indexOf('--')
   if (terminator >= 0) {
-    const prompt = args.slice(terminator + 1).join(' ').trim()
+    const prompt = args
+      .slice(terminator + 1)
+      .join(' ')
+      .trim()
     return prompt || undefined
   }
 
@@ -879,7 +919,11 @@ function buildRespawnArgs(job: BgJobRecord): string[] {
     if (CLAUDE_OPTIONAL_VALUE_FLAGS.has(arg)) {
       // --print/-p's optional value is an initial prompt. Other optional
       // values (e.g. --worktree name) are configuration and are retained.
-      if ((arg === '--print' || arg === '-p') && source[index + 1] && !isFlag(source[index + 1]!)) {
+      if (
+        (arg === '--print' || arg === '-p') &&
+        source[index + 1] &&
+        !isFlag(source[index + 1]!)
+      ) {
         index++
       } else if (source[index + 1] && !isFlag(source[index + 1]!)) {
         result.push(source[++index]!)
@@ -913,7 +957,9 @@ export async function handleBgStart(args: string[]): Promise<void> {
 
   const beforeTerminator = args.indexOf('--')
   const scan = beforeTerminator >= 0 ? args.slice(0, beforeTerminator) : args
-  const execIndex = scan.findIndex(a => a === '--exec' || a.startsWith('--exec='))
+  const execIndex = scan.findIndex(
+    a => a === '--exec' || a.startsWith('--exec='),
+  )
   const execToken = execIndex >= 0 ? scan[execIndex]! : undefined
   const execUsesEquals = execToken?.startsWith('--exec=') ?? false
   const execCommand =
@@ -946,7 +992,9 @@ export async function handleBgStart(args: string[]): Promise<void> {
       : execMetadataArgs
 
   const optionScan = execIndex >= 0 ? execMetadataScan : scan
-  const routineIndex = optionScan.findIndex(a => a === '--routine' || a.startsWith('--routine='))
+  const routineIndex = optionScan.findIndex(
+    a => a === '--routine' || a.startsWith('--routine='),
+  )
   let routine: string | undefined
   if (routineIndex >= 0 && execIndex < 0) {
     routine = optionScan[routineIndex]!.startsWith('--routine=')
@@ -959,7 +1007,9 @@ export async function handleBgStart(args: string[]): Promise<void> {
     }
   }
 
-  const nameIndex = optionScan.findIndex(a => a === '--name' || a === '-n' || a.startsWith('--name='))
+  const nameIndex = optionScan.findIndex(
+    a => a === '--name' || a === '-n' || a.startsWith('--name='),
+  )
   const displayName =
     nameIndex < 0
       ? undefined
@@ -980,7 +1030,9 @@ export async function handleBgStart(args: string[]): Promise<void> {
         arg !== '--background',
     )
     if (ignored.length > 0)
-      console.error(`warning: --exec ignores ${ignored.join(' ')} (only --name composes)`)
+      console.error(
+        `warning: --exec ignores ${ignored.join(' ')} (only --name composes)`,
+      )
   }
 
   const filteredArgs = (execIndex >= 0 ? [] : args).filter(
@@ -1020,7 +1072,9 @@ export async function handleBgStart(args: string[]): Promise<void> {
     job => job.jobId === jobId || job.sessionId.startsWith(jobId),
   )
   if (collision) {
-    console.error(`Previous session ${jobId} is still shutting down — try again in a moment.`)
+    console.error(
+      `Previous session ${jobId} is still shutting down — try again in a moment.`,
+    )
     process.exitCode = 1
     return
   }
@@ -1085,9 +1139,7 @@ export async function handleBgStart(args: string[]): Promise<void> {
     console.log(`  Engine: ${result.engineUsed}`)
     console.log(`  Log: ${result.logPath}`)
     console.log()
-    console.log(
-      `Use \`claude daemon attach ${jobId}\` to reconnect.`,
-    )
+    console.log(`Use \`claude daemon attach ${jobId}\` to reconnect.`)
     console.log(`Use \`claude daemon status\` to check status.`)
     console.log(`Use \`claude daemon kill ${jobId}\` to stop.`)
   } catch (e) {

@@ -32,6 +32,7 @@ describe('attachPtySession', () => {
       accept = resolve
     })
     const server = createServer({ allowHalfOpen: true }, socket => {
+      socket.on('error', () => {})
       const stream = setInterval(
         () => socket.write('{"type":"data","data":""}\n'),
         5,
@@ -45,6 +46,7 @@ describe('attachPtySession', () => {
       server.listen(socketPath, resolve)
     })
 
+    const baselineDataListeners = process.stdin.listenerCount('data')
     const attached = attachPtySession({
       pid: process.pid,
       sessionId: 'test-session',
@@ -63,6 +65,6 @@ describe('attachPtySession', () => {
       Bun.sleep(100).then(() => 'timed-out'),
     ])
     expect(result).toBe('detached')
-    expect(process.stdin.isPaused()).toBe(true)
+    expect(process.stdin.listenerCount('data')).toBe(baselineDataListeners)
   })
 })

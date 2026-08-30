@@ -39,12 +39,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
+function isSessionEntry(value: unknown): value is SessionEntry {
+  return (
+    isRecord(value) &&
+    typeof value.sessionId === 'string' &&
+    typeof value.cwd === 'string' &&
+    typeof value.pid === 'number' &&
+    Number.isFinite(value.pid) &&
+    typeof value.startedAt === 'number' &&
+    Number.isFinite(value.startedAt) &&
+    typeof value.kind === 'string'
+  )
+}
+
 function normalizeJob(value: unknown): BgJobRecord | undefined {
-  if (!isRecord(value)) return undefined
-  if (typeof value.sessionId !== 'string' || typeof value.cwd !== 'string')
-    return undefined
-  if (typeof value.pid !== 'number' || !Number.isFinite(value.pid))
-    return undefined
+  if (!isSessionEntry(value)) return undefined
   const sessionId = value.sessionId
   const jobId =
     typeof value.jobId === 'string' && value.jobId.length > 0
@@ -62,7 +71,7 @@ function normalizeJob(value: unknown): BgJobRecord | undefined {
         ? { mode: 'claude' as const, args }
         : undefined
   return {
-    ...(value as SessionEntry),
+    ...value,
     schemaVersion: 1,
     jobId,
     ...(args ? { args } : {}),
@@ -135,7 +144,10 @@ export function resolveJobTarget(
 export function isJobTargetError(
   value: BgJobRecord | JobTargetError,
 ): value is JobTargetError {
-  return 'kind' in value && (value.kind === 'not-found' || value.kind === 'ambiguous')
+  return (
+    'kind' in value &&
+    (value.kind === 'not-found' || value.kind === 'ambiguous')
+  )
 }
 
 export function jobFilePath(job: Pick<BgJobRecord, 'sessionId'>): string {
@@ -146,9 +158,13 @@ export async function writeJobRecord(job: BgJobRecord): Promise<void> {
   const dir = getJobsDir()
   await mkdir(dir, { recursive: true, mode: 0o700 })
   await chmod(dir, 0o700)
-  await atomicWriteFile(jobFilePath(job), jsonStringify({ ...job, schemaVersion: 1 }), {
-    mode: 0o600,
-  })
+  await atomicWriteFile(
+    jobFilePath(job),
+    jsonStringify({ ...job, schemaVersion: 1 }),
+    {
+      mode: 0o600,
+    },
+  )
 }
 
 export async function updateJobRecord(
@@ -165,7 +181,9 @@ export async function updateJobRecord(
   return updated
 }
 
-export async function removeJobRecord(job: Pick<BgJobRecord, 'sessionId'>): Promise<void> {
+export async function removeJobRecord(
+  job: Pick<BgJobRecord, 'sessionId'>,
+): Promise<void> {
   await unlink(jobFilePath(job)).catch(() => {})
 }
 
@@ -173,4 +191,3 @@ export function formatJobTargetError(error: JobTargetError): string {
   if (error.kind === 'not-found') return `No job matching '${error.target}'`
   return `Ambiguous prefix '${error.target}', matches: ${error.matches.join(', ')}`
 }
-

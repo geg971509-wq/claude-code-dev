@@ -65,6 +65,11 @@ import type {
 } from '../../types/message.js'
 import { count } from '../../utils/array.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
+import {
+  assertFileMutationPathUnchanged,
+  captureFileMutationPathEvidence,
+  type FileMutationPathEvidence,
+} from '../../utils/fsOperations.js'
 import { logForDebugging } from '../../utils/debug.js'
 import {
   AbortError,
@@ -75,6 +80,7 @@ import {
 } from '../../utils/errors.js'
 import { executePermissionDeniedHooks } from '../../utils/hooks.js'
 import { logError } from '../../utils/log.js'
+import { expandPath } from '../../utils/path.js'
 import {
   CANCEL_MESSAGE,
   createProgressMessage,
@@ -149,6 +155,21 @@ let _skillLearningWrapperCache:
       ) => Promise<T>
     }>
   | undefined
+
+function getGuardedMutationPath(
+  tool: Tool,
+  input: Record<string, unknown>,
+): string | undefined {
+  if (
+    !tool.getPath ||
+    (tool.name !== FILE_EDIT_TOOL_NAME &&
+      tool.name !== FILE_WRITE_TOOL_NAME &&
+      tool.name !== NOTEBOOK_EDIT_TOOL_NAME)
+  ) {
+    return undefined
+  }
+  return expandPath(tool.getPath(input as never))
+}
 
 function getSkillLearningWrapper() {
   if (!_skillLearningWrapperCache) {
@@ -1025,6 +1046,15 @@ async function checkPermissionsAndCallTool(
   // and ask the user for permission if we don't
   const permissionMode = toolUseContext.getAppState().toolPermissionContext.mode
   const permissionStart = Date.now()
+  const permissionInput =
+    hookPermissionResult && 'updatedInput' in hookPermissionResult
+      ? (hookPermissionResult.updatedInput ?? processedInput)
+      : processedInput
+  const approvedMutationPath = getGuardedMutationPath(tool, permissionInput)
+  const mutationPathEvidence: FileMutationPathEvidence | undefined =
+    approvedMutationPath === undefined
+      ? undefined
+      : captureFileMutationPathEvidence(approvedMutationPath)
 
   const resolved = await resolveHookPermissionDecision(
     hookPermissionResult,
@@ -1311,6 +1341,15 @@ async function checkPermissionsAndCallTool(
   } else if (processedInput !== backfilledClone) {
     callInput = processedInput
   }
+  const finalMutationPath = getGuardedMutationPath(tool, callInput)
+  const assertMutationPathUnchanged =
+    mutationPathEvidence && finalMutationPath
+      ? () =>
+          assertFileMutationPathUnchanged(
+            mutationPathEvidence,
+            finalMutationPath,
+          )
+      : undefined
   try {
     // AC1 parity: wrap the single canonical tool.call site with deterministic
     // tool-event observation hooks (codex review follow-up). Hooks are
@@ -1326,6 +1365,7 @@ async function checkPermissionsAndCallTool(
           ...toolUseContext,
           toolUseId: toolUseID,
           userModified: permissionDecision.userModified ?? false,
+          assertMutationPathUnchanged,
         },
         canUseTool,
         assistantMessage,

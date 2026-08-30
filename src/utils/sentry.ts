@@ -23,7 +23,9 @@ export function initSentry(): void {
   }
 
   if (!isTelemetryOptedIn()) {
-    logForDebugging('[sentry] Telemetry opt-in not enabled, skipping initialization')
+    logForDebugging(
+      '[sentry] Telemetry opt-in not enabled, skipping initialization',
+    )
     return
   }
 

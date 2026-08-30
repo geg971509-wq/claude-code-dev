@@ -5,6 +5,8 @@ import {
   CHATGPT_CODEX_BASE_URL,
   DEFAULT_CODEX_API_BASE_URL,
   _resetCodexAuthForTests,
+  clearCodexAuth,
+  forceRefreshCodexAuth,
   isCodexSubscriptionAuth,
   readCodexAuth,
   refreshCodexAuthIfNeeded,
@@ -34,13 +36,14 @@ async function runIsolated(
 }
 
 const store: { blob: Record<string, unknown> } = { blob: {} }
+let storageUpdateSucceeds = true
 
 mock.module('../../../../utils/secureStorage/index.js', () => ({
   getSecureStorage: () => ({
     read: () => store.blob,
     update: (next: Record<string, unknown>) => {
-      store.blob = { ...next }
-      return { success: true }
+      if (storageUpdateSucceeds) store.blob = { ...next }
+      return { success: storageUpdateSucceeds }
     },
     delete: () => {
       store.blob = {}
@@ -85,10 +88,16 @@ describe('resolveCodexBaseURL', () => {
     )
   })
 
-  test('CODEX_BASE_URL override wins over login method', () => {
+  test('subscription ignores base URL overrides while api-key mode accepts them', () => {
     expect(
       resolveCodexBaseURL({
         loginMethod: 'chatgpt_subscription',
+        override: 'https://example.test/v1',
+      }),
+    ).toBe(CHATGPT_CODEX_BASE_URL)
+    expect(
+      resolveCodexBaseURL({
+        loginMethod: 'api_key',
         override: 'https://example.test/v1',
       }),
     ).toBe('https://example.test/v1')
@@ -109,6 +118,7 @@ describe('resolveCodexBaseURL', () => {
 describe('codex credentials store', () => {
   beforeEach(() => {
     store.blob = {}
+    storageUpdateSucceeds = true
     _resetCodexAuthForTests()
     clearCodexClientCache()
   })
@@ -118,7 +128,8 @@ describe('codex credentials store', () => {
     clearCodexClientCache()
   })
 
-  test('write/read round-trips tokens without touching process.env', () => {
+  test('write/read round-trips tokens and preserves sibling auth', () => {
+    store.blob.openaiChatgptOauth = { accessToken: 'chatgpt-sibling' }
     writeCodexAuth({
       accessToken: 'access-1',
       refreshToken: 'refresh-1',
@@ -131,6 +142,14 @@ describe('codex credentials store', () => {
       apiKey: null,
       accountId: 'acc_1',
       expiresAt: expect.any(Number),
+      generation: 1,
+    })
+    expect(store.blob.openaiChatgptOauth).toEqual({
+      accessToken: 'chatgpt-sibling',
+    })
+    clearCodexAuth()
+    expect(store.blob.openaiChatgptOauth).toEqual({
+      accessToken: 'chatgpt-sibling',
     })
     expect(process.env.CODEX_ACCESS_TOKEN).toBeUndefined()
     expect(process.env.CODEX_REFRESH_TOKEN).toBeUndefined()
@@ -159,6 +178,7 @@ describe('codex credentials store', () => {
         const client = getCodexClient({
           ...ctx,
           maxRetries: 0,
+          subscription: true,
           fetchOverride: (async (input, init) => {
             const headers = new Headers(
               init?.headers as HeadersInit | undefined,
@@ -184,6 +204,31 @@ describe('codex credentials store', () => {
             value => value === `codex_cli_rs|acc_sub|${sessionId}|${sessionId}`,
           ),
         ).toBe(true)
+      },
+    )
+  })
+
+  test('api-key mode never reuses subscription credentials or account id', async () => {
+    await withEnv(
+      {
+        CODEX_LOGIN_METHOD: 'api_key',
+        CODEX_API_KEY: 'custom-api-key',
+        CODEX_BASE_URL: 'https://custom.example/v1',
+        CODEX_ACCOUNT_ID: 'stale-account',
+      },
+      async () => {
+        writeCodexAuth({
+          accessToken: 'subscription-access',
+          refreshToken: 'subscription-refresh',
+          apiKey: 'subscription-exchanged-api-key',
+          accountId: 'subscription-account',
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        })
+
+        expect(await resolveCodexRequestContext()).toEqual({
+          apiKey: 'custom-api-key',
+          baseURL: 'https://custom.example/v1',
+        })
       },
     )
   })
@@ -223,6 +268,136 @@ describe('codex credentials store', () => {
         grant_type: 'refresh_token',
         refresh_token: 'stale-refresh',
       })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('surfaces secure storage update failures', () => {
+    storageUpdateSucceeds = false
+    expect(() =>
+      writeCodexAuth({ accessToken: 'access', refreshToken: 'refresh' }),
+    ).toThrow('Failed to save Codex credentials in secure storage')
+    expect(store.blob).toEqual({})
+  })
+
+  test('forced refresh rotates an unexpired token', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = mock(
+      async () =>
+        new Response(
+          JSON.stringify({
+            access_token: 'forced-access',
+            refresh_token: 'forced-refresh',
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+    ) as unknown as typeof fetch
+
+    try {
+      writeCodexAuth({
+        accessToken: 'fresh-access',
+        refreshToken: 'fresh-refresh',
+        accountId: 'acc_1',
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      })
+      expect((await forceRefreshCodexAuth())?.accessToken).toBe('forced-access')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('caller abort stops waiting for proactive refresh', async () => {
+    let releaseRefresh: () => void = () => undefined
+    let markRefreshStarted: () => void = () => undefined
+    const refreshStarted = new Promise<void>(resolve => {
+      markRefreshStarted = resolve
+    })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (() =>
+      new Promise<Response>(resolve => {
+        markRefreshStarted()
+        releaseRefresh = () =>
+          resolve(
+            new Response(
+              JSON.stringify({
+                access_token: 'rotated-access',
+                refresh_token: 'rotated-refresh',
+                expires_in: 3600,
+              }),
+              {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+              },
+            ),
+          )
+      })) as unknown as typeof fetch
+
+    try {
+      await withEnv(
+        { CODEX_LOGIN_METHOD: 'chatgpt_subscription' },
+        async () => {
+          writeCodexAuth({
+            accessToken: 'expired-access',
+            refreshToken: 'expired-refresh',
+            accountId: 'acc_1',
+            expiresAt: 0,
+          })
+          const controller = new AbortController()
+          const pending = resolveCodexRequestContext(controller.signal).then(
+            () => 'resolved',
+            () => 'aborted',
+          )
+          await refreshStarted
+          controller.abort()
+          expect(
+            await Promise.race([pending, Bun.sleep(200).then(() => 'timeout')]),
+          ).toBe('aborted')
+          releaseRefresh()
+          await Bun.sleep(20)
+        },
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('refresh CAS does not overwrite a changed account', async () => {
+    let release: () => void = () => undefined
+    const responseReady = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = mock(async () => {
+      await responseReady
+      return new Response(
+        JSON.stringify({
+          access_token: 'stale-result',
+          refresh_token: 'stale-result-refresh',
+          expires_in: 3600,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }) as unknown as typeof fetch
+
+    try {
+      writeCodexAuth({
+        accessToken: 'old-access',
+        refreshToken: 'old-refresh',
+        accountId: 'acc_old',
+        expiresAt: Date.now() - 1000,
+      })
+      const pending = refreshCodexAuthIfNeeded()
+      writeCodexAuth({
+        accessToken: 'new-access',
+        refreshToken: 'new-refresh',
+        accountId: 'acc_new',
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      })
+      release()
+      expect((await pending)?.accessToken).toBe('new-access')
+      expect(readCodexAuth()?.accountId).toBe('acc_new')
     } finally {
       globalThis.fetch = originalFetch
     }

@@ -4,8 +4,11 @@ import type {
   ResponseInputItem,
   ResponseInputText,
 } from 'openai/resources/responses/responses.mjs'
-import type { Message } from '../../types/index.js'
-import { normalizeCodexCallId, resolveCodexCallId } from './callIds.js'
+import type { Message } from '../types/index.js'
+import {
+  normalizeResponsesCallId,
+  resolveResponsesCallId,
+} from './responsesCallIds.js'
 
 type ContentBlock = {
   type: string
@@ -34,9 +37,14 @@ type ToolResultLikeBlock = {
   content?: string | ReadonlyArray<ContentBlock>
 }
 
-type CodexCallIdState = {
+type ResponsesCallIdState = {
   byOriginalId: Map<string, string>
+  used: Set<string>
   sequence: number
+}
+
+export type ResponsesMessageConversionOptions = {
+  allowRemoteImageUrls?: boolean
 }
 
 const REMOTE_IMAGE_URL_PLACEHOLDER =
@@ -82,14 +90,17 @@ function createDataUrl(data: string, mediaType?: string): string {
   return `data:${mime};base64,${data}`
 }
 
-function resolveImageUrl(block: ContentBlock): string | null {
+function resolveImageUrl(
+  block: ContentBlock,
+  allowRemoteImageUrls: boolean,
+): string | null {
   const source = block.source
   if (!source) {
     return null
   }
 
   if (typeof source.url === 'string' && source.url.length > 0) {
-    if (isRemoteImageUrl(source.url)) {
+    if (!allowRemoteImageUrls && isRemoteImageUrl(source.url)) {
       return null
     }
     return source.url
@@ -104,8 +115,9 @@ function resolveImageUrl(block: ContentBlock): string | null {
 
 function convertImageBlock(
   block: ContentBlock,
+  allowRemoteImageUrls: boolean,
 ): ResponseInputText | ResponseInputImage {
-  const imageUrl = resolveImageUrl(block)
+  const imageUrl = resolveImageUrl(block, allowRemoteImageUrls)
   if (imageUrl) {
     return createInputImage(imageUrl)
   }
@@ -120,6 +132,7 @@ function convertImageBlock(
 
 function convertBlocksToInputContent(
   content: ReadonlyArray<ContentBlock>,
+  allowRemoteImageUrls: boolean,
 ): Array<ResponseInputText | ResponseInputImage> {
   const output: Array<ResponseInputText | ResponseInputImage> = []
 
@@ -130,7 +143,7 @@ function convertBlocksToInputContent(
     }
 
     if (block.type === 'image') {
-      output.push(convertImageBlock(block))
+      output.push(convertImageBlock(block, allowRemoteImageUrls))
       continue
     }
 
@@ -145,6 +158,7 @@ function convertBlocksToInputContent(
 
 function convertToolResultOutput(
   content: string | ReadonlyArray<ContentBlock> | undefined,
+  allowRemoteImageUrls: boolean,
 ): ResponseFunctionToolCallOutputItem['output'] {
   if (!content) {
     return ''
@@ -154,7 +168,7 @@ function convertToolResultOutput(
     return content
   }
 
-  const output = convertBlocksToInputContent(content)
+  const output = convertBlocksToInputContent(content, allowRemoteImageUrls)
 
   if (output.length === 0) {
     return ''
@@ -169,21 +183,16 @@ function convertToolResultOutput(
 
 function pushUserMessage(
   items: ResponseInputItem[],
-  textParts: string[],
-  imageUrls: string[] = [],
+  content: Array<ResponseInputText | ResponseInputImage>,
 ): void {
-  const text = textParts.join('\n').trim()
-  if (text.length === 0 && imageUrls.length === 0) {
+  if (content.length === 0) {
     return
   }
 
   items.push({
     type: 'message',
     role: 'user',
-    content: [
-      ...(text.length > 0 ? [createInputText(text)] : []),
-      ...imageUrls.map(createInputImage),
-    ],
+    content,
   } as unknown as ResponseInputItem)
 }
 
@@ -191,21 +200,18 @@ function pushAssistantMessage(
   items: ResponseInputItem[],
   textParts: string[],
 ): void {
-  const text = textParts.join('\n').trim()
-  if (text.length === 0) {
+  if (textParts.length === 0) {
     return
   }
 
   items.push({
     type: 'message',
     role: 'assistant',
-    content: [
-      {
-        type: 'output_text',
-        text,
-        annotations: [],
-      },
-    ],
+    content: textParts.map(text => ({
+      type: 'output_text',
+      text,
+      annotations: [],
+    })),
   } as unknown as ResponseInputItem)
 }
 
@@ -219,9 +225,7 @@ function pushReasoningItem(
       : typeof block.data === 'string' && block.data.length > 0
         ? block.data
         : undefined
-  if (!encryptedContent) {
-    return
-  }
+  if (!encryptedContent) return
 
   const summaryText =
     typeof block.thinking === 'string' ? block.thinking.trim() : ''
@@ -247,24 +251,31 @@ function stringifyToolInput(input: unknown): string {
   }
 }
 
-function createCodexCallIdState(): CodexCallIdState {
+function createResponsesCallIdState(): ResponsesCallIdState {
   return {
     byOriginalId: new Map(),
+    used: new Set(),
     sequence: 0,
   }
 }
 
 function resolveAssistantCallId(
   block: ToolUseLikeBlock,
-  state: CodexCallIdState,
+  state: ResponsesCallIdState,
 ): string {
   const originalId = typeof block.id === 'string' ? block.id : ''
   const seed = `${block.name}:${stringifyToolInput(block.input)}:${state.sequence}`
-  const callId = resolveCodexCallId(originalId, seed)
+  let callId = resolveResponsesCallId(originalId, seed)
+  let salt = 0
+  while (state.used.has(callId)) {
+    callId = resolveResponsesCallId('', `${originalId}:${seed}:${salt}`)
+    salt += 1
+  }
 
   if (originalId.length > 0) {
     state.byOriginalId.set(originalId, callId)
   }
+  state.used.add(callId)
   state.sequence += 1
 
   return callId
@@ -272,33 +283,33 @@ function resolveAssistantCallId(
 
 function resolveToolResultCallId(
   toolUseId: unknown,
-  state: CodexCallIdState,
+  state: ResponsesCallIdState,
 ): string | null {
   if (typeof toolUseId !== 'string') {
     return null
   }
 
-  return state.byOriginalId.get(toolUseId) ?? normalizeCodexCallId(toolUseId)
+  return (
+    state.byOriginalId.get(toolUseId) ?? normalizeResponsesCallId(toolUseId)
+  )
 }
 
 function convertUserContentToInputItems(
   items: ResponseInputItem[],
   content: ReadonlyArray<string | ContentBlock>,
-  callIdState: CodexCallIdState,
+  callIdState: ResponsesCallIdState,
+  allowRemoteImageUrls: boolean,
 ): void {
-  const textParts: string[] = []
-  const imageUrls: string[] = []
+  const messageContent: Array<ResponseInputText | ResponseInputImage> = []
 
   for (const block of content) {
     if (typeof block === 'string') {
-      textParts.push(block)
+      messageContent.push(createInputText(block))
       continue
     }
 
     if (block.type === 'tool_result') {
-      pushUserMessage(items, textParts, imageUrls)
-      textParts.length = 0
-      imageUrls.length = 0
+      pushUserMessage(items, messageContent.splice(0))
 
       const toolResultBlock = block as ToolResultLikeBlock
       const callId = resolveToolResultCallId(
@@ -312,54 +323,43 @@ function convertUserContentToInputItems(
       items.push({
         type: 'function_call_output',
         call_id: callId,
-        output: convertToolResultOutput(toolResultBlock.content),
+        output: convertToolResultOutput(
+          toolResultBlock.content,
+          allowRemoteImageUrls,
+        ),
       })
       continue
     }
 
     if (block.type === 'text' && block.text) {
-      textParts.push(block.text)
+      messageContent.push(createInputText(block.text))
       continue
     }
 
     if (block.type === 'image') {
-      const converted = convertImageBlock(block)
-      if (converted.type === 'input_image') {
-        if (converted.image_url) {
-          imageUrls.push(converted.image_url)
-        }
-        continue
-      }
-      textParts.push(converted.text)
+      messageContent.push(convertImageBlock(block, allowRemoteImageUrls))
       continue
     }
 
     const fallback = getUnsupportedBlockText(block.type)
     if (fallback) {
-      textParts.push(fallback)
+      messageContent.push(createInputText(fallback))
     }
   }
 
-  pushUserMessage(items, textParts, imageUrls)
+  pushUserMessage(items, messageContent)
 }
 
 function convertAssistantContentToInputItems(
   items: ResponseInputItem[],
   content: ReadonlyArray<string | ContentBlock>,
-  callIdState: CodexCallIdState,
+  callIdState: ResponsesCallIdState,
 ): void {
   const textParts: string[] = []
 
   for (const block of content) {
     if (typeof block === 'string') {
       textParts.push(block)
-      continue
-    }
-
-    if (block.type === 'thinking' || block.type === 'redacted_thinking') {
-      pushAssistantMessage(items, textParts)
-      textParts.length = 0
-      pushReasoningItem(items, block)
       continue
     }
 
@@ -377,6 +377,13 @@ function convertAssistantContentToInputItems(
       continue
     }
 
+    if (block.type === 'thinking' || block.type === 'redacted_thinking') {
+      pushAssistantMessage(items, textParts)
+      textParts.length = 0
+      pushReasoningItem(items, block)
+      continue
+    }
+
     if (block.type === 'text' && block.text) {
       textParts.push(block.text)
     }
@@ -385,11 +392,13 @@ function convertAssistantContentToInputItems(
   pushAssistantMessage(items, textParts)
 }
 
-export function anthropicMessagesToCodexInput(
+export function anthropicMessagesToResponsesInput(
   messages: Message[],
+  options: ResponsesMessageConversionOptions = {},
 ): ResponseInputItem[] {
   const items: ResponseInputItem[] = []
-  const callIdState = createCodexCallIdState()
+  const callIdState = createResponsesCallIdState()
+  const allowRemoteImageUrls = options.allowRemoteImageUrls === true
 
   for (const message of messages) {
     if (message.type !== 'user' && message.type !== 'assistant') {
@@ -403,7 +412,7 @@ export function anthropicMessagesToCodexInput(
 
     if (typeof apiMessage.content === 'string') {
       if (message.type === 'user') {
-        pushUserMessage(items, [apiMessage.content])
+        pushUserMessage(items, [createInputText(apiMessage.content)])
       } else {
         pushAssistantMessage(items, [apiMessage.content])
       }
@@ -415,6 +424,7 @@ export function anthropicMessagesToCodexInput(
         items,
         apiMessage.content as ReadonlyArray<string | ContentBlock>,
         callIdState,
+        allowRemoteImageUrls,
       )
     } else {
       convertAssistantContentToInputItems(

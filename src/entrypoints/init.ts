@@ -353,9 +353,7 @@ async function doInitializeTelemetry(): Promise<void> {
   // Prevents PerformanceMeasure accumulation in long-running sessions.
   if (!isTelemetryOptedIn()) {
     telemetryInitialized = true
-    logForDebugging(
-      '[3P telemetry] Skipped — telemetry opt-in is not enabled',
-    )
+    logForDebugging('[3P telemetry] Skipped — telemetry opt-in is not enabled')
     return
   }
 

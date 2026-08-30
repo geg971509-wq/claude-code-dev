@@ -1,5 +1,11 @@
-import { getSecureStorage } from '../../../utils/secureStorage/index.js'
+import { abortable } from '../../../utils/abort.js'
 import { logForDebugging } from '../../../utils/debug.js'
+import {
+  readSecureStorageFresh,
+  withAuthMutationLock,
+  withAuthMutationLockSync,
+} from '../../../utils/secureStorage/authLock.js'
+import { getSecureStorage } from '../../../utils/secureStorage/index.js'
 
 export const CHATGPT_CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex'
 export const DEFAULT_CODEX_API_BASE_URL = 'https://api.openai.com/v1'
@@ -19,6 +25,7 @@ export type CodexStoredAuth = {
   apiKey?: string | null
   accountId?: string
   expiresAt?: number
+  generation?: number
 }
 
 export type CodexRequestContext = {
@@ -41,12 +48,12 @@ export function resolveCodexBaseURL(options?: {
   loginMethod?: string | null
   override?: string | null
 }): string {
-  const override = options?.override ?? process.env.CODEX_BASE_URL
-  if (typeof override === 'string' && override.trim() !== '') {
-    return override.trim()
+  if (isCodexSubscriptionAuth(options?.loginMethod)) {
+    return CHATGPT_CODEX_BASE_URL
   }
-  return isCodexSubscriptionAuth(options?.loginMethod)
-    ? CHATGPT_CODEX_BASE_URL
+  const override = options?.override ?? process.env.CODEX_BASE_URL
+  return typeof override === 'string' && override.trim() !== ''
+    ? override.trim()
     : DEFAULT_CODEX_API_BASE_URL
 }
 
@@ -63,6 +70,7 @@ function parseStored(raw: unknown): CodexStoredAuth | null {
     apiKey,
     accountId: asNonEmpty(rec.accountId),
     expiresAt: typeof rec.expiresAt === 'number' ? rec.expiresAt : undefined,
+    generation: typeof rec.generation === 'number' ? rec.generation : undefined,
   }
 }
 
@@ -79,33 +87,59 @@ function liftFromEnv(): CodexStoredAuth | null {
   }
 }
 
+function readStoredCodexAuth(fresh = false): CodexStoredAuth | null {
+  const blob = ((fresh
+    ? readSecureStorageFresh()
+    : getSecureStorage().read()) ?? {}) as Record<string, unknown>
+  return parseStored(blob.codexOauth)
+}
+
 export function readCodexAuth(): CodexStoredAuth | null {
-  const storage = getSecureStorage()
-  const blob = (storage.read() ?? {}) as Record<string, unknown>
-  return parseStored(blob.codexOauth) ?? liftFromEnv()
+  return readStoredCodexAuth() ?? liftFromEnv()
+}
+
+function updateSecureStorage(
+  data: Record<string, unknown>,
+  operation: string,
+): void {
+  const result = getSecureStorage().update(data)
+  if (!result.success) {
+    throw new Error(`Failed to ${operation} in secure storage`)
+  }
+  if (result.warning) {
+    logForDebugging(`[Codex] ${result.warning}`, { level: 'warn' })
+  }
+}
+
+function writeCodexAuthUnlocked(auth: CodexStoredAuth): CodexStoredAuth {
+  const current = (readSecureStorageFresh() ?? {}) as Record<string, unknown>
+  const previous = parseStored(current.codexOauth)
+  const stored = {
+    ...(auth.accessToken ? { accessToken: auth.accessToken } : {}),
+    ...(auth.refreshToken ? { refreshToken: auth.refreshToken } : {}),
+    ...(auth.accountId ? { accountId: auth.accountId } : {}),
+    ...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
+    ...(auth.expiresAt != null ? { expiresAt: auth.expiresAt } : {}),
+    generation: auth.generation ?? (previous?.generation ?? 0) + 1,
+  }
+  updateSecureStorage(
+    { ...current, codexOauth: stored },
+    'save Codex credentials',
+  )
+  return stored
 }
 
 export function writeCodexAuth(auth: CodexStoredAuth): void {
-  const storage = getSecureStorage()
-  const current = (storage.read() ?? {}) as Record<string, unknown>
-  storage.update({
-    ...current,
-    codexOauth: {
-      ...(auth.accessToken ? { accessToken: auth.accessToken } : {}),
-      ...(auth.refreshToken ? { refreshToken: auth.refreshToken } : {}),
-      ...(auth.accountId ? { accountId: auth.accountId } : {}),
-      ...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
-      ...(auth.expiresAt != null ? { expiresAt: auth.expiresAt } : {}),
-    },
-  })
+  withAuthMutationLockSync(() => writeCodexAuthUnlocked(auth))
 }
 
 export function clearCodexAuth(): void {
-  const storage = getSecureStorage()
-  const current = (storage.read() ?? {}) as Record<string, unknown>
-  if (!('codexOauth' in current)) return
-  const { codexOauth: _removed, ...rest } = current
-  storage.update(rest)
+  withAuthMutationLockSync(() => {
+    const current = (readSecureStorageFresh() ?? {}) as Record<string, unknown>
+    if (!('codexOauth' in current)) return
+    const { codexOauth: _removed, ...rest } = current
+    updateSecureStorage(rest, 'clear Codex credentials')
+  })
 }
 
 async function writeCodexUserSettings(settings: {
@@ -143,11 +177,13 @@ export async function persistCodexLogin(result: {
       CODEX_ACCESS_TOKEN: undefined,
       CODEX_REFRESH_TOKEN: undefined,
       CODEX_API_KEY: undefined,
+      CODEX_ACCOUNT_ID: undefined,
     },
   })
   delete process.env.CODEX_ACCESS_TOKEN
   delete process.env.CODEX_REFRESH_TOKEN
   delete process.env.CODEX_API_KEY
+  delete process.env.CODEX_ACCOUNT_ID
   process.env.CODEX_LOGIN_METHOD = 'chatgpt_subscription'
 }
 
@@ -158,6 +194,7 @@ async function consumeEnvTokens(auth: CodexStoredAuth): Promise<void> {
       env: {
         CODEX_ACCESS_TOKEN: undefined,
         CODEX_REFRESH_TOKEN: undefined,
+        CODEX_ACCOUNT_ID: undefined,
         ...(isCodexSubscriptionAuth() ? { CODEX_API_KEY: undefined } : {}),
       },
     })
@@ -169,6 +206,7 @@ async function consumeEnvTokens(auth: CodexStoredAuth): Promise<void> {
   }
   delete process.env.CODEX_ACCESS_TOKEN
   delete process.env.CODEX_REFRESH_TOKEN
+  delete process.env.CODEX_ACCOUNT_ID
   if (isCodexSubscriptionAuth()) {
     delete process.env.CODEX_API_KEY
   }
@@ -216,139 +254,170 @@ function needsRefresh(auth: CodexStoredAuth): boolean {
   return exp <= Date.now() + REFRESH_SKEW_MS
 }
 
-function isStillFresh(auth: CodexStoredAuth): boolean {
-  const exp = tokenExpiryMs(auth)
-  return exp != null && exp > Date.now() + REFRESH_SKEW_MS
+function authSnapshotKey(auth: CodexStoredAuth): string {
+  return JSON.stringify([
+    auth.accountId ?? '',
+    auth.generation ?? 0,
+    auth.accessToken ?? '',
+    auth.refreshToken ?? '',
+  ])
 }
 
-let refreshInFlight: Promise<CodexStoredAuth> | null = null
+function matchesAuthSnapshot(
+  current: CodexStoredAuth | null,
+  snapshot: CodexStoredAuth,
+): boolean {
+  return (
+    current !== null && authSnapshotKey(current) === authSnapshotKey(snapshot)
+  )
+}
+
+const refreshInFlight = new Map<string, Promise<CodexStoredAuth | null>>()
 
 export function _resetCodexAuthForTests(): void {
-  refreshInFlight = null
+  refreshInFlight.clear()
 }
 
-async function doRefresh(stored: CodexStoredAuth): Promise<CodexStoredAuth> {
-  if (!stored.refreshToken) return stored
-
-  const latestBefore = readCodexAuth()
-  if (
-    latestBefore?.accessToken &&
-    latestBefore.accessToken !== stored.accessToken &&
-    isStillFresh(latestBefore)
-  ) {
-    return latestBefore
-  }
-
-  const response = await fetch(CODEX_TOKEN_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      originator: CODEX_ORIGINATOR,
-    },
-    body: JSON.stringify({
-      client_id: CODEX_CLIENT_ID,
-      grant_type: 'refresh_token',
-      refresh_token: stored.refreshToken,
-    }),
-  })
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(`Codex token refresh failed (${response.status}): ${text}`)
-  }
-
-  const json = (await response.json()) as {
-    access_token?: string
-    refresh_token?: string
-    expires_in?: number
-    id_token?: string
-  }
-  if (!json.access_token) {
-    throw new Error('Codex token refresh missing access_token')
-  }
-
-  const next: CodexStoredAuth = {
-    accessToken: json.access_token,
-    refreshToken: json.refresh_token ?? stored.refreshToken,
-    apiKey: stored.apiKey,
-    accountId:
-      stored.accountId ??
-      accountIdFromToken(json.id_token) ??
-      accountIdFromToken(json.access_token),
-    expiresAt:
-      typeof json.expires_in === 'number'
-        ? Date.now() + json.expires_in * 1000
-        : decodeJwtExpMs(json.access_token),
-  }
-
-  const latestAfter = readCodexAuth()
-  if (
-    latestAfter?.accessToken &&
-    latestAfter.accessToken !== stored.accessToken &&
-    latestAfter.accessToken !== next.accessToken &&
-    isStillFresh(latestAfter)
-  ) {
-    return latestAfter
-  }
-
-  writeCodexAuth(next)
-  const { clearCodexClientCache } = await import('./client.js')
-  clearCodexClientCache()
-  logForDebugging('[Codex] Rotated access token')
-  return next
-}
-
-function startRefresh(stored: CodexStoredAuth): Promise<CodexStoredAuth> {
-  if (refreshInFlight) return refreshInFlight
-  refreshInFlight = doRefresh(stored).finally(() => {
-    refreshInFlight = null
-  })
-  return refreshInFlight
-}
-
-export async function refreshCodexAuthIfNeeded(): Promise<CodexStoredAuth | null> {
-  const stored = readCodexAuth()
-  if (!stored) return null
-  if (!needsRefresh(stored)) return stored
-  return startRefresh(stored)
-}
-
-/**
- * Recover once after the Codex backend rejects a subscription bearer.
- *
- * Expiry claims are advisory: a token may be revoked server-side while still
- * looking fresh locally. Match Codex by reloading shared credentials first,
- * then forcing one refresh only when the rejected token is still current.
- */
-export async function refreshCodexAuthAfterUnauthorized(
+async function doRefresh(
+  stored: CodexStoredAuth,
+  expectedAccountId?: string,
   rejectedAccessToken?: string,
 ): Promise<CodexStoredAuth | null> {
-  if (!isCodexSubscriptionAuth()) {
-    return readCodexAuth()
-  }
+  if (!stored.refreshToken) return stored
 
-  const stored = readCodexAuth()
-  if (!stored) return null
+  return withAuthMutationLock(async () => {
+    const latestBefore = readStoredCodexAuth(true)
+    if (expectedAccountId && latestBefore?.accountId !== expectedAccountId) {
+      throw new Error('Codex account changed before token refresh')
+    }
+    if (
+      rejectedAccessToken &&
+      latestBefore?.accessToken !== rejectedAccessToken
+    ) {
+      return latestBefore
+    }
+    if (!matchesAuthSnapshot(latestBefore, stored)) {
+      return latestBefore
+    }
 
-  if (
-    rejectedAccessToken &&
-    stored.accessToken &&
-    stored.accessToken !== rejectedAccessToken
-  ) {
-    logForDebugging(
-      '[Codex] Reusing credentials rotated by another request after 401',
-    )
-    return stored
-  }
+    const response = await fetch(CODEX_TOKEN_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        originator: CODEX_ORIGINATOR,
+      },
+      body: JSON.stringify({
+        client_id: CODEX_CLIENT_ID,
+        grant_type: 'refresh_token',
+        refresh_token: stored.refreshToken,
+      }),
+    })
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      throw new Error(
+        `Codex token refresh failed (${response.status}): ${text}`,
+      )
+    }
 
-  if (!stored.refreshToken) {
-    return stored
-  }
+    const json = (await response.json()) as {
+      access_token?: string
+      refresh_token?: string
+      expires_in?: number
+      id_token?: string
+    }
+    if (!json.access_token) {
+      throw new Error('Codex token refresh missing access_token')
+    }
 
-  logForDebugging('[Codex] Refreshing subscription credentials after 401')
-  return startRefresh(stored)
+    const refreshedAccountId =
+      accountIdFromToken(json.id_token) ?? accountIdFromToken(json.access_token)
+    if (
+      stored.accountId &&
+      refreshedAccountId &&
+      refreshedAccountId !== stored.accountId
+    ) {
+      throw new Error('Codex token refresh returned a different account')
+    }
+    const next: CodexStoredAuth = {
+      accessToken: json.access_token,
+      refreshToken: json.refresh_token ?? stored.refreshToken,
+      apiKey: stored.apiKey,
+      accountId: refreshedAccountId ?? stored.accountId,
+      expiresAt:
+        typeof json.expires_in === 'number'
+          ? Date.now() + json.expires_in * 1000
+          : decodeJwtExpMs(json.access_token),
+      generation: (stored.generation ?? 0) + 1,
+    }
+
+    const latestAfter = readStoredCodexAuth(true)
+    if (!matchesAuthSnapshot(latestAfter, stored)) {
+      if (expectedAccountId && latestAfter?.accountId !== expectedAccountId) {
+        throw new Error('Codex account changed during token refresh')
+      }
+      return latestAfter
+    }
+
+    const saved = writeCodexAuthUnlocked(next)
+    const { clearCodexClientCache } = await import('./client.js')
+    clearCodexClientCache()
+    logForDebugging('[Codex] Rotated access token')
+    return saved
+  })
 }
 
-export async function resolveCodexRequestContext(): Promise<CodexRequestContext> {
+async function refreshCodexAuth(
+  force: boolean,
+  expectedAccountId?: string,
+  rejectedAccessToken?: string,
+): Promise<CodexStoredAuth | null> {
+  const stored = readCodexAuth()
+  if (!stored) return null
+  if (expectedAccountId && stored.accountId !== expectedAccountId) {
+    throw new Error('Codex account changed before token refresh')
+  }
+  if (!force && !needsRefresh(stored)) return stored
+  if (!stored.refreshToken) return stored
+
+  const key = `${authSnapshotKey(stored)}:${expectedAccountId ?? ''}`
+  const existing = refreshInFlight.get(key)
+  if (existing) return existing
+
+  const refresh = doRefresh(
+    stored,
+    expectedAccountId,
+    rejectedAccessToken,
+  ).finally(() => {
+    refreshInFlight.delete(key)
+  })
+  refreshInFlight.set(key, refresh)
+  return refresh
+}
+
+export function refreshCodexAuthIfNeeded(): Promise<CodexStoredAuth | null> {
+  return refreshCodexAuth(false)
+}
+
+export function forceRefreshCodexAuth(
+  expectedAccountId?: string,
+  rejectedAccessToken?: string,
+): Promise<CodexStoredAuth | null> {
+  return refreshCodexAuth(true, expectedAccountId, rejectedAccessToken)
+}
+
+export async function resolveCodexRequestContext(
+  signal?: AbortSignal,
+): Promise<CodexRequestContext> {
+  const loginMethod = process.env.CODEX_LOGIN_METHOD
+  const baseURL = resolveCodexBaseURL({ loginMethod })
+
+  if (!isCodexSubscriptionAuth(loginMethod)) {
+    return {
+      apiKey: asNonEmpty(process.env.CODEX_API_KEY) ?? '',
+      baseURL,
+    }
+  }
+
   const fromStorage = parseStored(
     ((getSecureStorage().read() ?? {}) as Record<string, unknown>).codexOauth,
   )
@@ -357,32 +426,19 @@ export async function resolveCodexRequestContext(): Promise<CodexRequestContext>
     await consumeEnvTokens(fromStorage ?? fromEnv)
   }
 
-  const auth = (await refreshCodexAuthIfNeeded()) ?? readCodexAuth()
-  const loginMethod = process.env.CODEX_LOGIN_METHOD
-  const baseURL = resolveCodexBaseURL({ loginMethod })
-
-  if (isCodexSubscriptionAuth(loginMethod)) {
-    const access = auth?.accessToken
-    if (!access) {
-      throw new Error(
-        'Missing Codex subscription access token. Use /login (ChatGPT Subscription).',
-      )
-    }
-    return {
-      apiKey: access,
-      baseURL,
-      accountId: auth?.accountId ?? accountIdFromToken(access),
-    }
+  const refresh = refreshCodexAuthIfNeeded()
+  const auth =
+    (signal ? await abortable(refresh, signal) : await refresh) ??
+    readCodexAuth()
+  const access = auth?.accessToken
+  if (!access) {
+    throw new Error(
+      'Missing Codex subscription access token. Use /login (ChatGPT Subscription).',
+    )
   }
-
-  const apiKey =
-    auth?.apiKey ||
-    asNonEmpty(process.env.CODEX_API_KEY) ||
-    auth?.accessToken ||
-    ''
   return {
-    apiKey,
+    apiKey: access,
     baseURL,
-    accountId: auth?.accountId,
+    accountId: auth?.accountId ?? accountIdFromToken(access),
   }
 }

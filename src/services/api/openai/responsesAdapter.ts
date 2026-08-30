@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto'
+import type OpenAI from 'openai'
 import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import {
   finishReasonToAnthropicStopReason,
@@ -9,8 +10,13 @@ import type {
   ResponseCreateParamsStreaming,
   ResponseIncludable,
   ResponseInput,
+  ResponseInputItem,
 } from 'openai/resources/responses/responses.mjs'
-import { getValidChatGPTAuth } from './chatgptAuth.js'
+import {
+  forceRefreshChatGPTAuth,
+  getValidChatGPTAuth,
+  type ChatGPTAuth,
+} from './chatgptAuth.js'
 import { getOpenAIClient } from './client.js'
 import { throwHttpStatusError } from './openaiShared.js'
 import {
@@ -18,8 +24,10 @@ import {
   type OpenAIJSONOutputFormat,
 } from './requestBody.js'
 import { MAX_RETAINED_SSE_BUFFER_BYTES } from '../../../constants/apiLimits.js'
+import { abortable } from '../../../utils/abort.js'
 import { createCombinedAbortSignal } from '../../../utils/combinedAbortSignal.js'
 import { getProxyFetchOptions } from '../../../utils/proxy.js'
+import type { OpenAIStreamAttempt } from './streamExecutor.js'
 
 /** Codex `X_CODEX_INSTALLATION_ID_HEADER` — body key in client_metadata. */
 const X_CODEX_INSTALLATION_ID = 'x-codex-installation-id'
@@ -27,7 +35,8 @@ const X_CODEX_INSTALLATION_ID = 'x-codex-installation-id'
 const X_CODEX_WINDOW_ID = 'x-codex-window-id'
 const UTF8_ENCODER = new TextEncoder()
 
-type ResponsesInputItem = Record<string, unknown>
+export type ResponsesInputItem = ResponseInputItem | Record<string, unknown>
+
 type ResponsesTool = {
   type: 'function'
   name: string
@@ -71,7 +80,9 @@ export type ChatGPTResponsesRequest = {
 
 type ResponsesRequestParams = {
   model: string
-  messages: unknown[]
+  messages?: unknown[]
+  input?: ResponsesInputItem[]
+  instructions?: string
   tools: unknown[]
   toolChoice: unknown
   reasoningEffort?: ResponsesReasoningEffort
@@ -100,7 +111,7 @@ type ResponsesRequestParams = {
  * compact/window source. prompt_cache_key is set by streamAttempt to raw
  * session_id (Codex ModelClient::prompt_cache_key), not a ccb: prefix.
  */
-function buildCodexClientMetadata(params: {
+export function buildCodexClientMetadata(params: {
   sessionId: string
   installationId: string
   threadId?: string
@@ -129,14 +140,6 @@ type AnthropicUsage = {
 
 const ENCRYPTED_REASONING_INCLUDE: ResponseIncludable =
   'reasoning.encrypted_content'
-
-export type OpenAIStreamAttempt = {
-  stream: AsyncIterable<Record<string, unknown>>
-  status: number
-  requestId: string | null
-  retryAfterMs: number | null
-  cleanup: () => void
-}
 
 function readResponseHeader(response: Response, name: string): string | null {
   return response.headers.get(name)
@@ -368,17 +371,17 @@ function convertOfficialToolChoiceToResponses(
 }
 
 function buildResponsesRequestFields(params: ResponsesRequestParams) {
-  const { input, instructions } = convertMessagesToResponsesInput(
-    params.messages,
-  )
+  const converted = params.input
+    ? { input: params.input, instructions: params.instructions }
+    : convertMessagesToResponsesInput(params.messages ?? [])
   const tools = convertToolsToResponses(params.tools)
   const includeEncrypted = params.includeEncryptedReasoning !== false
   return {
     model: params.model,
     stream: true as const,
     store: params.store ?? isAzureResponsesBaseURL(),
-    input,
-    ...(instructions ? { instructions } : {}),
+    input: converted.input,
+    ...(converted.instructions ? { instructions: converted.instructions } : {}),
     ...(tools.length > 0 ? { tools } : {}),
     ...(includeEncrypted
       ? { include: [ENCRYPTED_REASONING_INCLUDE] as ResponseIncludable[] }
@@ -412,6 +415,7 @@ export function buildChatGPTResponsesRequest(
       : undefined
   return {
     ...fields,
+    store: false,
     ...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
     ...(params.reasoningEffort && {
       reasoning:
@@ -460,13 +464,13 @@ export function buildOfficialResponsesRequest(
  * - x-codex-window-id from compatibility_headers (ChatGPT/Codex only)
  * installation_id stays in client_metadata body on normal stream (not header).
  */
-function responsesIdentityHeaders(
+export function responsesIdentityHeaders(
   sessionId: string | undefined,
-  options?: { codexWindowId?: string },
+  options?: { codexWindowId?: string; originator?: string },
 ): Record<string, string> {
   return {
     Accept: 'text/event-stream',
-    originator: 'claude-code-best',
+    originator: options?.originator ?? 'claude-code-best',
     ...(sessionId && {
       'session-id': sessionId,
       'thread-id': sessionId,
@@ -771,9 +775,35 @@ function createResponsesProviderError(
 type ToolBlockState = {
   contentIndex: number
   open: boolean
+  started: boolean
+  finalized: boolean
   name: string
   id: string
   arguments: string
+}
+
+type ReasoningPartState = {
+  buffered: string
+  emitted: string
+  finalized: boolean
+  finalText: string | undefined
+}
+
+type ReasoningBlockState = {
+  contentIndex: number
+  open: boolean
+  parts: Map<string, ReasoningPartState>
+  lastEmittedPart: string | undefined
+  encryptedContent: string | undefined
+}
+
+function responsesProtocolError(message: string): ProviderStreamError {
+  return new ProviderStreamError(message, {
+    kind: 'protocol',
+    retryable: false,
+    terminal: false,
+    completionState: 'invalid',
+  })
 }
 
 export async function* adaptResponsesStreamToAnthropic(
@@ -787,15 +817,12 @@ export async function* adaptResponsesStreamToAnthropic(
   let started = false
   let currentContentIndex = -1
   let textBlockOpen = false
-  let thinkingBlockOpen = false
-  let thinkingHasContent = false
-  let thinkingSeparatorPending = false
-  let reasoningItemKey: string | undefined
-  let reasoningSummaryIndex: number | undefined
-  let pendingEncryptedContent: string | undefined
-  const reasoningItemIdsByOutputIndex = new Map<number, string>()
+  let activeReasoningKey: string | undefined
+  const outputItemIdsByOutputIndex = new Map<number, string>()
+  const reasoningBlocks = new Map<string, ReasoningBlockState>()
+  const textParts = new Map<string, { text: string; finalized: boolean }>()
 
-  const resolveReasoningItemKey = (
+  const resolveOutputItemKey = (
     event: Record<string, unknown>,
     item?: Record<string, unknown>,
   ): string | undefined => {
@@ -806,11 +833,24 @@ export async function* adaptResponsesStreamToAnthropic(
       (typeof item?.id === 'string' && item.id) ||
       undefined
     if (outputIndex !== undefined && itemId) {
-      reasoningItemIdsByOutputIndex.set(outputIndex, itemId)
+      outputItemIdsByOutputIndex.set(outputIndex, itemId)
+      const provisionalKey = `output:${outputIndex}`
+      const finalKey = `item:${itemId}`
+      const provisionalReasoning = reasoningBlocks.get(provisionalKey)
+      if (provisionalReasoning && !reasoningBlocks.has(finalKey)) {
+        reasoningBlocks.set(finalKey, provisionalReasoning)
+        reasoningBlocks.delete(provisionalKey)
+        if (activeReasoningKey === provisionalKey) activeReasoningKey = finalKey
+      }
+      for (const [key, part] of textParts) {
+        if (!key.startsWith(`${provisionalKey}:content:`)) continue
+        textParts.set(`${finalKey}${key.slice(provisionalKey.length)}`, part)
+        textParts.delete(key)
+      }
     }
     if (itemId) return `item:${itemId}`
     if (outputIndex !== undefined) {
-      const mappedItemId = reasoningItemIdsByOutputIndex.get(outputIndex)
+      const mappedItemId = outputItemIdsByOutputIndex.get(outputIndex)
       return mappedItemId ? `item:${mappedItemId}` : `output:${outputIndex}`
     }
     return undefined
@@ -855,6 +895,292 @@ export async function* adaptResponsesStreamToAnthropic(
     } as unknown as BetaRawMessageStreamEvent
   }
 
+  const closeTextBlock = async function* () {
+    if (!textBlockOpen) return
+    yield {
+      type: 'content_block_stop',
+      index: currentContentIndex,
+    } as BetaRawMessageStreamEvent
+    textBlockOpen = false
+  }
+
+  const closeReasoningBlock = async function* (key: string) {
+    const block = reasoningBlocks.get(key)
+    if (!block?.open) return
+    for (const [partKey, part] of block.parts) {
+      if (part.finalized) continue
+      for await (const output of reconcileReasoningPart(
+        block,
+        partKey,
+        part.emitted + part.buffered,
+      )) {
+        yield output
+      }
+    }
+    if (block.encryptedContent) {
+      yield {
+        type: 'content_block_delta',
+        index: block.contentIndex,
+        delta: {
+          type: 'signature_delta',
+          signature: block.encryptedContent,
+        },
+      } as BetaRawMessageStreamEvent
+    }
+    yield {
+      type: 'content_block_stop',
+      index: block.contentIndex,
+    } as BetaRawMessageStreamEvent
+    block.open = false
+    if (activeReasoningKey === key) activeReasoningKey = undefined
+  }
+
+  const closeReasoningBlocks = async function* () {
+    for (const key of reasoningBlocks.keys()) {
+      for await (const event of closeReasoningBlock(key)) yield event
+    }
+  }
+
+  const ensureTextBlock = async function* () {
+    if (textBlockOpen) return
+    for await (const event of closeReasoningBlocks()) yield event
+    currentContentIndex++
+    textBlockOpen = true
+    yield {
+      type: 'content_block_start',
+      index: currentContentIndex,
+      content_block: { type: 'text', text: '' },
+    } as BetaRawMessageStreamEvent
+  }
+
+  const textPartKey = (
+    event: Record<string, unknown>,
+    item?: Record<string, unknown>,
+    contentIndex?: number,
+  ): string => {
+    const itemKey = resolveOutputItemKey(event, item) ?? 'output:default'
+    const partIndex =
+      contentIndex ??
+      (typeof event.content_index === 'number' ? event.content_index : 0)
+    return `${itemKey}:content:${partIndex}`
+  }
+
+  const emitText = async function* (key: string, text: string, final: boolean) {
+    const part = textParts.get(key) ?? { text: '', finalized: false }
+    if (part.finalized) {
+      if (final && part.text === text) return
+      throw responsesProtocolError(
+        `OpenAI Responses text changed after finalization for ${key}`,
+      )
+    }
+
+    let fragment = text
+    if (final) {
+      if (!text.startsWith(part.text)) {
+        throw responsesProtocolError(
+          `OpenAI Responses final text did not extend streamed prefix for ${key}`,
+        )
+      }
+      fragment = text.slice(part.text.length)
+      part.text = text
+      part.finalized = true
+    } else {
+      part.text += text
+    }
+    textParts.set(key, part)
+    if (!fragment) return
+
+    for await (const event of ensureTextBlock()) yield event
+    yield {
+      type: 'content_block_delta',
+      index: currentContentIndex,
+      delta: { type: 'text_delta', text: fragment },
+    } as BetaRawMessageStreamEvent
+  }
+
+  const ensureReasoningBlock = async function* (key: string) {
+    const existing = reasoningBlocks.get(key)
+    if (existing) {
+      if (!existing.open) {
+        throw responsesProtocolError(
+          `OpenAI Responses reasoning item emitted content after done for ${key}`,
+        )
+      }
+      activeReasoningKey = key
+      return
+    }
+
+    for await (const event of closeTextBlock()) yield event
+    if (activeReasoningKey && activeReasoningKey !== key) {
+      for await (const event of closeReasoningBlock(activeReasoningKey)) {
+        yield event
+      }
+    }
+    currentContentIndex++
+    reasoningBlocks.set(key, {
+      contentIndex: currentContentIndex,
+      open: true,
+      parts: new Map(),
+      lastEmittedPart: undefined,
+      encryptedContent: undefined,
+    })
+    activeReasoningKey = key
+    yield {
+      type: 'content_block_start',
+      index: currentContentIndex,
+      content_block: { type: 'thinking', thinking: '', signature: '' },
+    } as BetaRawMessageStreamEvent
+  }
+
+  const emitReasoningFragment = async function* (
+    block: ReasoningBlockState,
+    partKey: string,
+    fragment: string,
+  ) {
+    if (!fragment) return
+    if (block.lastEmittedPart && block.lastEmittedPart !== partKey) {
+      yield {
+        type: 'content_block_delta',
+        index: block.contentIndex,
+        delta: { type: 'thinking_delta', thinking: '\n\n' },
+      } as BetaRawMessageStreamEvent
+    }
+    yield {
+      type: 'content_block_delta',
+      index: block.contentIndex,
+      delta: { type: 'thinking_delta', thinking: fragment },
+    } as BetaRawMessageStreamEvent
+    block.lastEmittedPart = partKey
+  }
+
+  const reconcileReasoningPart = async function* (
+    block: ReasoningBlockState,
+    partKey: string,
+    finalText: string,
+  ) {
+    const part = block.parts.get(partKey) ?? {
+      buffered: '',
+      emitted: '',
+      finalized: false,
+      finalText: undefined,
+    }
+    if (part.finalized) {
+      if (part.finalText === finalText) return
+      throw responsesProtocolError(
+        `OpenAI Responses reasoning part changed after finalization for ${partKey}`,
+      )
+    }
+    if (part.emitted && !finalText.startsWith(part.emitted)) {
+      throw responsesProtocolError(
+        `OpenAI Responses final reasoning text did not extend streamed prefix for ${partKey}`,
+      )
+    }
+    const fragment = finalText.startsWith(part.emitted)
+      ? finalText.slice(part.emitted.length)
+      : finalText
+    for await (const output of emitReasoningFragment(
+      block,
+      partKey,
+      fragment,
+    )) {
+      yield output
+    }
+    part.emitted += fragment
+    part.buffered = ''
+    part.finalized = true
+    part.finalText = finalText
+    block.parts.set(partKey, part)
+  }
+
+  const startToolBlock = async function* (block: ToolBlockState) {
+    if (block.started) return
+    if (!block.id || !block.name) {
+      throw responsesProtocolError(
+        'OpenAI Responses function call finished without call_id and name',
+      )
+    }
+    for await (const event of closeTextBlock()) yield event
+    for await (const event of closeReasoningBlocks()) yield event
+    currentContentIndex++
+    block.contentIndex = currentContentIndex
+    block.started = true
+    yield {
+      type: 'content_block_start',
+      index: block.contentIndex,
+      content_block: {
+        type: 'tool_use',
+        id: block.id,
+        name: block.name,
+        input: {},
+      },
+    } as BetaRawMessageStreamEvent
+    if (block.arguments) {
+      yield {
+        type: 'content_block_delta',
+        index: block.contentIndex,
+        delta: {
+          type: 'input_json_delta',
+          partial_json: block.arguments,
+        },
+      } as BetaRawMessageStreamEvent
+    }
+  }
+
+  const reconcileToolArguments = async function* (
+    block: ToolBlockState,
+    finalArguments: string,
+  ) {
+    if (!finalArguments.startsWith(block.arguments)) {
+      throw responsesProtocolError(
+        `OpenAI Responses final function arguments did not extend streamed prefix for ${block.id || 'unknown call'}`,
+      )
+    }
+    const fragment = finalArguments.slice(block.arguments.length)
+    block.arguments = finalArguments
+    if (!block.started) {
+      for await (const event of startToolBlock(block)) yield event
+    } else if (fragment) {
+      yield {
+        type: 'content_block_delta',
+        index: block.contentIndex,
+        delta: {
+          type: 'input_json_delta',
+          partial_json: fragment,
+        },
+      } as BetaRawMessageStreamEvent
+    }
+  }
+
+  const finishMessage = async function* (response: Record<string, unknown>) {
+    for await (const event of closeTextBlock()) yield event
+    for await (const event of closeReasoningBlocks()) yield event
+    const seenToolBlocks = new Set<ToolBlockState>([
+      ...toolBlocksByOutputIndex.values(),
+      ...toolBlocksByItemId.values(),
+    ])
+    for (const block of seenToolBlocks) {
+      if (!block.started) {
+        for await (const event of startToolBlock(block)) yield event
+      }
+      if (block.open) {
+        yield {
+          type: 'content_block_stop',
+          index: block.contentIndex,
+        } as BetaRawMessageStreamEvent
+        block.open = false
+      }
+    }
+    yield {
+      type: 'message_delta',
+      delta: {
+        stop_reason: mapStopReason(response, seenToolBlocks.size > 0),
+        stop_sequence: null,
+      },
+      usage: extractUsage(response),
+    } as unknown as BetaRawMessageStreamEvent
+    yield { type: 'message_stop' } as BetaRawMessageStreamEvent
+  }
+
   for await (const event of stream) {
     const type = event.type
     if (event.error != null && typeof event.error === 'object') {
@@ -876,44 +1202,36 @@ export async function* adaptResponsesStreamToAnthropic(
     }
     for await (const startedEvent of ensureStarted()) yield startedEvent
 
-    if (type === 'response.output_text.delta') {
-      if (!textBlockOpen) {
-        if (thinkingBlockOpen) {
-          // Attach encrypted content as signature before closing, if any.
-          if (pendingEncryptedContent) {
-            yield {
-              type: 'content_block_delta',
-              index: currentContentIndex,
-              delta: {
-                type: 'signature_delta',
-                signature: pendingEncryptedContent,
-              },
-            } as BetaRawMessageStreamEvent
-            pendingEncryptedContent = undefined
-          }
-          yield {
-            type: 'content_block_stop',
-            index: currentContentIndex,
-          } as BetaRawMessageStreamEvent
-          thinkingBlockOpen = false
-          thinkingHasContent = false
-          thinkingSeparatorPending = false
-          reasoningItemKey = undefined
-          reasoningSummaryIndex = undefined
-        }
-        currentContentIndex++
-        textBlockOpen = true
-        yield {
-          type: 'content_block_start',
-          index: currentContentIndex,
-          content_block: { type: 'text', text: '' },
-        } as BetaRawMessageStreamEvent
+    if (
+      type === 'response.output_text.delta' ||
+      type === 'response.refusal.delta'
+    ) {
+      for await (const output of emitText(
+        textPartKey(event),
+        String(event.delta ?? ''),
+        false,
+      )) {
+        yield output
       }
-      yield {
-        type: 'content_block_delta',
-        index: currentContentIndex,
-        delta: { type: 'text_delta', text: String(event.delta ?? '') },
-      } as BetaRawMessageStreamEvent
+      continue
+    }
+
+    if (
+      type === 'response.output_text.done' ||
+      type === 'response.refusal.done'
+    ) {
+      const finalText = String(
+        type === 'response.refusal.done'
+          ? (event.refusal ?? event.text ?? '')
+          : (event.text ?? ''),
+      )
+      for await (const output of emitText(
+        textPartKey(event),
+        finalText,
+        true,
+      )) {
+        yield output
+      }
       continue
     }
 
@@ -922,57 +1240,81 @@ export async function* adaptResponsesStreamToAnthropic(
       type === 'response.reasoning_summary.delta' ||
       type === 'response.reasoning_summary_text.delta'
     ) {
-      if (!thinkingBlockOpen) {
-        if (textBlockOpen) {
-          yield {
-            type: 'content_block_stop',
-            index: currentContentIndex,
-          } as BetaRawMessageStreamEvent
-          textBlockOpen = false
-        }
-        currentContentIndex++
-        thinkingBlockOpen = true
-        yield {
-          type: 'content_block_start',
-          index: currentContentIndex,
-          content_block: { type: 'thinking', thinking: '', signature: '' },
-        } as BetaRawMessageStreamEvent
+      const scopedKey = resolveOutputItemKey(event)
+      const key = scopedKey ?? activeReasoningKey
+      if (!key) {
+        throw responsesProtocolError(
+          'OpenAI Responses reasoning delta did not identify an output item',
+        )
       }
-
-      const nextItemKey = resolveReasoningItemKey(event)
-      const nextSummaryIndex =
-        typeof event.summary_index === 'number'
-          ? event.summary_index
-          : undefined
-      if (
-        thinkingHasContent &&
-        ((nextItemKey !== undefined && nextItemKey !== reasoningItemKey) ||
-          (nextSummaryIndex !== undefined &&
-            nextSummaryIndex !== reasoningSummaryIndex))
-      ) {
-        thinkingSeparatorPending = true
+      for await (const output of ensureReasoningBlock(key)) yield output
+      const block = reasoningBlocks.get(key)
+      if (!block) throw responsesProtocolError('Missing reasoning block state')
+      const kind =
+        type === 'response.reasoning_text.delta' ? 'content' : 'summary'
+      const partIndex =
+        kind === 'content'
+          ? typeof event.content_index === 'number'
+            ? event.content_index
+            : 0
+          : typeof event.summary_index === 'number'
+            ? event.summary_index
+            : 0
+      const partKey = `${kind}:${partIndex}`
+      const part = block.parts.get(partKey) ?? {
+        buffered: '',
+        emitted: '',
+        finalized: false,
+        finalText: undefined,
       }
-      if (nextItemKey !== undefined) reasoningItemKey = nextItemKey
-      if (nextSummaryIndex !== undefined) {
-        reasoningSummaryIndex = nextSummaryIndex
-      }
-
       const fragment = String(event.delta ?? '')
-      if (fragment) {
-        if (thinkingSeparatorPending) {
-          yield {
-            type: 'content_block_delta',
-            index: currentContentIndex,
-            delta: { type: 'thinking_delta', thinking: '\n\n' },
-          } as BetaRawMessageStreamEvent
-          thinkingSeparatorPending = false
+      if (scopedKey) {
+        for await (const output of emitReasoningFragment(
+          block,
+          partKey,
+          fragment,
+        )) {
+          yield output
         }
-        yield {
-          type: 'content_block_delta',
-          index: currentContentIndex,
-          delta: { type: 'thinking_delta', thinking: fragment },
-        } as BetaRawMessageStreamEvent
-        thinkingHasContent = true
+        part.emitted += fragment
+      } else {
+        part.buffered += fragment
+      }
+      block.parts.set(partKey, part)
+      continue
+    }
+
+    if (
+      type === 'response.reasoning_text.done' ||
+      type === 'response.reasoning_summary_text.done'
+    ) {
+      const key = resolveOutputItemKey(event) ?? activeReasoningKey
+      if (!key) {
+        throw responsesProtocolError(
+          'OpenAI Responses reasoning done event did not identify an output item',
+        )
+      }
+      const existing = reasoningBlocks.get(key)
+      if (existing && !existing.open) continue
+      for await (const output of ensureReasoningBlock(key)) yield output
+      const block = reasoningBlocks.get(key)
+      if (!block) throw responsesProtocolError('Missing reasoning block state')
+      const kind =
+        type === 'response.reasoning_text.done' ? 'content' : 'summary'
+      const partIndex =
+        kind === 'content'
+          ? typeof event.content_index === 'number'
+            ? event.content_index
+            : 0
+          : typeof event.summary_index === 'number'
+            ? event.summary_index
+            : 0
+      for await (const output of reconcileReasoningPart(
+        block,
+        `${kind}:${partIndex}`,
+        String(event.text ?? ''),
+      )) {
+        yield output
       }
       continue
     }
@@ -980,107 +1322,42 @@ export async function* adaptResponsesStreamToAnthropic(
     if (type === 'response.output_item.added') {
       const item = event.item as Record<string, unknown> | undefined
       const outputIndex =
-        typeof event.output_index === 'number' ? event.output_index : -1
+        typeof event.output_index === 'number' ? event.output_index : undefined
       if (item?.type === 'reasoning') {
-        const nextItemKey = resolveReasoningItemKey(event, item)
-        if (
-          thinkingHasContent &&
-          nextItemKey !== undefined &&
-          nextItemKey !== reasoningItemKey
-        ) {
-          thinkingSeparatorPending = true
+        const key = resolveOutputItemKey(event, item)
+        if (!key) {
+          throw responsesProtocolError(
+            'OpenAI Responses reasoning item did not include id or output_index',
+          )
         }
-        if (nextItemKey !== undefined) reasoningItemKey = nextItemKey
-        reasoningSummaryIndex = undefined
-        if (typeof item.encrypted_content === 'string') {
-          pendingEncryptedContent = item.encrypted_content
-        }
-        if (!thinkingBlockOpen) {
-          if (textBlockOpen) {
-            yield {
-              type: 'content_block_stop',
-              index: currentContentIndex,
-            } as BetaRawMessageStreamEvent
-            textBlockOpen = false
-          }
-          currentContentIndex++
-          thinkingBlockOpen = true
-          yield {
-            type: 'content_block_start',
-            index: currentContentIndex,
-            content_block: {
-              type: 'thinking',
-              thinking: '',
-              signature: '',
-            },
-          } as BetaRawMessageStreamEvent
+        for await (const output of ensureReasoningBlock(key)) yield output
+        const block = reasoningBlocks.get(key)
+        if (block && typeof item.encrypted_content === 'string') {
+          block.encryptedContent = item.encrypted_content
         }
         continue
       }
       if (item?.type === 'function_call') {
-        if (textBlockOpen) {
-          yield {
-            type: 'content_block_stop',
-            index: currentContentIndex,
-          } as BetaRawMessageStreamEvent
-          textBlockOpen = false
-        }
-        if (thinkingBlockOpen) {
-          if (pendingEncryptedContent) {
-            yield {
-              type: 'content_block_delta',
-              index: currentContentIndex,
-              delta: {
-                type: 'signature_delta',
-                signature: pendingEncryptedContent,
-              },
-            } as BetaRawMessageStreamEvent
-            pendingEncryptedContent = undefined
-          }
-          yield {
-            type: 'content_block_stop',
-            index: currentContentIndex,
-          } as BetaRawMessageStreamEvent
-          thinkingBlockOpen = false
-          thinkingHasContent = false
-          thinkingSeparatorPending = false
-          reasoningItemKey = undefined
-          reasoningSummaryIndex = undefined
-        }
-        currentContentIndex++
         const itemId =
           typeof item.id === 'string' && item.id.length > 0
             ? item.id
             : undefined
-        const id = String(
-          item.call_id ??
-            item.id ??
-            `call_${outputIndex >= 0 ? outputIndex : currentContentIndex}`,
-        )
-        const name = String(item.name ?? '')
         const block: ToolBlockState = {
-          contentIndex: currentContentIndex,
+          contentIndex: -1,
           open: true,
-          name,
-          id,
+          started: false,
+          finalized: false,
+          name: typeof item.name === 'string' ? item.name : '',
+          id: typeof item.call_id === 'string' ? item.call_id : '',
           arguments: typeof item.arguments === 'string' ? item.arguments : '',
         }
-        if (outputIndex >= 0) toolBlocksByOutputIndex.set(outputIndex, block)
+        if (outputIndex !== undefined) {
+          toolBlocksByOutputIndex.set(outputIndex, block)
+        }
         if (itemId) toolBlocksByItemId.set(itemId, block)
-        yield {
-          type: 'content_block_start',
-          index: currentContentIndex,
-          content_block: { type: 'tool_use', id, name, input: {} },
-        } as BetaRawMessageStreamEvent
-        if (block.arguments) {
-          yield {
-            type: 'content_block_delta',
-            index: currentContentIndex,
-            delta: {
-              type: 'input_json_delta',
-              partial_json: block.arguments,
-            },
-          } as BetaRawMessageStreamEvent
+        resolveOutputItemKey(event, item)
+        if (block.name && block.id) {
+          for await (const output of startToolBlock(block)) yield output
         }
       }
       continue
@@ -1088,9 +1365,23 @@ export async function* adaptResponsesStreamToAnthropic(
 
     if (type === 'response.function_call_arguments.delta') {
       const block = resolveToolBlock(event)
-      if (block) {
-        const fragment = String(event.delta ?? '')
-        block.arguments += fragment
+      if (!block) {
+        throw responsesProtocolError(
+          'OpenAI Responses function arguments delta did not match a function call',
+        )
+      }
+      if (block.finalized) {
+        throw responsesProtocolError(
+          `OpenAI Responses function arguments changed after finalization for ${block.id || 'unknown call'}`,
+        )
+      }
+      const fragment = String(event.delta ?? '')
+      block.arguments += fragment
+      if (!block.started) {
+        if (block.name && block.id) {
+          for await (const output of startToolBlock(block)) yield output
+        }
+      } else if (fragment) {
         yield {
           type: 'content_block_delta',
           index: block.contentIndex,
@@ -1103,21 +1394,178 @@ export async function* adaptResponsesStreamToAnthropic(
       continue
     }
 
+    if (type === 'response.function_call_arguments.done') {
+      const block = resolveToolBlock(event)
+      if (!block) {
+        throw responsesProtocolError(
+          'OpenAI Responses final function arguments did not match a function call',
+        )
+      }
+      const finalArguments = String(event.arguments ?? '')
+      for await (const output of reconcileToolArguments(
+        block,
+        finalArguments,
+      )) {
+        yield output
+      }
+      block.finalized = true
+      continue
+    }
+
     if (type === 'response.output_item.done') {
       const item = event.item as Record<string, unknown> | undefined
-      if (
-        item?.type === 'reasoning' &&
-        typeof item.encrypted_content === 'string'
-      ) {
-        pendingEncryptedContent = item.encrypted_content
+      if (!item || typeof item.type !== 'string') {
+        throw responsesProtocolError(
+          'OpenAI Responses output_item.done did not include an item',
+        )
       }
-      const block = resolveToolBlock(event, item)
-      if (block?.open) {
-        yield {
-          type: 'content_block_stop',
-          index: block.contentIndex,
-        } as BetaRawMessageStreamEvent
-        block.open = false
+      const key = resolveOutputItemKey(event, item)
+      if (item.type === 'reasoning') {
+        if (!key) {
+          throw responsesProtocolError(
+            'OpenAI Responses final reasoning item did not include id or output_index',
+          )
+        }
+        for await (const output of ensureReasoningBlock(key)) yield output
+        const block = reasoningBlocks.get(key)
+        if (!block)
+          throw responsesProtocolError('Missing reasoning block state')
+        const finalParts = (
+          [
+            ['summary', item.summary],
+            ['content', item.content],
+          ] as const
+        ).flatMap(([kind, values]) =>
+          Array.isArray(values)
+            ? values.flatMap((part, index) =>
+                part &&
+                typeof part === 'object' &&
+                typeof (part as Record<string, unknown>).text === 'string'
+                  ? [
+                      {
+                        key: `${kind}:${index}`,
+                        text: (part as { text: string }).text,
+                      },
+                    ]
+                  : [],
+              )
+            : [],
+        )
+        if (finalParts.length > 0) {
+          for (const part of finalParts) {
+            for await (const output of reconcileReasoningPart(
+              block,
+              part.key,
+              part.text,
+            )) {
+              yield output
+            }
+          }
+        } else {
+          for (const [partKey, part] of block.parts) {
+            for await (const output of reconcileReasoningPart(
+              block,
+              partKey,
+              part.emitted + part.buffered,
+            )) {
+              yield output
+            }
+          }
+        }
+        if (typeof item.encrypted_content === 'string') {
+          block.encryptedContent = item.encrypted_content
+        }
+        for await (const output of closeReasoningBlock(key)) yield output
+        continue
+      }
+      if (item.type === 'function_call') {
+        const outputIndex =
+          typeof event.output_index === 'number'
+            ? event.output_index
+            : undefined
+        const itemId =
+          typeof item.id === 'string' && item.id.length > 0
+            ? item.id
+            : undefined
+        let block = resolveToolBlock(event, item)
+        if (!block) {
+          block = {
+            contentIndex: -1,
+            open: true,
+            started: false,
+            finalized: false,
+            name: '',
+            id: '',
+            arguments: '',
+          }
+          if (outputIndex !== undefined) {
+            toolBlocksByOutputIndex.set(outputIndex, block)
+          }
+          if (itemId) toolBlocksByItemId.set(itemId, block)
+        }
+        const finalName = typeof item.name === 'string' ? item.name : ''
+        const finalId = typeof item.call_id === 'string' ? item.call_id : ''
+        if (block.name && finalName && block.name !== finalName) {
+          throw responsesProtocolError(
+            `OpenAI Responses final function name conflicted for ${block.id || finalId || 'unknown call'}`,
+          )
+        }
+        if (block.id && finalId && block.id !== finalId) {
+          throw responsesProtocolError(
+            `OpenAI Responses final call_id conflicted for ${block.id}`,
+          )
+        }
+        block.name = finalName || block.name
+        block.id = finalId || block.id
+        const finalArguments =
+          typeof item.arguments === 'string' ? item.arguments : block.arguments
+        if (block.finalized && finalArguments !== block.arguments) {
+          throw responsesProtocolError(
+            `OpenAI Responses final function arguments conflicted for ${block.id || 'unknown call'}`,
+          )
+        }
+        for await (const output of reconcileToolArguments(
+          block,
+          finalArguments,
+        )) {
+          yield output
+        }
+        block.finalized = true
+        if (block.open) {
+          yield {
+            type: 'content_block_stop',
+            index: block.contentIndex,
+          } as BetaRawMessageStreamEvent
+          block.open = false
+        }
+        continue
+      }
+      if (item.type === 'message') {
+        const content = Array.isArray(item.content) ? item.content : []
+        for (const [contentIndex, partValue] of content.entries()) {
+          if (!partValue || typeof partValue !== 'object') continue
+          const part = partValue as Record<string, unknown>
+          if (part.type === 'output_text' && typeof part.text === 'string') {
+            for await (const output of emitText(
+              textPartKey(event, item, contentIndex),
+              part.text,
+              true,
+            )) {
+              yield output
+            }
+          } else if (
+            part.type === 'refusal' &&
+            typeof part.refusal === 'string'
+          ) {
+            for await (const output of emitText(
+              textPartKey(event, item, contentIndex),
+              part.refusal,
+              true,
+            )) {
+              yield output
+            }
+          }
+        }
       }
       continue
     }
@@ -1151,11 +1599,20 @@ export async function* adaptResponsesStreamToAnthropic(
         | undefined
       const reason =
         typeof incomplete?.reason === 'string' ? incomplete.reason : null
+      if (reason === 'max_output_tokens') {
+        for await (const output of finishMessage(response)) yield output
+        return
+      }
+      const retryable =
+        reason === 'server_error' ||
+        reason === 'timeout' ||
+        reason === 'overloaded' ||
+        reason === 'rate_limit_exceeded'
       throw new ProviderStreamError(
         `OpenAI Responses response incomplete${reason ? `: ${reason}` : ''}`,
         {
           kind: 'incomplete',
-          retryable: true,
+          retryable,
           terminal: true,
           completionState: 'incomplete',
           requestId: typeof response?.id === 'string' ? response.id : undefined,
@@ -1177,51 +1634,7 @@ export async function* adaptResponsesStreamToAnthropic(
           },
         )
       }
-      if (thinkingBlockOpen) {
-        if (pendingEncryptedContent) {
-          yield {
-            type: 'content_block_delta',
-            index: currentContentIndex,
-            delta: {
-              type: 'signature_delta',
-              signature: pendingEncryptedContent,
-            },
-          } as BetaRawMessageStreamEvent
-          pendingEncryptedContent = undefined
-        }
-        yield {
-          type: 'content_block_stop',
-          index: currentContentIndex,
-        } as BetaRawMessageStreamEvent
-      }
-      if (textBlockOpen) {
-        yield {
-          type: 'content_block_stop',
-          index: currentContentIndex,
-        } as BetaRawMessageStreamEvent
-      }
-      const seenToolBlocks = new Set<ToolBlockState>([
-        ...toolBlocksByOutputIndex.values(),
-        ...toolBlocksByItemId.values(),
-      ])
-      for (const block of seenToolBlocks) {
-        if (block.open) {
-          yield {
-            type: 'content_block_stop',
-            index: block.contentIndex,
-          } as BetaRawMessageStreamEvent
-          block.open = false
-        }
-      }
-      yield {
-        type: 'message_delta',
-        delta: {
-          stop_reason: mapStopReason(response, seenToolBlocks.size > 0),
-          stop_sequence: null,
-        },
-        usage: extractUsage(response),
-      } as unknown as BetaRawMessageStreamEvent
-      yield { type: 'message_stop' } as BetaRawMessageStreamEvent
+      for await (const output of finishMessage(response)) yield output
       return
     }
   }
@@ -1234,39 +1647,90 @@ export async function* adaptResponsesStreamToAnthropic(
   })
 }
 
+export type UnauthorizedReplayState = {
+  used: boolean
+  accountId?: string
+  accessToken?: string
+}
+
 export async function createChatGPTResponsesStream(params: {
   request: ChatGPTResponsesRequest
   signal: AbortSignal
   sessionId?: string
   fetchOverride?: typeof fetch
+  originator: string
+  unauthorizedReplay: UnauthorizedReplayState
 }): Promise<OpenAIStreamAttempt> {
-  const auth = await getValidChatGPTAuth()
   const fetchFn = params.fetchOverride ?? (globalThis.fetch as typeof fetch)
   const codexWindowId =
     params.request.client_metadata?.[X_CODEX_WINDOW_ID] ??
     (params.sessionId ? `${params.sessionId}:0` : undefined)
-  const headers: Record<string, string> = {
-    ...responsesIdentityHeaders(params.sessionId, { codexWindowId }),
-    Authorization: `Bearer ${auth.accessToken}`,
-    'Content-Type': 'application/json',
-    'OpenAI-Beta': 'responses=experimental',
-    Origin: 'https://chatgpt.com',
-    Referer: 'https://chatgpt.com/',
+  const body = JSON.stringify(params.request)
+  let auth = await getValidChatGPTAuth(params.signal)
+  const replay = params.unauthorizedReplay
+  replay.accountId ??= auth.accountId
+  if (replay.accountId !== auth.accountId) {
+    throw new Error('ChatGPT account changed before request retry')
   }
-  if (auth.accountId) {
-    headers['ChatGPT-Account-Id'] = auth.accountId
-  }
-  const response = await fetchFn(
-    'https://chatgpt.com/backend-api/codex/responses',
-    {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(params.request),
-      signal: params.signal,
-    },
-  )
-  if (!response.ok) {
+  replay.accessToken = auth.accessToken
+
+  for (;;) {
+    const headers: Record<string, string> = {
+      ...responsesIdentityHeaders(params.sessionId, {
+        codexWindowId,
+        originator: params.originator,
+      }),
+      Authorization: `Bearer ${auth.accessToken}`,
+      'Content-Type': 'application/json',
+    }
+    if (auth.accountId) {
+      headers['ChatGPT-Account-Id'] = auth.accountId
+    }
+
+    const response = await fetchFn(
+      'https://chatgpt.com/backend-api/codex/responses',
+      {
+        method: 'POST',
+        headers,
+        body,
+        signal: params.signal,
+      },
+    )
+    if (response.ok) {
+      return {
+        stream: parseSSE(response),
+        status: response.status,
+        requestId: responseRequestId(response),
+        retryAfterMs: responseRetryAfterMs(response),
+        cleanup: () => {
+          void response.body?.cancel().catch(() => {})
+        },
+      }
+    }
+
     const text = await response.text().catch(() => '')
+    if (response.status === 401 && !replay.used && replay.accountId) {
+      replay.used = true
+      try {
+        const next: ChatGPTAuth = await abortable(
+          forceRefreshChatGPTAuth(replay.accountId, replay.accessToken),
+          params.signal,
+        )
+        if (
+          next.accountId === replay.accountId &&
+          next.accessToken !== replay.accessToken
+        ) {
+          replay.accessToken = next.accessToken
+          auth = next
+          continue
+        }
+      } catch (error) {
+        if (params.signal.aborted) throw error
+        // Preserve the provider's original 401 below. A refresh failure must not
+        // hide the request error behind a local credential-storage message.
+      }
+    }
+
     throwHttpStatusError(
       'ChatGPT Responses API request',
       response.status,
@@ -1274,6 +1738,19 @@ export async function createChatGPTResponsesStream(params: {
       response.headers,
     )
   }
+}
+
+export async function createResponsesStreamWithClient(params: {
+  client: OpenAI
+  request: ResponseCreateParamsStreaming
+  signal: AbortSignal
+  headers?: Record<string, string>
+}): Promise<OpenAIStreamAttempt> {
+  const promise = params.client.responses.create(params.request, {
+    signal: params.signal,
+    headers: params.headers,
+  })
+  const response = await promise.asResponse()
   return {
     stream: parseSSE(response),
     status: response.status,
@@ -1311,7 +1788,9 @@ export async function createOfficialResponsesStream(params: {
     })
     const promise = client.responses.create(params.request, {
       signal: params.signal,
-      headers: responsesIdentityHeaders(params.sessionId),
+      headers: params.sessionId
+        ? responsesIdentityHeaders(params.sessionId)
+        : undefined,
     })
     const response = await promise.asResponse()
     return {
@@ -1344,7 +1823,7 @@ export async function createOfficialResponsesStream(params: {
     const response = await fetchFn(`${base}/responses`, {
       method: 'POST',
       headers: {
-        ...responsesIdentityHeaders(params.sessionId),
+        ...(params.sessionId ? responsesIdentityHeaders(params.sessionId) : {}),
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },

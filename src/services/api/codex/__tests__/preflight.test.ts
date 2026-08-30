@@ -2,6 +2,21 @@ import { describe, expect, test } from 'bun:test'
 import { sanitizeCodexRequest } from '../preflight.js'
 
 describe('sanitizeCodexRequest', () => {
+  test('accepts encrypted reasoning replay items', () => {
+    const reasoning = {
+      type: 'reasoning',
+      encrypted_content: 'enc_1',
+      summary: [],
+    }
+    const out = sanitizeCodexRequest({
+      model: 'gpt-5.4',
+      input: [reasoning],
+      store: false,
+    } as never)
+
+    expect(out.input as unknown).toEqual([reasoning])
+  })
+
   test('keeps official sampling extras', () => {
     const out = sanitizeCodexRequest({
       model: 'gpt-5.4',

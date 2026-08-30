@@ -1,10 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import {
-  isAnalyticsDisabled,
-  isFeedbackSurveyDisabled,
-} from '../config.js'
+import { isAnalyticsDisabled, isFeedbackSurveyDisabled } from '../config.js'
 
 const ENV_KEYS = [
+  'NODE_ENV',
   'CLAUDE_CODE_ENABLE_TELEMETRY',
   'DISABLE_TELEMETRY',
   'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',

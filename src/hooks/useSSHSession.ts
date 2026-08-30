@@ -1,12 +1,5 @@
 /**
  * REPL integration hook for `claude ssh` sessions.
- *
- * Sibling to useDirectConnect — same shape (isRemoteMode/sendMessage/
- * cancelRequest/disconnect), same REPL wiring, but drives an SSH child
- * process instead of a WebSocket. Kept separate rather than generalizing
- * useDirectConnect because the lifecycle differs: the ssh process and auth
- * proxy are created BEFORE this hook runs (during startup, in main.tsx) and
- * handed in; useDirectConnect creates its WebSocket inside the effect.
  */
 
 import { randomUUID } from 'crypto'
