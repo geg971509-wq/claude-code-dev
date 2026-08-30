@@ -255,6 +255,16 @@ export async function* queryModelCodex(
       ...(codexTools.length > 0 && {
         tools: codexTools,
       }),
+      ...(options.outputFormat && {
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'side_query_output',
+            schema: options.outputFormat.schema,
+            strict: true,
+          },
+        },
+      }),
       ...(explicitMaxOutputTokens !== undefined && {
         max_output_tokens: explicitMaxOutputTokens,
       }),
