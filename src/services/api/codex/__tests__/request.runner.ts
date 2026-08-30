@@ -45,6 +45,17 @@ mock.module('src/services/langfuse/convert.ts', () => ({
 
 const { queryModelCodex } = await import('../index.js')
 
+function requireMetadataString(
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): string {
+  const value = metadata?.[key]
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`Expected client_metadata.${key} to be a non-empty string`)
+  }
+  return value
+}
+
 afterAll(() => {
   delete process.env.CODEX_API_KEY
   delete process.env.CODEX_LOGIN_METHOD
@@ -87,23 +98,21 @@ describe('queryModelCodex request', () => {
     const metadata = requestBody?.client_metadata as
       | Record<string, unknown>
       | undefined
-    expect(typeof metadata?.[CODEX_INSTALLATION_ID_METADATA_KEY]).toBe('string')
-    expect(metadata?.session_id).toBe(metadata?.thread_id)
-    expect(metadata?.[CODEX_WINDOW_ID_HEADER]).toBe(
-      `${String(metadata?.thread_id)}:0`,
+    const installationId = requireMetadataString(
+      metadata,
+      CODEX_INSTALLATION_ID_METADATA_KEY,
     )
-    expect(requestHeaders?.get(CODEX_SESSION_ID_HEADER)).toBe(
-      metadata?.session_id,
-    )
-    expect(requestHeaders?.get(CODEX_THREAD_ID_HEADER)).toBe(
-      metadata?.thread_id,
-    )
-    expect(requestHeaders?.get(CODEX_CLIENT_REQUEST_ID_HEADER)).toBe(
-      metadata?.thread_id,
-    )
-    expect(requestHeaders?.get(CODEX_WINDOW_ID_HEADER)).toBe(
-      metadata?.[CODEX_WINDOW_ID_HEADER],
-    )
+    const sessionId = requireMetadataString(metadata, 'session_id')
+    const threadId = requireMetadataString(metadata, 'thread_id')
+    const windowId = requireMetadataString(metadata, CODEX_WINDOW_ID_HEADER)
+
+    expect(installationId.length).toBeGreaterThan(0)
+    expect(sessionId).toBe(threadId)
+    expect(windowId).toBe(`${threadId}:0`)
+    expect(requestHeaders?.get(CODEX_SESSION_ID_HEADER)).toBe(sessionId)
+    expect(requestHeaders?.get(CODEX_THREAD_ID_HEADER)).toBe(threadId)
+    expect(requestHeaders?.get(CODEX_CLIENT_REQUEST_ID_HEADER)).toBe(threadId)
+    expect(requestHeaders?.get(CODEX_WINDOW_ID_HEADER)).toBe(windowId)
   })
 
   test('rethrows user cancellation instead of yielding an API error message', async () => {
