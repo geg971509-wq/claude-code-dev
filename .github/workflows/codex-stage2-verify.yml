@@ -1,0 +1,83 @@
+name: Codex Stage 2 Verification
+
+on:
+  push:
+    branches:
+      - codex/responses-terminal-parity-20260830
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CLAUDE_CODE_SKIP_CHROME_MCP_SETUP: '1'
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: codex/responses-terminal-parity-20260830
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Format stage files
+        run: |
+          bunx biome format --write \
+            src/services/api/codex/errors.ts \
+            src/services/api/codex/streamErrors.ts \
+            src/services/api/codex/streaming.ts \
+            src/services/api/codex/__tests__/errors.test.ts \
+            src/services/api/codex/__tests__/streamErrors.test.ts \
+            src/services/api/codex/__tests__/streaming.terminals.test.ts
+
+      - name: Commit stage formatting
+        run: |
+          git add -- \
+            src/services/api/codex/errors.ts \
+            src/services/api/codex/streamErrors.ts \
+            src/services/api/codex/streaming.ts \
+            src/services/api/codex/__tests__/errors.test.ts \
+            src/services/api/codex/__tests__/streamErrors.test.ts \
+            src/services/api/codex/__tests__/streaming.terminals.test.ts
+          if ! git diff --cached --quiet; then
+            git -c user.name='github-actions[bot]' \
+                -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+                commit -m 'style(codex): format Responses terminal parity changes'
+            git push origin HEAD:codex/responses-terminal-parity-20260830
+          fi
+
+      - name: Check stage formatting and lint
+        run: |
+          bunx biome check \
+            src/services/api/codex/errors.ts \
+            src/services/api/codex/streamErrors.ts \
+            src/services/api/codex/streaming.ts \
+            src/services/api/codex/__tests__/errors.test.ts \
+            src/services/api/codex/__tests__/streamErrors.test.ts \
+            src/services/api/codex/__tests__/streaming.terminals.test.ts
+
+      - name: Type check
+        run: bun run typecheck
+
+      - name: Dependency boundary ratchet
+        run: bun run check:boundaries
+
+      - name: Codex terminal behavior tests
+        run: |
+          bun test \
+            src/services/api/codex/__tests__/errors.test.ts \
+            src/services/api/codex/__tests__/streamErrors.test.ts \
+            src/services/api/codex/__tests__/streaming.terminals.test.ts \
+            src/services/api/codex/__tests__/streaming.retry.test.ts \
+            src/services/api/codex/__tests__/responseItems.test.ts
+
+      - name: Build
+        run: bun run build
