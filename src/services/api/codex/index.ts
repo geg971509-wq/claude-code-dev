@@ -166,17 +166,21 @@ function codexAssistantBlocksToAssistantMessage(
   // Keep completed response item order while delegating text/tool parsing to
   // the existing normalization layer. Thinking.signature carries the
   // encrypted_content required for the next store:false request.
-  assistantMessage.message.content = blocks.flatMap(block =>
-    block.type === 'thinking'
-      ? [
-          {
-            type: 'thinking',
-            thinking: block.thinking,
-            signature: block.signature,
-          },
-        ]
-      : normalizeContentFromAPI([block] as any, tools, agentId as any),
-  ) as any
+  const normalizedContent: any[] = []
+  for (const block of blocks) {
+    if (block.type === 'thinking') {
+      normalizedContent.push({
+        type: 'thinking',
+        thinking: block.thinking,
+        signature: block.signature,
+      })
+      continue
+    }
+    normalizedContent.push(
+      ...normalizeContentFromAPI([block] as any, tools, agentId as any),
+    )
+  }
+  assistantMessage.message.content = normalizedContent as any
 
   return assistantMessage
 }
