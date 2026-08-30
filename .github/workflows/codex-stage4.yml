@@ -1,0 +1,76 @@
+name: Codex Stage 4 Verification
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        env:
+          CLAUDE_CODE_SKIP_CHROME_MCP_SETUP: "1"
+        run: bun install --frozen-lockfile
+
+      - name: Check stage formatting
+        run: |
+          bunx biome ci \
+            src/services/api/codex/index.ts \
+            src/services/api/codex/__tests__/request.runner.ts
+
+      - name: Type check diagnostic ratchet
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set +e
+          head_sha="$(git rev-parse HEAD)"
+          bun run typecheck > /tmp/head-typecheck.log 2>&1
+          head_status=$?
+
+          git checkout --detach "$BASE_SHA"
+          bun run typecheck > /tmp/base-typecheck.log 2>&1
+          base_status=$?
+          git checkout --detach "$head_sha"
+          set -e
+
+          cat /tmp/head-typecheck.log
+          if [ "$head_status" -eq 0 ]; then
+            exit 0
+          fi
+
+          grep 'error TS' /tmp/head-typecheck.log | sort > /tmp/head-errors.txt || true
+          grep 'error TS' /tmp/base-typecheck.log | sort > /tmp/base-errors.txt || true
+          comm -23 /tmp/head-errors.txt /tmp/base-errors.txt > /tmp/new-errors.txt
+          if [ -s /tmp/new-errors.txt ]; then
+            echo 'New TypeScript diagnostics introduced by this PR:'
+            cat /tmp/new-errors.txt
+            exit 1
+          fi
+
+          if [ "$base_status" -eq 0 ]; then
+            echo 'Base branch typecheck passed but PR typecheck failed.'
+            exit 1
+          fi
+          echo 'No TypeScript diagnostics were added relative to the current base branch.'
+
+      - name: Dependency boundary ratchet
+        run: bun run check:boundaries
+
+      - name: Run Codex structured output contract tests
+        run: bun test src/services/api/codex/__tests__/request.test.ts
+
+      - name: Build
+        run: bun run build:vite
