@@ -13,6 +13,7 @@ import { logEventTo1P, shouldSampleEvent } from './firstPartyEventLogger.js'
 import { checkStatsigFeatureGate_CACHED_MAY_BE_STALE } from './growthbook.js'
 import { attachAnalyticsSink, stripProtoFields } from './index.js'
 import { isSinkKilled } from './sinkKillswitch.js'
+import { isTelemetryOptedIn } from '../../utils/privacyLevel.js'
 
 // Local type matching the logEvent metadata signature
 type LogEventMetadata = { [key: string]: boolean | number | undefined }
@@ -46,6 +47,8 @@ function shouldTrackDatadog(): boolean {
  * Log an event (synchronous implementation)
  */
 function logEventImpl(eventName: string, metadata: LogEventMetadata): void {
+  if (!isTelemetryOptedIn()) return
+
   // Check if this event should be sampled
   const sampleResult = shouldSampleEvent(eventName)
 
@@ -94,6 +97,10 @@ function logEventAsyncImpl(
  * Called from main.tsx during setupBackend().
  */
 export function initializeAnalyticsGates(): void {
+  if (!isTelemetryOptedIn()) {
+    isDatadogGateEnabled = false
+    return
+  }
   isDatadogGateEnabled =
     checkStatsigFeatureGate_CACHED_MAY_BE_STALE(DATADOG_GATE_NAME)
 }
