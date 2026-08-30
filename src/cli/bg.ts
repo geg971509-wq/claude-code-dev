@@ -784,6 +784,14 @@ export async function handleBgStart(args: string[]): Promise<void> {
 
   const sessionId = randomUUID()
   const jobId = sessionId.slice(0, 8)
+  const collision = (await listStoredJobs()).find(
+    job => job.jobId === jobId || job.sessionId.startsWith(jobId),
+  )
+  if (collision) {
+    console.error(`Previous session ${jobId} is still shutting down — try again in a moment.`)
+    process.exitCode = 1
+    return
+  }
   // Keep the transport/session name filesystem- and tmux-safe. The optional
   // user name is metadata only and must never become a shell/session target.
   const sessionName = `claude-bg-${jobId}`
