@@ -1,11 +1,17 @@
+import { getProviderErrorStatus } from '@ant/model-provider'
 import type { SDKAssistantMessageError } from '../../../entrypoints/agentSdkTypes.js'
 import { isCodexSubscriptionAuth, readCodexAuth } from './credentials.js'
 
 type CodexErrorLike = {
   status?: unknown
+  statusCode?: unknown
+  code?: unknown
+  type?: unknown
   message?: unknown
   error?: {
     message?: unknown
+    code?: unknown
+    type?: unknown
   }
 }
 
@@ -15,15 +21,7 @@ export type NormalizedCodexError = {
 }
 
 export function getCodexErrorStatus(error: unknown): number | null {
-  if (
-    typeof error === 'object' &&
-    error !== null &&
-    typeof (error as CodexErrorLike).status === 'number'
-  ) {
-    return (error as CodexErrorLike).status as number
-  }
-
-  return null
+  return getProviderErrorStatus(error) ?? null
 }
 
 export function isCodexUnauthorizedError(error: unknown): boolean {
@@ -51,6 +49,18 @@ function readErrorMessage(error: unknown): string {
   return String(error)
 }
 
+function readErrorCode(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null) {
+    return null
+  }
+
+  const value = error as CodexErrorLike
+  const code = value.code ?? value.error?.code
+  return typeof code === 'string' && code.trim().length > 0
+    ? code.trim().toLowerCase()
+    : null
+}
+
 export function getCodexConfigurationError(): NormalizedCodexError | null {
   const auth = readCodexAuth()
   if (isCodexSubscriptionAuth()) {
@@ -74,11 +84,59 @@ export function getCodexConfigurationError(): NormalizedCodexError | null {
 export function normalizeCodexError(error: unknown): NormalizedCodexError {
   const status = getCodexErrorStatus(error)
   const message = readErrorMessage(error)
+  const code = readErrorCode(error)
 
   if (/^Codex preflight:/i.test(message)) {
     return {
       content: message,
       error: 'invalid_request',
+    }
+  }
+
+  if (code === 'context_length_exceeded') {
+    return {
+      content: `Codex context window exceeded: ${message}`,
+      error: 'invalid_request',
+    }
+  }
+
+  if (code === 'insufficient_quota') {
+    return {
+      content: `Codex quota exhausted: ${message}`,
+      error: 'rate_limit',
+    }
+  }
+
+  if (code === 'rate_limit_exceeded') {
+    return {
+      content: `Codex rate limit reached: ${message}`,
+      error: 'rate_limit',
+    }
+  }
+
+  if (code === 'usage_not_included') {
+    return {
+      content: `Codex usage is not included for this account: ${message}`,
+      error: 'invalid_request',
+    }
+  }
+
+  if (
+    code === 'cyber_policy' ||
+    code === 'misalignment_policy_violation' ||
+    code === 'invalid_prompt' ||
+    code === 'bio_policy'
+  ) {
+    return {
+      content: `Codex rejected the request (${code}): ${message}`,
+      error: 'invalid_request',
+    }
+  }
+
+  if (code === 'server_is_overloaded' || code === 'slow_down') {
+    return {
+      content: `Codex service is temporarily overloaded: ${message}`,
+      error: 'server_error',
     }
   }
 
@@ -99,8 +157,7 @@ export function normalizeCodexError(error: unknown): NormalizedCodexError {
 
   if (status === 429) {
     return {
-      content:
-        'Codex rate limit reached (429). Retry shortly or reduce request volume.',
+      content: `Codex rate limit reached (429): ${message}`,
       error: 'rate_limit',
     }
   }
