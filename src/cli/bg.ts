@@ -789,6 +789,11 @@ function extractInitialPrompt(args: string[]): string | undefined {
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!
     if (isFlag(arg)) {
+      if (arg.startsWith('--print=') || arg.startsWith('-p=')) {
+        const prompt = arg.slice(arg.indexOf('=') + 1).trim()
+        if (prompt) return prompt
+        continue
+      }
       if (arg.includes('=')) continue
       if (CLAUDE_SINGLE_VALUE_FLAGS.has(arg)) {
         index++
@@ -842,6 +847,10 @@ function buildRespawnArgs(job: BgJobRecord): string[] {
       continue
     }
     result.push(arg)
+    if (arg.startsWith('--print=') || arg.startsWith('-p=')) {
+      result[result.length - 1] = arg.slice(0, arg.indexOf('='))
+      continue
+    }
     if (arg.includes('=')) continue
     if (CLAUDE_SINGLE_VALUE_FLAGS.has(arg)) {
       if (source[index + 1] !== undefined) result.push(source[++index]!)
