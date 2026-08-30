@@ -124,10 +124,18 @@ export async function registerSession(): Promise<boolean> {
         : {}),
       ...(feature('BG_SESSIONS')
         ? {
-            name:
-              typeof existingJob?.name === 'string'
-                ? existingJob.name
-                : process.env.CLAUDE_CODE_SESSION_NAME,
+            // `CLAUDE_CODE_SESSION_NAME` is the transport name used by tmux
+            // and logs, not necessarily the user's display name. A managed
+            // `claude --bg` parent supplies the display name in its durable
+            // job record; do not replace an absent name with the transport
+            // slug if the child happens to register before that record is
+            // written. Standalone Fleet/agent launches have no stable
+            // session ID and retain the historical transport-name fallback.
+            ...(typeof existingJob?.name === 'string'
+              ? { name: existingJob.name }
+              : process.env.CLAUDE_CODE_SESSION_ID
+                ? {}
+                : { name: process.env.CLAUDE_CODE_SESSION_NAME }),
             logPath: process.env.CLAUDE_CODE_SESSION_LOG,
             agent: process.env.CLAUDE_CODE_AGENT,
             args: launchArgs,
