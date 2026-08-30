@@ -40,7 +40,9 @@ function normalizedString(value: unknown): string | undefined {
   return normalized.length > 0 ? normalized : undefined
 }
 
-function parseSupportedEfforts(value: string | undefined): string[] | undefined {
+function parseSupportedEfforts(
+  value: string | undefined,
+): string[] | undefined {
   if (!value) {
     return undefined
   }
@@ -105,7 +107,9 @@ function selectUltraFallback(
   return 'medium'
 }
 
-function providerEnvPrefix(provider: CodexReasoningProvider): 'OPENAI' | 'CODEX' {
+function providerEnvPrefix(
+  provider: CodexReasoningProvider,
+): 'OPENAI' | 'CODEX' {
   return provider === 'codex' ? 'CODEX' : 'OPENAI'
 }
 
@@ -115,20 +119,14 @@ function resolveRawEffort(
   env: ReasoningEnv,
 ): unknown {
   const prefix = providerEnvPrefix(provider)
-  const providerOverride = normalizedString(
-    env[`${prefix}_REASONING_EFFORT`],
-  )
+  const providerOverride = normalizedString(env[`${prefix}_REASONING_EFFORT`])
   const globalOverride = normalizedString(env.CLAUDE_CODE_EFFORT_LEVEL)
   const override = providerOverride ?? globalOverride
 
   if (override === 'unset') {
     return undefined
   }
-  if (
-    override === undefined ||
-    override === 'auto' ||
-    override === 'default'
-  ) {
+  if (override === undefined || override === 'auto' || override === 'default') {
     return configured
   }
 
