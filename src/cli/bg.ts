@@ -28,6 +28,20 @@ async function listStoredJobs(): Promise<BgJobRecord[]> {
   return listJobRecords()
 }
 
+function isSessionEntry(value: unknown): value is SessionEntry {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { sessionId?: unknown }).sessionId === 'string' &&
+    typeof (value as { cwd?: unknown }).cwd === 'string' &&
+    typeof (value as { pid?: unknown }).pid === 'number' &&
+    Number.isFinite((value as { pid: number }).pid) &&
+    typeof (value as { startedAt?: unknown }).startedAt === 'number' &&
+    Number.isFinite((value as { startedAt: number }).startedAt) &&
+    typeof (value as { kind?: unknown }).kind === 'string'
+  )
+}
+
 async function getEngineForSession(session: SessionEntry): Promise<BgEngine> {
   const engineType = resolveSessionEngine(session)
   if (engineType === 'tmux') {
@@ -260,9 +274,15 @@ export async function listLiveSessions(): Promise<SessionEntry[]> {
     }
 
     try {
-      const raw = await readFile(join(dir, file), 'utf-8')
-      const entry = jsonParse(raw) as SessionEntry
-      sessions.push(entry)
+      const entry: unknown = jsonParse(
+        await readFile(join(dir, file), 'utf-8'),
+      )
+      // PID files are read from a shared user config directory and are
+      // written non-atomically by legacy sessions. Reject malformed records
+      // and records whose embedded PID does not match the filename before
+      // exposing them to ps/kill/stop; otherwise a corrupt file could crash
+      // status commands or redirect a signal to an unrelated process.
+      if (isSessionEntry(entry) && entry.pid === pid) sessions.push(entry)
     } catch {
       // Corrupt file — skip
     }
