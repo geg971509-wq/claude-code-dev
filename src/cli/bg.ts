@@ -24,10 +24,6 @@ function getSessionsDir(): string {
   return join(getClaudeConfigHomeDir(), 'sessions')
 }
 
-function getSessionJobsDir(): string {
-  return join(getSessionsDir(), 'jobs')
-}
-
 async function listStoredJobs(): Promise<BgJobRecord[]> {
   return listJobRecords()
 }
@@ -696,6 +692,7 @@ export async function handleBgStart(args: string[]): Promise<void> {
       return
     }
   }
+  if (execIndex >= 0) routine = undefined
 
   const nameIndex = scan.findIndex(a => a === '--name' || a === '-n' || a.startsWith('--name='))
   const displayName =
@@ -713,6 +710,8 @@ export async function handleBgStart(args: string[]): Promise<void> {
       (arg, index) =>
         index !== execIndex &&
         !(index === nameIndex || index === nameIndex + 1) &&
+        arg.startsWith('-') &&
+        arg !== '--exec' &&
         arg !== '--bg' &&
         arg !== '--background',
     )
