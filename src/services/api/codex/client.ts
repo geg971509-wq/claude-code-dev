@@ -1,7 +1,7 @@
 import OpenAI from 'openai'
+import { getSessionId } from 'src/bootstrap/state.js'
 import { openaiAdapter } from 'src/services/providerUsage/adapters/openai.js'
 import { updateProviderBuckets } from 'src/services/providerUsage/store.js'
-import { getSessionId } from 'src/bootstrap/state.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
 import {
   CHATGPT_ACCOUNT_ID_HEADER,
@@ -10,6 +10,11 @@ import {
   DEFAULT_CODEX_API_BASE_URL,
   type CodexRequestContext,
 } from './credentials.js'
+import {
+  applyCodexIdentityHeaders,
+  createCodexRequestIdentity,
+  type CodexRequestIdentity,
+} from './requestMetadata.js'
 
 export const DEFAULT_CODEX_BASE_URL = DEFAULT_CODEX_API_BASE_URL
 export { CHATGPT_CODEX_BASE_URL, CHATGPT_ACCOUNT_ID_HEADER }
@@ -26,20 +31,30 @@ export function createCodexTurnState(): CodexTurnState {
 
 let cachedClient: { key: string; client: OpenAI } | null = null
 
+function resolveRequestIdentity(
+  requestIdentity: CodexRequestIdentity | undefined,
+): CodexRequestIdentity {
+  if (requestIdentity) {
+    return requestIdentity
+  }
+
+  return createCodexRequestIdentity({ sessionId: getSessionId() })
+}
+
 function withCodexIdentityHeaders(
   base: typeof fetch,
   turnState?: CodexTurnState,
+  requestIdentity?: CodexRequestIdentity,
 ): typeof fetch {
   const wrapped = async (
     input: Parameters<typeof fetch>[0],
     init?: Parameters<typeof fetch>[1],
   ): Promise<Response> => {
     const headers = new Headers(init?.headers)
-    if (!headers.has('session-id')) {
-      const sessionId = getSessionId()
-      headers.set('session-id', sessionId)
-      headers.set('thread-id', sessionId)
-    }
+    applyCodexIdentityHeaders(
+      headers,
+      resolveRequestIdentity(requestIdentity),
+    )
     if (turnState?.value && !headers.has(CODEX_TURN_STATE_HEADER)) {
       headers.set(CODEX_TURN_STATE_HEADER, turnState.value)
     }
@@ -80,6 +95,7 @@ export function getCodexClient(
     maxRetries?: number
     fetchOverride?: typeof fetch
     turnState?: CodexTurnState
+    requestIdentity?: CodexRequestIdentity
   } & CodexRequestContext,
 ): OpenAI {
   const maxRetries = options.maxRetries ?? 0
@@ -94,14 +110,19 @@ export function getCodexClient(
     cachedClient &&
     cachedClient.key === key &&
     !options.fetchOverride &&
-    !options.turnState
+    !options.turnState &&
+    !options.requestIdentity
   ) {
     return cachedClient.client
   }
 
   const baseFetch = options.fetchOverride ?? (globalThis.fetch as typeof fetch)
   const wrappedFetch = wrapFetchForUsage(
-    withCodexIdentityHeaders(baseFetch, options.turnState),
+    withCodexIdentityHeaders(
+      baseFetch,
+      options.turnState,
+      options.requestIdentity,
+    ),
   )
 
   const client = new OpenAI({
@@ -118,9 +139,13 @@ export function getCodexClient(
     },
   })
 
-  // A client carrying turn-scoped sticky routing state must never be reused by
-  // another turn. Stateless clients remain cacheable as before.
-  if (!options.fetchOverride && !options.turnState) {
+  // A client carrying turn-scoped sticky routing state or request identity must
+  // never be reused by another turn. Stateless clients remain cacheable.
+  if (
+    !options.fetchOverride &&
+    !options.turnState &&
+    !options.requestIdentity
+  ) {
     cachedClient = { key, client }
   }
 
