@@ -51,10 +51,7 @@ function withCodexIdentityHeaders(
     init?: Parameters<typeof fetch>[1],
   ): Promise<Response> => {
     const headers = new Headers(init?.headers)
-    applyCodexIdentityHeaders(
-      headers,
-      resolveRequestIdentity(requestIdentity),
-    )
+    applyCodexIdentityHeaders(headers, resolveRequestIdentity(requestIdentity))
     if (turnState?.value && !headers.has(CODEX_TURN_STATE_HEADER)) {
       headers.set(CODEX_TURN_STATE_HEADER, turnState.value)
     }
