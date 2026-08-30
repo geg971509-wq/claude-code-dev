@@ -629,7 +629,6 @@ export async function handleBgStart(args: string[]): Promise<void> {
 
   // Strip dispatch-only flags before spawning the child. In particular,
   // --pipe is a background launcher hint, not a main-session option.
-  const requestedPipe = args.includes('--pipe')
   const filteredArgs = args.filter(
     a => a !== '--bg' && a !== '--background' && a !== '--pipe',
   )
@@ -646,7 +645,6 @@ export async function handleBgStart(args: string[]): Promise<void> {
   // or piped input. Tmux provides a virtual terminal so it works without -p.
   if (
     !engine.supportsInteractiveInput &&
-    !requestedPipe &&
     !pipedInput &&
     !filteredArgs.some(a => a === '-p' || a === '--print')
   ) {
