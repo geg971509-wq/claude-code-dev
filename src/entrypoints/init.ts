@@ -50,6 +50,7 @@ import {
 // ~400KB of OpenTelemetry + protobuf modules until telemetry is actually initialized.
 // gRPC exporters (~700KB via @grpc/grpc-js) are further lazy-loaded within instrumentation.ts.
 import { configureGlobalAgents } from '../utils/proxy.js'
+import { isTelemetryOptedIn } from '../utils/privacyLevel.js'
 import { isBetaTracingEnabled } from '../utils/telemetry/betaSessionTracing.js'
 import { getTelemetryAttributes } from '../utils/telemetryAttributes.js'
 import { setShellIfWindows } from '../utils/windowsPaths.js'
@@ -350,10 +351,10 @@ async function doInitializeTelemetry(): Promise<void> {
 
   // Skip entire OTel initialization when telemetry is not enabled.
   // Prevents PerformanceMeasure accumulation in long-running sessions.
-  if (!isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_TELEMETRY)) {
+  if (!isTelemetryOptedIn()) {
     telemetryInitialized = true
     logForDebugging(
-      '[3P telemetry] Skipped — CLAUDE_CODE_ENABLE_TELEMETRY not set',
+      '[3P telemetry] Skipped — telemetry opt-in is not enabled',
     )
     return
   }
