@@ -1,48 +1,49 @@
+import { APIUserAbortError } from '@anthropic-ai/sdk'
 import type { BetaToolUnion } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+import {
+  anthropicMessagesToCodexInput,
+  anthropicToolsToCodex,
+  resolveCodexModel,
+} from '@ant/model-provider'
+import { appendFileSync } from 'fs'
 import type {
   Response,
   ResponseCreateParamsNonStreaming,
 } from 'openai/resources/responses/responses.mjs'
-import { appendFileSync } from 'fs'
-import type { SystemPrompt } from '../../../utils/systemPromptType.js'
+import { getSessionId } from '../../../bootstrap/state.js'
+import type { Tools } from '../../../Tool.js'
 import type {
   AssistantMessage,
   Message,
   StreamEvent,
   SystemAPIErrorMessage,
 } from '../../../types/message.js'
-import type { Tools } from '../../../Tool.js'
-import type { SDKAssistantMessageError } from '../../../entrypoints/agentSdkTypes.js'
 import { toolToAPISchema } from '../../../utils/api.js'
+import { getOrCreateUserID } from '../../../utils/config.js'
+import { logForDebugging } from '../../../utils/debug.js'
+import { resolveAppliedEffort } from '../../../utils/effort.js'
 import {
   createAssistantAPIErrorMessage,
   createSystemAPIErrorMessage,
   normalizeContentFromAPI,
   normalizeMessagesForAPI,
 } from '../../../utils/messages.js'
-import { logForDebugging } from '../../../utils/debug.js'
-import { resolveAppliedEffort } from '../../../utils/effort.js'
 import { sleep } from '../../../utils/sleep.js'
-import { getSessionId } from '../../../bootstrap/state.js'
+import type { SystemPrompt } from '../../../utils/systemPromptType.js'
+import {
+  convertMessagesToLangfuse,
+  convertOutputToLangfuse,
+  convertToolsToLangfuse,
+} from '../../../services/langfuse/convert.js'
+import { recordLLMObservation } from '../../../services/langfuse/tracing.js'
 import type { Options } from '../claude.js'
+import { applyCodexReasoningToRequest } from '../openai/codexReasoning.js'
 import {
   getOpenAIRetryDelayMs,
   getOpenAIStreamMaxRetries,
   isOpenAIUserAbortError,
   isTransientOpenAIError,
 } from '../openai/openaiShared.js'
-import { applyCodexReasoningToRequest } from '../openai/codexReasoning.js'
-import { recordLLMObservation } from '../../../services/langfuse/tracing.js'
-import {
-  convertMessagesToLangfuse,
-  convertOutputToLangfuse,
-  convertToolsToLangfuse,
-} from '../../../services/langfuse/convert.js'
-import {
-  anthropicMessagesToCodexInput,
-  anthropicToolsToCodex,
-  resolveCodexModel,
-} from '@ant/model-provider'
 import {
   createCodexTurnState,
   getCodexClient,
@@ -61,6 +62,15 @@ import {
 } from './errors.js'
 import { sanitizeCodexRequest } from './preflight.js'
 import {
+  buildCodexClientMetadata,
+  createCodexRequestIdentity,
+  type CodexRequestIdentity,
+} from './requestMetadata.js'
+import {
+  responseToCodexAssistantBlocks,
+  type CodexAssistantBlock,
+} from './responseItems.js'
+import {
   getCodexUsage,
   type CodexStreamResult,
   type CodexUsage,
@@ -68,10 +78,6 @@ import {
   type RawAssistantBlock,
   streamCodexAttempt,
 } from './streaming.js'
-import {
-  responseToCodexAssistantBlocks,
-  type CodexAssistantBlock,
-} from './responseItems.js'
 
 function asRetryError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
@@ -114,12 +120,14 @@ function resolveExplicitMaxOutputTokens(options: Options): number | undefined {
 function createCodexClientForTurn(
   context: CodexRequestContext,
   turnState: CodexTurnState,
+  requestIdentity: CodexRequestIdentity,
   options: Options,
 ) {
   return getCodexClient({
     maxRetries: 0,
     fetchOverride: options.fetchOverride as typeof fetch | undefined,
     turnState,
+    requestIdentity,
     ...context,
   })
 }
@@ -222,6 +230,10 @@ export async function* queryModelCodex(
     const codexTools = anthropicToolsToCodex(toolSchemas as BetaToolUnion[])
     const explicitMaxOutputTokens = resolveExplicitMaxOutputTokens(options)
     const sessionId = getSessionId()
+    const requestIdentity = createCodexRequestIdentity({
+      sessionId,
+      installationId: getOrCreateUserID(),
+    })
     const input = anthropicMessagesToCodexInput(messagesForAPI)
     const appliedEffort = resolveAppliedEffort(
       options.model,
@@ -235,12 +247,8 @@ export async function* queryModelCodex(
       tool_choice: 'auto',
       include: ['reasoning.encrypted_content'],
       parallel_tool_calls: true,
-      prompt_cache_key: sessionId,
-      client_metadata: {
-        session_id: sessionId,
-        thread_id: sessionId,
-        'x-codex-window-id': `${sessionId}:0`,
-      },
+      prompt_cache_key: requestIdentity.sessionId,
+      client_metadata: buildCodexClientMetadata(requestIdentity),
       ...(systemPrompt.length > 0 && {
         instructions: systemPrompt.join('\n\n'),
       }),
@@ -269,7 +277,12 @@ export async function* queryModelCodex(
 
     const turnState = createCodexTurnState()
     let requestContext = await resolveCodexRequestContext()
-    let client = createCodexClientForTurn(requestContext, turnState, options)
+    let client = createCodexClientForTurn(
+      requestContext,
+      turnState,
+      requestIdentity,
+      options,
+    )
     const streamMaxRetries = getOpenAIStreamMaxRetries()
     const start = Date.now()
     let attemptResult: CodexStreamResult | undefined
@@ -295,6 +308,10 @@ export async function* queryModelCodex(
         }
         break
       } catch (error) {
+        if (signal.aborted || isOpenAIUserAbortError(error)) {
+          throw error
+        }
+
         if (
           !recoveredUnauthorized &&
           isCodexSubscriptionAuth() &&
@@ -304,13 +321,16 @@ export async function* queryModelCodex(
           const rejectedAccessToken = requestContext.apiKey
           await refreshCodexAuthAfterUnauthorized(rejectedAccessToken)
           requestContext = await resolveCodexRequestContext()
-          client = createCodexClientForTurn(requestContext, turnState, options)
+          client = createCodexClientForTurn(
+            requestContext,
+            turnState,
+            requestIdentity,
+            options,
+          )
           continue
         }
 
         if (
-          signal.aborted ||
-          isOpenAIUserAbortError(error) ||
           !isTransientOpenAIError(error) ||
           streamRetries >= streamMaxRetries
         ) {
@@ -374,21 +394,15 @@ export async function* queryModelCodex(
           : undefined,
       tools: convertToolsToLangfuse(toolSchemas as unknown[]),
     })
-
-    if (
-      attemptResult.incompleteResponse?.incomplete_details?.reason ===
-      'max_output_tokens'
-    ) {
-      const limitDescription = explicitMaxOutputTokens
-        ? `the configured ${explicitMaxOutputTokens} token limit`
-        : 'the model output token limit'
-      yield createAssistantAPIErrorMessage({
-        content: `Output truncated: response reached ${limitDescription}.`,
-        apiError: 'max_output_tokens',
-        error: 'max_output_tokens' as unknown as SDKAssistantMessageError,
-      })
-    }
   } catch (error) {
+    if (signal.aborted || isOpenAIUserAbortError(error)) {
+      logForDebugging('[Codex] Aborted by user/signal', { level: 'info' })
+      if (error instanceof APIUserAbortError) {
+        throw error
+      }
+      throw new APIUserAbortError()
+    }
+
     const errorMessage = error instanceof Error ? error.message : String(error)
     const normalizedError = normalizeCodexError(error)
     logForDebugging(`[Codex] Error: ${errorMessage}`, { level: 'error' })
