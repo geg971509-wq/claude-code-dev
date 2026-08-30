@@ -408,8 +408,9 @@ async function main(): Promise<void> {
   // still be interactive even when they have a subcommand-shaped argv.
   const { startCapturingEarlyInput } = await import('../utils/earlyInput.js');
   const nonReplSubcommands = new Set(['update', 'upgrade', 'doctor']);
-  const mcpIndex = args.indexOf('mcp');
-  const isMcpServe = mcpIndex !== -1 && args[mcpIndex + 1] === 'serve';
+  const isMcpServe = args.some(
+    (arg, index) => arg === 'mcp' && args[index + 1] === 'serve',
+  );
   if (!nonReplSubcommands.has(args[0] ?? '') && !isMcpServe) {
     startCapturingEarlyInput();
   }
