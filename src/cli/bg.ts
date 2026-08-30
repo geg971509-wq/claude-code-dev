@@ -56,9 +56,28 @@ async function waitForSessionExit(session: SessionEntry): Promise<void> {
     return
   }
   const deadline = Date.now() + 5_000
-  while (Date.now() < deadline && isProcessRunning(session.pid)) {
+  while (Date.now() < deadline && isManagedProcessRunning(session)) {
     await new Promise(resolve => setTimeout(resolve, 100))
   }
+}
+
+function isManagedProcessRunning(
+  session: Pick<SessionEntry, 'pid' | 'launch'>,
+): boolean {
+  if (
+    process.platform !== 'win32' &&
+    session.launch?.mode === 'exec' &&
+    Number.isSafeInteger(session.pid) &&
+    session.pid > 1
+  ) {
+    try {
+      process.kill(-session.pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  return Number.isSafeInteger(session.pid) && session.pid > 1 && isProcessRunning(session.pid)
 }
 
 export async function listLiveSessions(): Promise<SessionEntry[]> {
@@ -100,7 +119,7 @@ export async function listLiveSessions(): Promise<SessionEntry[]> {
         ? spawnSync('tmux', ['has-session', '-t', job.tmuxSessionName], {
             stdio: 'ignore',
           }).status === 0
-        : Number.isSafeInteger(job.pid) && job.pid > 1 && isProcessRunning(job.pid)
+        : isManagedProcessRunning(job)
     if (live) sessions.push(job)
     else if (job.status === 'starting' || job.status === 'running')
       void writeJobRecord({ ...job, status: 'exited', updatedAt: Date.now() }).catch(() => {})
@@ -176,7 +195,11 @@ function signalSession(
   }
 
   try {
-    process.kill(session.pid, signal)
+    const targetPid =
+      process.platform !== 'win32' && session.launch?.mode === 'exec'
+        ? -session.pid
+        : session.pid
+    process.kill(targetPid, signal)
     return { ok: true }
   } catch (error) {
     return {
@@ -384,7 +407,7 @@ export async function killHandler(target: string | undefined): Promise<void> {
     // tmux kill-session already tears down the process tree. Avoid probing or
     // signalling the placeholder PID returned by TmuxEngine.start().
     console.log('Session stopped.')
-  } else if (isProcessRunning(session.pid)) {
+  } else if (isManagedProcessRunning(session)) {
     const forceStopped = signalSession(session, 'SIGKILL')
     if (forceStopped.ok) {
       console.log('Session force-killed.')
@@ -522,7 +545,7 @@ export async function respawnHandler(
       await waitForSessionExit(live)
       if (
         resolveSessionEngine(live) !== 'tmux' &&
-        isProcessRunning(live.pid)
+        isManagedProcessRunning(live)
       ) {
         const forceStopped = signalSession(live, 'SIGKILL')
         if (!forceStopped.ok) {
