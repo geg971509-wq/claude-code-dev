@@ -163,6 +163,58 @@ function resolveSessionTarget(
   return undefined
 }
 
+function requireSessionTarget(
+  target: string | undefined,
+  usage: string,
+  description: string,
+): target is string {
+  if (target === '--help' || target === '-h') {
+    console.log(`Usage: ${usage}\n\n  ${description}`)
+    return false
+  }
+  if (target?.startsWith('-')) {
+    console.error(`unknown option '${target}'\nUsage: ${usage}`)
+    process.exitCode = 1
+    return false
+  }
+  if (!target) {
+    console.error(`Usage: ${usage}`)
+    process.exitCode = 1
+    return false
+  }
+  return true
+}
+
+function warnIgnoredSessionArgs(verb: string): void {
+  const argv = process.argv.slice(2)
+  const verbIndex = argv.findIndex(
+    (arg, index) =>
+      arg === verb && (index === 0 || argv[index - 1] === 'daemon'),
+  )
+  if (verbIndex < 0 || argv.length <= verbIndex + 2) return
+
+  const ignored: string[] = []
+  for (let index = verbIndex + 2; index < argv.length; index++) {
+    const arg = argv[index]!
+    if (
+      arg === '--debug' ||
+      arg === '-d' ||
+      arg === '--debug-to-stderr' ||
+      arg === '-d2e' ||
+      arg.startsWith('--debug=') ||
+      arg.startsWith('--debug-file=')
+    )
+      continue
+    if (arg === '--debug-file' && argv[index + 1] !== undefined) {
+      index++
+      continue
+    }
+    ignored.push(arg)
+  }
+  if (ignored.length > 0)
+    console.error(`warning: extra arguments ignored: ${ignored.join(' ')}`)
+}
+
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleString()
 }
@@ -270,29 +322,15 @@ export async function psHandler(_args: string[]): Promise<void> {
  * `claude daemon logs <target>` — show logs for a session.
  */
 export async function logsHandler(target: string | undefined): Promise<void> {
+  warnIgnoredSessionArgs('logs')
+  if (!requireSessionTarget(target, 'claude logs <id>', "Print the background session's recent terminal output."))
+    return
   const sessions = await listLiveSessions()
   const storedJobs = await listStoredJobs()
   const candidates = [...sessions]
   for (const job of storedJobs) {
     if (!candidates.some(session => session.sessionId === job.sessionId))
       candidates.push(job)
-  }
-
-  if (!target) {
-    if (candidates.length === 0) {
-      console.log('No sessions with logs.')
-      return
-    }
-    if (candidates.length === 1) {
-      target = candidates[0]!.sessionId
-    } else {
-      console.log('Multiple sessions available. Specify one:')
-      for (const s of candidates) {
-        const label = s.name ? `${s.name} (${s.sessionId})` : s.sessionId
-        console.log(`  ${label}  PID=${s.pid}`)
-      }
-      return
-    }
   }
 
   const session = resolveSessionTarget(candidates, target)
@@ -321,31 +359,14 @@ export async function logsHandler(target: string | undefined): Promise<void> {
  * Engine-aware: tmux sessions use tmux attach, detached sessions use log tail.
  */
 export async function attachHandler(target: string | undefined): Promise<void> {
+  warnIgnoredSessionArgs('attach')
+  if (!requireSessionTarget(
+    target,
+    'claude attach <id>',
+    'Open the background session in this terminal.',
+  ))
+    return
   const sessions = await listLiveSessions()
-
-  if (!target) {
-    // Find bg sessions (tmux or detached)
-    const bgSessions = sessions.filter(
-      s => s.tmuxSessionName || s.engine === 'detached' || s.engine === 'pty',
-    )
-    if (bgSessions.length === 0) {
-      console.log(
-        'No background sessions to attach to. Start one with `claude daemon bg`.',
-      )
-      return
-    }
-    if (bgSessions.length === 1) {
-      target = bgSessions[0]!.sessionId
-    } else {
-      console.log('Multiple background sessions. Specify one:')
-      for (const s of bgSessions) {
-        const label = s.name ? `${s.name} (${s.sessionId})` : s.sessionId
-        const engineType = resolveSessionEngine(s)
-        console.log(`  ${label}  PID=${s.pid}  engine=${engineType}`)
-      }
-      return
-    }
-  }
 
   const session = resolveSessionTarget(sessions, target)
   if (!session) {
@@ -385,20 +406,10 @@ export async function attachHandler(target: string | undefined): Promise<void> {
  * `claude daemon kill <target>` — kill a session.
  */
 export async function killHandler(target: string | undefined): Promise<void> {
-  const sessions = await listLiveSessions()
-
-  if (!target) {
-    if (sessions.length === 0) {
-      console.log('No active sessions to kill.')
-      return
-    }
-    console.log('Specify a session to kill:')
-    for (const s of sessions) {
-      const label = s.name ? `${s.name} (${s.sessionId})` : s.sessionId
-      console.log(`  ${label}  PID=${s.pid}`)
-    }
+  warnIgnoredSessionArgs('kill')
+  if (!requireSessionTarget(target, 'claude kill <id>', 'Kill a background session.'))
     return
-  }
+  const sessions = await listLiveSessions()
 
   const session = resolveSessionTarget(sessions, target)
   if (!session) {
@@ -448,11 +459,13 @@ export async function killHandler(target: string | undefined): Promise<void> {
  * session registry allows.
  */
 export async function stopHandler(target: string | undefined): Promise<void> {
-  if (!target) {
-    console.error('Usage: claude stop <id>')
-    process.exitCode = 1
+  warnIgnoredSessionArgs('stop')
+  if (!requireSessionTarget(
+    target,
+    'claude stop <id>',
+    'Stop a background session. Its conversation is kept.',
+  ))
     return
-  }
 
   const sessions = await listLiveSessions()
   const resolved = resolveJobTarget(sessions as BgJobRecord[], target)
@@ -497,6 +510,7 @@ export async function stopHandler(target: string | undefined): Promise<void> {
 export async function respawnHandler(
   target: string | undefined,
 ): Promise<void> {
+  warnIgnoredSessionArgs('respawn')
   if (target === '--help' || target === '-h') {
     console.log('Usage: claude respawn <id>|--all\n\n  Restart a background session with the current Claude binary.')
     return
@@ -627,6 +641,7 @@ export async function respawnHandler(
  * conversation record and can still be inspected or archived manually.
  */
 export async function rmHandler(target: string | undefined): Promise<void> {
+  warnIgnoredSessionArgs('rm')
   if (target === '--help' || target === '-h') {
     console.log('Usage: claude rm <id>\n\n  Delete a background job record. Logs are retained.')
     return
