@@ -461,7 +461,7 @@ export async function respawnHandler(
 
   let failures = 0
   for (const job of jobs) {
-    if (!job.args || job.args.length === 0) {
+    if (!job.args) {
       console.error(
         `Cannot respawn ${job.sessionId}: launch arguments were not recorded.`,
       )
