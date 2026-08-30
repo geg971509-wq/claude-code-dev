@@ -14,7 +14,7 @@ export type NormalizedCodexError = {
   error: SDKAssistantMessageError
 }
 
-function readErrorStatus(error: unknown): number | null {
+export function getCodexErrorStatus(error: unknown): number | null {
   if (
     typeof error === 'object' &&
     error !== null &&
@@ -24,6 +24,10 @@ function readErrorStatus(error: unknown): number | null {
   }
 
   return null
+}
+
+export function isCodexUnauthorizedError(error: unknown): boolean {
+  return getCodexErrorStatus(error) === 401
 }
 
 function readErrorMessage(error: unknown): string {
@@ -68,7 +72,7 @@ export function getCodexConfigurationError(): NormalizedCodexError | null {
 }
 
 export function normalizeCodexError(error: unknown): NormalizedCodexError {
-  const status = readErrorStatus(error)
+  const status = getCodexErrorStatus(error)
   const message = readErrorMessage(error)
 
   if (/^Codex preflight:/i.test(message)) {
