@@ -1,4 +1,5 @@
 import { resetSdkInitState } from '../../bootstrap/state.js'
+import { isSafeMode } from '../envUtils.js'
 import { isRestrictedToPluginOnly } from '../settings/pluginOnlyPolicy.js'
 // Import as module object so spyOn works in tests (direct imports bypass spies)
 import * as settingsModule from '../settings/settings.js'
@@ -26,6 +27,10 @@ function getHooksFromAllowedSources(): HooksSettings {
   // If allowManagedHooksOnly is set in managed settings, only use managed hooks
   if (policySettings?.allowManagedHooksOnly === true) {
     return policySettings.hooks ?? {}
+  }
+
+  if (isSafeMode()) {
+    return policySettings?.hooks ?? {}
   }
 
   // strictPluginOnlyCustomization: block user/project/local settings hooks.
@@ -61,6 +66,9 @@ function getHooksFromAllowedSources(): HooksSettings {
  */
 export function shouldAllowManagedHooksOnly(): boolean {
   const policySettings = settingsModule.getSettingsForSource('policySettings')
+  if (isSafeMode()) {
+    return true
+  }
   if (policySettings?.allowManagedHooksOnly === true) {
     return true
   }

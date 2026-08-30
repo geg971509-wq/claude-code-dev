@@ -20,6 +20,7 @@ export async function attachPtySession(session: SessionEntry): Promise<void> {
   const send = (message: object) => {
     if (!socket.destroyed) socket.write(`${JSON.stringify(message)}\n`)
   }
+  let detachedByUser = false
   send({ type: 'auth', token })
   const resize = () => {
     if (!process.stdout.columns || !process.stdout.rows) return
@@ -31,6 +32,7 @@ export async function attachPtySession(session: SessionEntry): Promise<void> {
   }
   const onInput = (data: Buffer) => {
     if (data.includes(0x1d)) {
+      detachedByUser = true
       socket.destroy()
       return
     }
@@ -81,8 +83,14 @@ export async function attachPtySession(session: SessionEntry): Promise<void> {
       socket.once('error', reject)
       socket.once('close', () => {
         if (exited) return
+        if (detachedByUser) {
+          resolve()
+          return
+        }
         if (!receivedLive) {
-          reject(new Error('PTY session closed before authentication completed.'))
+          reject(
+            new Error('PTY session closed before authentication completed.'),
+          )
           return
         }
         resolve()

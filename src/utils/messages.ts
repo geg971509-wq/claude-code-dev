@@ -360,6 +360,7 @@ function baseCreateAssistantMessage({
   apiError,
   error,
   errorDetails,
+  status,
   isVirtual,
   usage = {
     input_tokens: 0,
@@ -382,6 +383,7 @@ function baseCreateAssistantMessage({
   apiError?: AssistantMessage['apiError']
   error?: SDKAssistantMessageError
   errorDetails?: string
+  status?: number
   isVirtual?: true
   usage?: Usage
 }): AssistantMessage {
@@ -405,6 +407,7 @@ function baseCreateAssistantMessage({
     apiError,
     error,
     errorDetails,
+    status,
     isApiErrorMessage,
     isVirtual,
   }
@@ -439,11 +442,13 @@ export function createAssistantAPIErrorMessage({
   apiError,
   error,
   errorDetails,
+  status,
 }: {
   content: string
   apiError?: AssistantMessage['apiError']
   error?: SDKAssistantMessageError
   errorDetails?: string
+  status?: number
 }): AssistantMessage {
   return baseCreateAssistantMessage({
     content: [
@@ -456,6 +461,7 @@ export function createAssistantAPIErrorMessage({
     apiError,
     error,
     errorDetails,
+    status,
   })
 }
 

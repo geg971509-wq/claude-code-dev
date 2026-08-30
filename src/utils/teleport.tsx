@@ -559,6 +559,14 @@ export async function teleportResumeCodeSession(
   }
 }
 
+const CLOUD_SESSION_ID_PATTERN = /^(?:session|cse)_[A-Za-z0-9_]+$/;
+
+export function extractCloudSessionId(value: string): string | null {
+  if (CLOUD_SESSION_ID_PATTERN.test(value)) return value;
+  if (!value.includes('/') || /\s/.test(value)) return null;
+  return value.split(/[/?#]/).find(part => CLOUD_SESSION_ID_PATTERN.test(part)) ?? null;
+}
+
 /**
  * Helper function to handle teleport prerequisites (authentication and git state)
  * Shows TeleportError dialog rendered into the existing root if needed
@@ -612,6 +620,7 @@ export async function teleportToRemoteWithErrorHandling(
   description: string | null,
   signal: AbortSignal,
   branchName?: string,
+  environmentId?: string,
 ): Promise<TeleportToRemoteResponse | null> {
   const errorsToIgnore = new Set<TeleportLocalErrorType>(['needsGitStash']);
   await handleTeleportPrerequisites(root, errorsToIgnore);
@@ -619,6 +628,7 @@ export async function teleportToRemoteWithErrorHandling(
     initialMessage: description,
     signal,
     branchName,
+    environmentId,
     onBundleFail: msg => process.stderr.write(`\n${msg}\n`),
   });
 }

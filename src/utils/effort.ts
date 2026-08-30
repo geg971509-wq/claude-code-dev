@@ -376,6 +376,10 @@ export function getDefaultEffortForModel(
     }
   }
 
+  if (getAPIProvider() === 'firstParty' && modelSupportsEffort(model)) {
+    return 'high'
+  }
+
   // When ultrathink feature is on, default effort to medium (ultrathink bumps to high)
   if (isUltrathinkEnabled() && modelSupportsEffort(model)) {
     return 'medium'

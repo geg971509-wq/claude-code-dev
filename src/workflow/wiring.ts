@@ -5,6 +5,7 @@ import {
   type WorkflowToolDescriptor,
 } from '@claude-code-best/workflow-engine'
 import { buildTool, type Tool } from '../Tool.js'
+import { isSafeMode } from '../utils/envUtils.js'
 import { getWorkflowService } from './service.js'
 
 /**
@@ -31,7 +32,7 @@ function buildWorkflowTool(): Tool {
     name: WORKFLOW_TOOL_NAME,
     maxResultSizeChars: 50_000,
     inputSchema: workflowInputSchema,
-    isEnabled: () => descriptor().isEnabled(),
+    isEnabled: () => !isSafeMode() && descriptor().isEnabled(),
     isReadOnly: input => descriptor().isReadOnly(input),
     isConcurrencySafe: () => true,
     async description() {

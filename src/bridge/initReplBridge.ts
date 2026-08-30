@@ -52,6 +52,7 @@ import { generateShortWordSlug } from '../utils/words.js'
 import {
   getBridgeAccessToken,
   getBridgeBaseUrl,
+  getBridgeSessionNamePrefix,
   getBridgeTokenOverride,
   isSelfHostedBridge,
 } from './bridgeConfig.js'
@@ -257,7 +258,8 @@ export async function initReplBridge(
   // The slug fallback (e.g. "remote-control-graceful-unicorn") makes
   // auto-started sessions distinguishable in the claude.ai list before the
   // first prompt.
-  let title = `remote-control-${generateShortWordSlug()}`
+  const generatedTitlePrefix = getBridgeSessionNamePrefix()
+  let title = `${generatedTitlePrefix ?? hostname()}-${generateShortWordSlug()}`
   let hasTitle = false
   let hasExplicitTitle = false
   if (initialName) {

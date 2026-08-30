@@ -8,6 +8,7 @@ import {
   getDefaultVertexRegion,
   getVertexRegionForModel,
   isBareMode,
+  isSafeMode,
   shouldMaintainProjectWorkingDir,
   getClaudeConfigHomeDir,
 } from '../envUtils'
@@ -293,6 +294,33 @@ describe('isBareMode', () => {
     delete process.env.CLAUDE_CODE_SIMPLE
     // argv doesn't have --bare by default
     expect(isBareMode()).toBe(false)
+  })
+})
+
+describe('isSafeMode', () => {
+  const saved = process.env.CLAUDE_CODE_SAFE_MODE
+  const originalArgv = [...process.argv]
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.CLAUDE_CODE_SAFE_MODE
+    else process.env.CLAUDE_CODE_SAFE_MODE = saved
+    process.argv.length = 0
+    process.argv.push(...originalArgv)
+  })
+
+  test('returns true when the environment variable is enabled', () => {
+    process.env.CLAUDE_CODE_SAFE_MODE = '1'
+    expect(isSafeMode()).toBe(true)
+  })
+
+  test('returns true when --safe-mode is in argv', () => {
+    process.argv.push('--safe-mode')
+    expect(isSafeMode()).toBe(true)
+  })
+
+  test('returns false when neither is set', () => {
+    delete process.env.CLAUDE_CODE_SAFE_MODE
+    expect(isSafeMode()).toBe(false)
   })
 })
 

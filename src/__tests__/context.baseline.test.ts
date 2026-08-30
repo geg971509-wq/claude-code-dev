@@ -33,6 +33,7 @@ beforeEach(async () => {
   getSystemContext.cache.clear?.()
   setSystemPromptInjection(null)
   delete process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS
+  delete process.env.CLAUDE_CODE_SAFE_MODE
 })
 
 afterEach(async () => {
@@ -41,6 +42,7 @@ afterEach(async () => {
   getSystemContext.cache.clear?.()
   setSystemPromptInjection(null)
   delete process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS
+  delete process.env.CLAUDE_CODE_SAFE_MODE
   resetStateForTests()
   if (tempDir) {
     await cleanupTempDir(tempDir)
@@ -61,6 +63,14 @@ describe('context baseline', () => {
     const ctx = await getUserContext()
 
     expect(ctx.currentDate).toContain("Today's date is")
+    expect(ctx.claudeMd).toBeUndefined()
+  })
+
+  test('safe mode suppresses claudeMd loading', async () => {
+    process.env.CLAUDE_CODE_SAFE_MODE = '1'
+
+    const ctx = await getUserContext()
+
     expect(ctx.claudeMd).toBeUndefined()
   })
 

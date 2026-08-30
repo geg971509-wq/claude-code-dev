@@ -57,7 +57,11 @@ import {
   type ContentReplacementState,
   provisionContentReplacementState,
 } from './utils/toolResultStorage.js'
-import { getFastModeState } from './utils/fastMode.js'
+import {
+  getFastModeState,
+  getFastModeUnavailableReason,
+  isFastModeEnabled,
+} from './utils/fastMode.js'
 import {
   type FileHistoryState,
   fileHistoryEnabled,
@@ -72,9 +76,11 @@ import { registerStructuredOutputEnforcement } from './utils/hooks/hookHelpers.j
 import { getInMemoryErrors } from './utils/log.js'
 import { countToolCalls, SYNTHETIC_MESSAGES } from './utils/messages.js'
 import {
+  getCanonicalName,
   getMainLoopModel,
   parseUserSpecifiedModel,
 } from './utils/model/model.js'
+import { getAPIProvider } from './utils/model/providers.js'
 import { loadAllPluginsCacheOnly } from './utils/plugins/pluginLoader.js'
 import {
   type ProcessUserInputContext,
@@ -122,6 +128,119 @@ import {
   normalizeMessage,
 } from './utils/queryHelpers.js'
 
+export function resultUsage(usage: NonNullableUsage): NonNullableUsage {
+  if (!isClaudeBehaviorProvider()) return usage
+
+  return {
+    ...usage,
+    output_tokens_details: usage.output_tokens_details ?? {
+      thinking_tokens: 0,
+    },
+  }
+}
+
+function resultModelUsage(): Record<string, unknown> {
+  const modelUsage = getModelUsage()
+  if (!isClaudeBehaviorProvider()) return modelUsage
+
+  const provider = getAPIProvider()
+  return Object.fromEntries(
+    Object.entries(modelUsage).map(([model, usage]) => [
+      model,
+      {
+        ...usage,
+        canonicalModel: getCanonicalName(model),
+        provider,
+      },
+    ]),
+  )
+}
+
+type ResultTiming = {
+  ttft_ms?: number
+  ttft_stream_ms?: number
+  time_to_request_ms?: number
+}
+
+export function resultTiming(
+  startedAt: number,
+  firstAssistantAt: number,
+  firstStreamAt: number,
+  firstRequestAt: number,
+  isApiError: boolean,
+): ResultTiming {
+  if (isApiError) return {}
+
+  return {
+    ...(firstAssistantAt > 0
+      ? { ttft_ms: Math.max(0, Math.round(firstAssistantAt - startedAt)) }
+      : undefined),
+    ...(firstStreamAt > 0
+      ? {
+          ttft_stream_ms: Math.max(0, Math.round(firstStreamAt - startedAt)),
+        }
+      : undefined),
+    ...(firstRequestAt > 0
+      ? {
+          time_to_request_ms: Math.max(
+            0,
+            Math.round(firstRequestAt - startedAt),
+          ),
+        }
+      : undefined),
+  }
+}
+
+type FastModeResultDisabledReason =
+  | 'free'
+  | 'preference'
+  | 'extra_usage_disabled'
+  | 'network_error'
+  | 'unknown'
+  | 'not_first_party'
+  | 'disabled_by_env'
+  | 'sdk_opt_in_required'
+
+function isClaudeBehaviorProvider(): boolean {
+  const provider = getAPIProvider()
+  return (
+    provider !== 'openai' &&
+    provider !== 'codex' &&
+    provider !== 'gemini' &&
+    provider !== 'grok'
+  )
+}
+
+export function fastModeDisabledReason():
+  | FastModeResultDisabledReason
+  | undefined {
+  if (!isClaudeBehaviorProvider()) return undefined
+  if (getAPIProvider() !== 'firstParty') return 'not_first_party'
+  if (!isFastModeEnabled()) return 'disabled_by_env'
+
+  switch (getFastModeUnavailableReason()) {
+    case null:
+      return undefined
+    case 'Fast mode requires a paid subscription':
+    case 'Fast mode unavailable during evaluation. Please purchase credits.':
+      return 'free'
+    case 'Fast mode has been disabled by your organization':
+      return 'preference'
+    case 'Fast mode requires extra usage billing · /extra-usage to enable':
+      return 'extra_usage_disabled'
+    case 'Fast mode unavailable due to network connectivity issues':
+      return 'network_error'
+    case 'Fast mode is not available in the Agent SDK':
+      return 'sdk_opt_in_required'
+    default:
+      return 'unknown'
+  }
+}
+
+function durationSince(startedAt: number): number {
+  return Math.max(0, Math.round(performance.now() - startedAt))
+}
+
 // Dead code elimination: conditional import for coordinator mode
 const getCoordinatorUserContext: (
   mcpClients: ReadonlyArray<{ name: string }>,
@@ -161,6 +280,7 @@ export type QueryEngineConfig = {
   jsonSchema?: Record<string, unknown>
   verbose?: boolean
   replayUserMessages?: boolean
+  forwardSubagentText?: boolean
   /** Handler for URL elicitations triggered by MCP tool -32042 errors. */
   handleElicitation?: ToolUseContext['handleElicitation']
   includePartialMessages?: boolean
@@ -248,6 +368,7 @@ export class QueryEngine {
       getAppState,
       setAppState,
       replayUserMessages = false,
+      forwardSubagentText = false,
       includePartialMessages = false,
       agents = [],
       setSDKStatus,
@@ -259,7 +380,7 @@ export class QueryEngine {
     this.permissionDenials = []
     setCwd(cwd)
     const persistSession = !isSessionPersistenceDisabled()
-    const startTime = Date.now()
+    const startTime = performance.now()
 
     // Wrap canUseTool to track permission denials
     const wrappedCanUseTool: CanUseToolFn = async (
@@ -649,20 +770,23 @@ export class QueryEngine {
         type: 'result',
         subtype: 'success',
         is_error: false,
-        duration_ms: Date.now() - startTime,
+        duration_ms: durationSince(startTime),
         duration_api_ms: getTotalAPIDuration(),
         num_turns: messages.length - 1,
         result: resultText ?? '',
         stop_reason: null,
         session_id: getSessionId(),
         total_cost_usd: getTotalCost(),
-        usage: this.totalUsage,
-        modelUsage: getModelUsage(),
+        usage: resultUsage(this.totalUsage),
+        modelUsage: resultModelUsage(),
         permission_denials: this.permissionDenials,
         fast_mode_state: getFastModeState(
           mainLoopModel,
           initialAppState.fastMode,
         ),
+        ...(isClaudeBehaviorProvider()
+          ? { fast_mode_disabled_reason: fastModeDisabledReason() }
+          : {}),
         uuid: randomUUID(),
       }
       return
@@ -693,6 +817,9 @@ export class QueryEngine {
     let structuredOutputFromTool: unknown
     // Track the last stop_reason from assistant messages
     let lastStopReason: string | null = null
+    let firstAssistantAt = 0
+    let firstStreamAt = 0
+    let firstRequestAt = 0
     // Reference-based watermark so error_during_execution's errors[] is
     // turn-scoped. A length-based index breaks when the 100-entry ring buffer
     // shift()s during the turn — the index slides. If this entry is rotated
@@ -722,6 +849,9 @@ export class QueryEngine {
         message.type === 'user' ||
         (message.type === 'system' && message.subtype === 'compact_boundary')
       ) {
+        if (message.type === 'assistant' && firstAssistantAt === 0) {
+          firstAssistantAt = performance.now()
+        }
         // Before writing a compact boundary, flush any in-memory-only
         // messages up through the preservedSegment tail. Attachments and
         // progress are now recorded inline (their switch cases below), but
@@ -820,7 +950,7 @@ export class QueryEngine {
             messages.push(msg)
             void recordTranscript(messages)
           }
-          yield* normalizeMessage(msg)
+          yield* normalizeMessage(msg, forwardSubagentText)
           break
         }
         case 'user': {
@@ -834,6 +964,13 @@ export class QueryEngine {
             message as unknown as { event: Record<string, unknown> }
           ).event
           if (event.type === 'message_start') {
+            if (firstStreamAt === 0) firstStreamAt = performance.now()
+            const requestSentAtMs = (
+              message as unknown as { requestSentAtMs?: unknown }
+            ).requestSentAtMs
+            if (firstRequestAt === 0 && typeof requestSentAtMs === 'number') {
+              firstRequestAt = requestSentAtMs
+            }
             // Reset current message usage for new message
             currentMessageUsage = EMPTY_USAGE
             const eventMessage = event.message as {
@@ -914,20 +1051,26 @@ export class QueryEngine {
             yield {
               type: 'result',
               subtype: 'error_max_turns',
-              duration_ms: Date.now() - startTime,
+              duration_ms: durationSince(startTime),
               duration_api_ms: getTotalAPIDuration(),
               is_error: true,
               num_turns: attachment.turnCount as number,
               stop_reason: lastStopReason,
               session_id: getSessionId(),
               total_cost_usd: getTotalCost(),
-              usage: this.totalUsage,
-              modelUsage: getModelUsage(),
+              usage: resultUsage(this.totalUsage),
+              modelUsage: resultModelUsage(),
+              ...(isClaudeBehaviorProvider()
+                ? { terminal_reason: 'max_turns' }
+                : {}),
               permission_denials: this.permissionDenials,
               fast_mode_state: getFastModeState(
                 mainLoopModel,
                 initialAppState.fastMode,
               ),
+              ...(isClaudeBehaviorProvider()
+                ? { fast_mode_disabled_reason: fastModeDisabledReason() }
+                : {}),
               uuid: randomUUID(),
               errors: [
                 `Reached maximum number of turns (${attachment.maxTurns})`,
@@ -1051,20 +1194,26 @@ export class QueryEngine {
         yield {
           type: 'result',
           subtype: 'error_max_budget_usd',
-          duration_ms: Date.now() - startTime,
+          duration_ms: durationSince(startTime),
           duration_api_ms: getTotalAPIDuration(),
           is_error: true,
           num_turns: turnCount,
           stop_reason: lastStopReason,
           session_id: getSessionId(),
           total_cost_usd: getTotalCost(),
-          usage: this.totalUsage,
-          modelUsage: getModelUsage(),
+          usage: resultUsage(this.totalUsage),
+          modelUsage: resultModelUsage(),
+          ...(isClaudeBehaviorProvider()
+            ? { terminal_reason: 'budget_exhausted' }
+            : {}),
           permission_denials: this.permissionDenials,
           fast_mode_state: getFastModeState(
             mainLoopModel,
             initialAppState.fastMode,
           ),
+          ...(isClaudeBehaviorProvider()
+            ? { fast_mode_disabled_reason: fastModeDisabledReason() }
+            : {}),
           uuid: randomUUID(),
           errors: [
             `Reached maximum budget ($${maxBudgetUsd}). Increase the limit with --max-budget-usd or start a new session.`,
@@ -1096,20 +1245,26 @@ export class QueryEngine {
           yield {
             type: 'result',
             subtype: 'error_max_structured_output_retries',
-            duration_ms: Date.now() - startTime,
+            duration_ms: durationSince(startTime),
             duration_api_ms: getTotalAPIDuration(),
             is_error: true,
             num_turns: turnCount,
             stop_reason: lastStopReason,
             session_id: getSessionId(),
             total_cost_usd: getTotalCost(),
-            usage: this.totalUsage,
-            modelUsage: getModelUsage(),
+            usage: resultUsage(this.totalUsage),
+            modelUsage: resultModelUsage(),
+            ...(isClaudeBehaviorProvider()
+              ? { terminal_reason: 'structured_output_retry_exhausted' }
+              : {}),
             permission_denials: this.permissionDenials,
             fast_mode_state: getFastModeState(
               mainLoopModel,
               initialAppState.fastMode,
             ),
+            ...(isClaudeBehaviorProvider()
+              ? { fast_mode_disabled_reason: fastModeDisabledReason() }
+              : {}),
             uuid: randomUUID(),
             errors: [
               `Failed to provide valid structured output after ${maxRetries} attempts`,
@@ -1158,20 +1313,23 @@ export class QueryEngine {
       yield {
         type: 'result',
         subtype: 'error_during_execution',
-        duration_ms: Date.now() - startTime,
+        duration_ms: durationSince(startTime),
         duration_api_ms: getTotalAPIDuration(),
         is_error: true,
         num_turns: turnCount,
         stop_reason: lastStopReason,
         session_id: getSessionId(),
         total_cost_usd: getTotalCost(),
-        usage: this.totalUsage,
-        modelUsage: getModelUsage(),
+        usage: resultUsage(this.totalUsage),
+        modelUsage: resultModelUsage(),
         permission_denials: this.permissionDenials,
         fast_mode_state: getFastModeState(
           mainLoopModel,
           initialAppState.fastMode,
         ),
+        ...(isClaudeBehaviorProvider()
+          ? { fast_mode_disabled_reason: fastModeDisabledReason() }
+          : {}),
         uuid: randomUUID(),
         // Diagnostic prefix: these are what isResultSuccessful() checks — if
         // the result type isn't assistant-with-text/thinking or user-with-
@@ -1214,21 +1372,39 @@ export class QueryEngine {
       type: 'result',
       subtype: 'success',
       is_error: isApiError,
-      duration_ms: Date.now() - startTime,
+      duration_ms: durationSince(startTime),
       duration_api_ms: getTotalAPIDuration(),
       num_turns: turnCount,
       result: textResult,
       stop_reason: lastStopReason,
       session_id: getSessionId(),
       total_cost_usd: getTotalCost(),
-      usage: this.totalUsage,
-      modelUsage: getModelUsage(),
+      usage: resultUsage(this.totalUsage),
+      modelUsage: resultModelUsage(),
+      ...(isClaudeBehaviorProvider()
+        ? {
+            terminal_reason: isApiError ? 'api_error' : 'completed',
+            api_error_status: isApiError
+              ? getProviderErrorStatus(result)
+              : null,
+            ...resultTiming(
+              startTime,
+              firstAssistantAt,
+              firstStreamAt,
+              firstRequestAt,
+              isApiError,
+            ),
+          }
+        : {}),
       permission_denials: this.permissionDenials,
       structured_output: structuredOutputFromTool,
       fast_mode_state: getFastModeState(
         mainLoopModel,
         initialAppState.fastMode,
       ),
+      ...(isClaudeBehaviorProvider()
+        ? { fast_mode_disabled_reason: fastModeDisabledReason() }
+        : {}),
       uuid: randomUUID(),
     }
   }
@@ -1299,6 +1475,7 @@ export async function* ask({
   setAppState,
   abortController,
   replayUserMessages = false,
+  forwardSubagentText = false,
   includePartialMessages = false,
   handleElicitation,
   agents = [],
@@ -1332,6 +1509,7 @@ export async function* ask({
   setReadFileCache: (cache: FileStateCache) => void
   abortController?: AbortController
   replayUserMessages?: boolean
+  forwardSubagentText?: boolean
   includePartialMessages?: boolean
   handleElicitation?: ToolUseContext['handleElicitation']
   agents?: AgentDefinition[]
@@ -1363,6 +1541,7 @@ export async function* ask({
     verbose,
     handleElicitation,
     replayUserMessages,
+    forwardSubagentText,
     includePartialMessages,
     setSDKStatus,
     onCompactionState,

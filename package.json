@@ -62,6 +62,7 @@
     "check:fix": "biome check --fix .",
     "prepare": "husky",
     "test": "bun test",
+    "test:claude-parity": "bun run scripts/claude-parity.ts",
     "test:production": "bun run scripts/production-test.ts",
     "test:production:offline": "bun run scripts/production-test.ts --offline",
     "test:production:verbose": "bun run scripts/production-test.ts --verbose",

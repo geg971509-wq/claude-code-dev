@@ -15,6 +15,7 @@ import {
   PROMPT_CACHING_SCOPE_BETA_HEADER,
   REDACT_THINKING_BETA_HEADER,
   STRUCTURED_OUTPUTS_BETA_HEADER,
+  THINKING_TOKEN_COUNT_BETA_HEADER,
   TOKEN_EFFICIENT_TOOLS_BETA_HEADER,
   SEARCH_EXTRA_TOOLS_BETA_HEADER_1P,
   SEARCH_EXTRA_TOOLS_BETA_HEADER_3P,
@@ -237,6 +238,12 @@ export const getAllModelBetas = memoize((model: string): string[] => {
   ) {
     betaHeaders.push(INTERLEAVED_THINKING_BETA_HEADER)
   }
+  if (
+    provider === 'firstParty' &&
+    !getCanonicalName(model).includes('claude-3-')
+  ) {
+    betaHeaders.push(THINKING_TOKEN_COUNT_BETA_HEADER)
+  }
 
   // Skip the API-side Haiku thinking summarizer — the summary is only used
   // for ctrl+o display, which interactive users rarely open. The API returns
@@ -263,7 +270,8 @@ export const getAllModelBetas = memoize((model: string): string[] => {
   const thinkingPreservationEnabled = modelSupportsContextManagement(model)
 
   if (
-    shouldIncludeFirstPartyOnlyBetas() &&
+    (provider === 'firstParty' ||
+      (provider === 'foundry' && shouldIncludeFirstPartyOnlyBetas())) &&
     (toolClearingOptIn || thinkingPreservationEnabled)
   ) {
     betaHeaders.push(CONTEXT_MANAGEMENT_BETA_HEADER)

@@ -11,9 +11,11 @@ import { getEmptyToolPermissionContext } from '../Tool'
 import type { AssistantMessage } from '../types/message'
 import { asSystemPrompt } from '../utils/systemPromptType'
 import {
+  createAssistantMessage,
   createAssistantAPIErrorMessage,
   createUserMessage,
 } from '../utils/messages'
+import { FallbackTriggeredError } from '../services/api/withRetry'
 import { cleanupTempDir, createTempDir } from '../../tests/mocks/file-system'
 import {
   enqueue,
@@ -144,6 +146,159 @@ function createToolUseContext(): any {
 }
 
 describe('query autonomy/provider boundary', () => {
+  test('tries fallback models in order and retries the primary on the next user turn', async () => {
+    const previousDisableAttachments =
+      process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS
+    process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS = '1'
+    try {
+      const toolUseContext = createToolUseContext()
+      const attempts: Array<{
+        model: string
+        fallbackModel: string | undefined
+      }> = []
+      const deps = {
+        uuid: () => 'query-chain-id',
+        microcompact: async (messages: unknown[]) => ({ messages }),
+        autocompact: async () => ({ kind: 'not_needed' as const }),
+        callModel: async function* (request: {
+          options: { model: string; fallbackModel?: string }
+        }) {
+          attempts.push({
+            model: request.options.model,
+            fallbackModel: request.options.fallbackModel,
+          })
+          if (attempts.length <= 2 && request.options.fallbackModel) {
+            throw new FallbackTriggeredError(
+              request.options.model,
+              request.options.fallbackModel,
+            )
+          }
+          yield createAssistantMessage({ content: 'done' })
+        },
+      }
+      const params = {
+        messages: [createUserMessage({ content: 'test fallback order' })],
+        systemPrompt: asSystemPrompt([]),
+        userContext: {},
+        systemContext: {},
+        canUseTool: async (_tool: unknown, input: unknown) => ({
+          behavior: 'allow' as const,
+          updatedInput: input,
+        }),
+        toolUseContext,
+        fallbackModel: 'claude-sonnet-4-5-20250929, fallback-one, fallback-two',
+        querySource: 'sdk' as const,
+        deps: deps as never,
+      }
+
+      for await (const _message of query(params as never)) {
+      }
+      for await (const _message of query(params as never)) {
+      }
+
+      expect(attempts).toEqual([
+        {
+          model: 'claude-sonnet-4-5-20250929',
+          fallbackModel: 'fallback-one',
+        },
+        { model: 'fallback-one', fallbackModel: 'fallback-two' },
+        { model: 'fallback-two', fallbackModel: undefined },
+        {
+          model: 'claude-sonnet-4-5-20250929',
+          fallbackModel: 'fallback-one',
+        },
+      ])
+    } finally {
+      if (previousDisableAttachments === undefined) {
+        delete process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS
+      } else {
+        process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS = previousDisableAttachments
+      }
+    }
+  })
+
+  test('preserves the pre-parity single fallback behavior for non-Claude model providers', async () => {
+    const providerFlags = [
+      'CLAUDE_CODE_USE_OPENAI',
+      'CLAUDE_CODE_USE_CODEX',
+      'CLAUDE_CODE_USE_GEMINI',
+      'CLAUDE_CODE_USE_GROK',
+    ] as const
+    const previousDisableAttachments =
+      process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS
+    const previousProviderFlags = Object.fromEntries(
+      providerFlags.map(flag => [flag, process.env[flag]]),
+    )
+    process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS = '1'
+
+    try {
+      for (const providerFlag of providerFlags) {
+        for (const flag of providerFlags) delete process.env[flag]
+        process.env[providerFlag] = '1'
+
+        const toolUseContext = createToolUseContext()
+        const attempts: Array<{
+          model: string
+          fallbackModel: string | undefined
+        }> = []
+        const rawFallback = 'fallback-one, fallback-two'
+        const deps = {
+          uuid: () => 'query-chain-id',
+          microcompact: async (messages: unknown[]) => ({ messages }),
+          autocompact: async () => ({ kind: 'not_needed' as const }),
+          callModel: async function* (request: {
+            options: { model: string; fallbackModel?: string }
+          }) {
+            attempts.push({
+              model: request.options.model,
+              fallbackModel: request.options.fallbackModel,
+            })
+            if (attempts.length === 1) {
+              throw new FallbackTriggeredError(
+                request.options.model,
+                rawFallback,
+              )
+            }
+            yield createAssistantMessage({ content: 'done' })
+          },
+        }
+
+        const params = {
+          messages: [createUserMessage({ content: 'provider isolation' })],
+          systemPrompt: asSystemPrompt([]),
+          userContext: {},
+          systemContext: {},
+          canUseTool: async (_tool: unknown, input: unknown) => ({
+            behavior: 'allow' as const,
+            updatedInput: input,
+          }),
+          toolUseContext,
+          fallbackModel: rawFallback,
+          querySource: 'sdk' as const,
+          deps: deps as never,
+        }
+
+        for await (const _message of query(params as never)) {
+        }
+
+        expect(attempts[0]?.fallbackModel).toBe(rawFallback)
+        expect(attempts[1]?.model).toBe(rawFallback)
+        expect(toolUseContext.options.mainLoopModel).toBe(rawFallback)
+      }
+    } finally {
+      for (const flag of providerFlags) {
+        const value = previousProviderFlags[flag]
+        if (value === undefined) delete process.env[flag]
+        else process.env[flag] = value
+      }
+      if (previousDisableAttachments === undefined) {
+        delete process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS
+      } else {
+        process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS = previousDisableAttachments
+      }
+    }
+  })
+
   test('provider api-error messages fail a consumed autonomy run instead of advancing the flow', async () => {
     const previousDisableAttachments =
       process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS

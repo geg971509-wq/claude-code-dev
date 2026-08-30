@@ -25,6 +25,7 @@ async function waitForReady(path: string): Promise<number> {
         typeof value === 'object' &&
         value !== null &&
         'pid' in value &&
+        typeof value.pid === 'number' &&
         Number.isSafeInteger(value.pid) &&
         value.pid > 1
       )

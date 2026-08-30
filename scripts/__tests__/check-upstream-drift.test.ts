@@ -1,9 +1,25 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  DEFAULT_BUNDLE,
+  DRIFT_SUCCESS_MARKER,
   diffSets,
   extractSet,
   parseOfficialModelTable,
 } from '../check-upstream-drift.js'
+
+describe('default bundle path', () => {
+  test('points to the official baseline bundle', () => {
+    expect(DEFAULT_BUNDLE).toBe(
+      '/Volumes/work/software/install/claude-official/modules/src/entrypoints/baseline/cli.js',
+    )
+  })
+})
+
+describe('drift check completion marker', () => {
+  test('uses the stable success marker consumed by automation', () => {
+    expect(DRIFT_SUCCESS_MARKER).toBe('upstream drift check passed')
+  })
+})
 
 describe('extractSet', () => {
   test('collects every match, deduplicated', () => {

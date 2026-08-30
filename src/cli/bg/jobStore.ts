@@ -182,7 +182,9 @@ export async function updateJobRecord(
   return updated
 }
 
-export async function removeJobRecord(job: Pick<BgJobRecord, 'sessionId'>): Promise<void> {
+export async function removeJobRecord(
+  job: Pick<BgJobRecord, 'sessionId'>,
+): Promise<void> {
   try {
     await unlink(jobFilePath(job))
   } catch (error) {
@@ -196,4 +198,3 @@ export function formatJobTargetError(error: JobTargetError): string {
   if (error.kind === 'not-found') return `No job matching '${error.target}'`
   return `Ambiguous prefix '${error.target}', matches: ${error.matches.join(', ')}`
 }
-

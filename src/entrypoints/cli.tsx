@@ -422,6 +422,13 @@ async function main(): Promise<void> {
   if (args.includes('--bare')) {
     process.env.CLAUDE_CODE_SIMPLE = '1';
   }
+  if (args.includes('--safe-mode')) {
+    process.env.CLAUDE_CODE_SAFE_MODE = '1';
+    process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS = '1';
+  }
+  if (args.includes('--ax-screen-reader')) {
+    process.env.CLAUDE_CODE_ACCESSIBILITY = '1';
+  }
 
   // No special flags detected, load and run the full CLI. Only the official
   // NON_REPL_SUBCOMMANDS set bypasses early input capture; other commands may

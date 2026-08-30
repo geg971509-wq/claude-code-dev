@@ -16,6 +16,7 @@ import {
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { getErrnoCode } from '../../utils/errors.js'
+import { isSafeMode } from '../../utils/envUtils.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
 import { safeParseJSON } from '../../utils/json.js'
 import { logError } from '../../utils/log.js'
@@ -1032,11 +1033,13 @@ export function getMcpConfigsByScope(
  */
 export function getMcpConfigByName(name: string): ScopedMcpServerConfig | null {
   const { servers: enterpriseServers } = getMcpConfigsByScope('enterprise')
+  const allowedEnterpriseServers =
+    filterMcpServersForSafeMode(enterpriseServers)
 
   // When MCP is locked to plugin-only, only enterprise servers are reachable
   // by name. User/project/local servers are blocked — same as getClaudeCodeMcpConfigs().
-  if (isRestrictedToPluginOnly('mcp')) {
-    return enterpriseServers[name] ?? null
+  if (isRestrictedToPluginOnly('mcp') || isSafeMode()) {
+    return allowedEnterpriseServers[name] ?? null
   }
 
   const { servers: userServers } = getMcpConfigsByScope('user')
@@ -1068,6 +1071,15 @@ export function getMcpConfigByName(name: string): ScopedMcpServerConfig | null {
  * so the two overlap rather than serialize.
  * @returns Claude Code server configurations with appropriate scopes
  */
+export function filterMcpServersForSafeMode(
+  configs: Record<string, ScopedMcpServerConfig>,
+): Record<string, ScopedMcpServerConfig> {
+  if (!isSafeMode()) return configs
+  return Object.fromEntries(
+    Object.entries(configs).filter(([, config]) => config.type === 'sdk'),
+  )
+}
+
 export async function getClaudeCodeMcpConfigs(
   dynamicServers: Record<string, ScopedMcpServerConfig> = {},
   extraDedupTargets: Promise<
@@ -1078,6 +1090,8 @@ export async function getClaudeCodeMcpConfigs(
   errors: PluginError[]
 }> {
   const { servers: enterpriseServers } = getMcpConfigsByScope('enterprise')
+  const allowedEnterpriseServers =
+    filterMcpServersForSafeMode(enterpriseServers)
 
   // If an enterprise mcp config exists, do not use any others; this has exclusive control over all MCP servers
   // (enterprise customers often do not want their users to be able to add their own MCP servers).
@@ -1085,7 +1099,9 @@ export async function getClaudeCodeMcpConfigs(
     // Apply policy filtering to enterprise servers
     const filtered: Record<string, ScopedMcpServerConfig> = {}
 
-    for (const [name, serverConfig] of Object.entries(enterpriseServers)) {
+    for (const [name, serverConfig] of Object.entries(
+      allowedEnterpriseServers,
+    )) {
       if (!isMcpServerAllowedByPolicy(name, serverConfig)) {
         continue
       }
@@ -1101,20 +1117,21 @@ export async function getClaudeCodeMcpConfigs(
   const noServers: { servers: Record<string, ScopedMcpServerConfig> } = {
     servers: {},
   }
-  const { servers: userServers } = mcpLocked
-    ? noServers
-    : getMcpConfigsByScope('user')
-  const { servers: projectServers } = mcpLocked
-    ? noServers
-    : getMcpConfigsByScope('project')
-  const { servers: localServers } = mcpLocked
-    ? noServers
-    : getMcpConfigsByScope('local')
+  const safeMode = isSafeMode()
+  const allowedDynamicServers = filterMcpServersForSafeMode(dynamicServers)
+  const { servers: userServers } =
+    mcpLocked || safeMode ? noServers : getMcpConfigsByScope('user')
+  const { servers: projectServers } =
+    mcpLocked || safeMode ? noServers : getMcpConfigsByScope('project')
+  const { servers: localServers } =
+    mcpLocked || safeMode ? noServers : getMcpConfigsByScope('local')
 
   // Load plugin MCP servers
   const pluginMcpServers: Record<string, ScopedMcpServerConfig> = {}
 
-  const pluginResult = await loadAllPluginsCacheOnly()
+  const pluginResult = safeMode
+    ? { enabled: [], errors: [] }
+    : await loadAllPluginsCacheOnly()
 
   // Collect MCP-specific errors during server loading
   const mcpErrors: PluginError[] = []
@@ -1182,7 +1199,7 @@ export async function getClaudeCodeMcpConfigs(
     ...userServers,
     ...approvedProjectServers,
     ...localServers,
-    ...dynamicServers,
+    ...allowedDynamicServers,
     ...extraTargets,
   })) {
     if (

@@ -36,8 +36,10 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
-const DEFAULT_BUNDLE =
-  '/Volumes/work/software/install/claude-official/modules/src/entrypoints/cli.js'
+export const DEFAULT_BUNDLE =
+  '/Volumes/work/software/install/claude-official/modules/src/entrypoints/baseline/cli.js'
+
+export const DRIFT_SUCCESS_MARKER = 'upstream drift check passed'
 
 /** 在 minified 产物里仍然稳定可读的常量族。 */
 const CATEGORIES = [
@@ -459,6 +461,7 @@ async function main(): Promise<void> {
     .sort()
   console.log('## 工具 wire name（单向：官方 bundle 里无法可靠枚举，见文件头）')
   report('dev 有 / 官方没有', devOnlyTools)
+  console.log(DRIFT_SUCCESS_MARKER)
 }
 
 if (import.meta.main) await main()

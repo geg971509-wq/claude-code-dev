@@ -34,6 +34,7 @@
 
 import {
   copyFile,
+  open,
   readdir,
   readFile,
   readlink,
@@ -46,7 +47,7 @@ import {
 } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
 import { basename, dirname, join, relative, resolve, sep } from 'path'
-import { getInlinePlugins } from '../../bootstrap/state.js'
+import { getInlinePlugins, getPluginUrls } from '../../bootstrap/state.js'
 import {
   BUILTIN_MARKETPLACE_NAME,
   getBuiltinPlugins,
@@ -59,7 +60,8 @@ import type {
   PluginManifest,
 } from '../../types/plugin.js'
 import { logForDebugging } from '../debug.js'
-import { isEnvTruthy } from '../envUtils.js'
+import { registerCleanup } from '../cleanupRegistry.js'
+import { isEnvTruthy, isSafeMode } from '../envUtils.js'
 import {
   errorMessage,
   getErrnoPath,
@@ -116,10 +118,13 @@ import {
 } from './schemas.js'
 import {
   convertDirectoryToZipInPlace,
+  cleanupSessionPluginCache,
   extractZipToDirectory,
   getSessionPluginCachePath,
   isPluginZipCacheEnabled,
 } from './zipCache.js'
+
+const MAX_PLUGIN_ARCHIVE_BYTES = 256 * 1024 * 1024
 
 /**
  * Get the path where plugin cache is stored
@@ -2995,6 +3000,103 @@ async function loadSessionOnlyPlugins(
   return { plugins, errors }
 }
 
+export async function loadPluginsFromUrls(
+  pluginUrls: readonly string[],
+): Promise<{ plugins: LoadedPlugin[]; errors: PluginError[] }> {
+  if (pluginUrls.length === 0) return { plugins: [], errors: [] }
+
+  registerCleanup(cleanupSessionPluginCache)
+  const sessionDir = await getSessionPluginCachePath()
+  const plugins: LoadedPlugin[] = []
+  const errors: PluginError[] = []
+
+  for (const [index, pluginUrl] of pluginUrls.entries()) {
+    const source = `plugin-url[${index}]`
+    try {
+      const parsedUrl = new URL(pluginUrl)
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        throw new Error(
+          `Unsupported plugin URL protocol: ${parsedUrl.protocol}`,
+        )
+      }
+
+      const response = await fetch(parsedUrl, {
+        signal: AbortSignal.timeout(30_000),
+      })
+      if (!response.ok) {
+        throw new Error(`Plugin download failed with HTTP ${response.status}`)
+      }
+
+      const contentLength = Number(response.headers.get('content-length'))
+      if (contentLength > MAX_PLUGIN_ARCHIVE_BYTES) {
+        throw new Error(
+          `Plugin archive too large (${contentLength} bytes, max ${MAX_PLUGIN_ARCHIVE_BYTES})`,
+        )
+      }
+      if (!response.body) {
+        throw new Error('Plugin download returned an empty response body')
+      }
+
+      const zipPath = join(sessionDir, `plugin-url-${index}.zip`)
+      const extractDir = join(sessionDir, `plugin-url-${index}`)
+      const reader = response.body.getReader()
+      const file = await open(zipPath, 'w')
+      let downloadedBytes = 0
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          downloadedBytes += value.byteLength
+          if (downloadedBytes > MAX_PLUGIN_ARCHIVE_BYTES) {
+            await reader.cancel()
+            throw new Error(
+              `Plugin archive exceeded ${MAX_PLUGIN_ARCHIVE_BYTES} bytes`,
+            )
+          }
+          await file.writeFile(value)
+        }
+      } finally {
+        reader.releaseLock()
+        await file.close()
+      }
+      await extractZipToDirectory(zipPath, extractDir)
+
+      let pluginPath = extractDir
+      const entries = await readdir(extractDir, { withFileTypes: true })
+      if (entries.length === 1 && entries[0]?.isDirectory()) {
+        const nestedPath = join(extractDir, entries[0].name)
+        if (
+          await pathExists(join(nestedPath, '.claude-plugin', 'plugin.json'))
+        ) {
+          pluginPath = nestedPath
+        }
+      }
+
+      const fallbackName = basename(parsedUrl.pathname).replace(/\.zip$/i, '')
+      const { plugin, errors: pluginErrors } = await createPluginFromPath(
+        pluginPath,
+        source,
+        true,
+        fallbackName || `plugin-url-${index}`,
+      )
+      plugin.source = `${plugin.name}@url`
+      plugin.repository = plugin.source
+      plugins.push(plugin)
+      errors.push(...pluginErrors)
+    } catch (error) {
+      const message = errorMessage(error)
+      logForDebugging(`Failed to load ${source}: ${message}`, { level: 'warn' })
+      errors.push({
+        type: 'generic-error',
+        source,
+        error: `Failed to load plugin URL: ${message}`,
+      })
+    }
+  }
+
+  return { plugins, errors }
+}
+
 /**
  * Merge plugins from session (--plugin-dir), marketplace (installed), and
  * builtin sources. Session plugins override marketplace plugins with the
@@ -3097,6 +3199,7 @@ export function mergePluginSources(sources: {
  *   - errors: Array of loading errors with source information
  */
 export const loadAllPlugins = memoize(async (): Promise<PluginLoadResult> => {
+  if (isSafeMode()) return { enabled: [], disabled: [], errors: [] }
   const result = await assemblePluginLoadResult(() =>
     loadPluginsFromMarketplaces({ cacheOnly: false }),
   )
@@ -3139,6 +3242,7 @@ export const loadAllPlugins = memoize(async (): Promise<PluginLoadResult> => {
  */
 export const loadAllPluginsCacheOnly = memoize(
   async (): Promise<PluginLoadResult> => {
+    if (isSafeMode()) return { enabled: [], disabled: [], errors: [] }
     if (isEnvTruthy(process.env.CLAUDE_CODE_SYNC_PLUGIN_INSTALL)) {
       return loadAllPlugins()
     }
@@ -3165,10 +3269,14 @@ async function assemblePluginLoadResult(
   // getInlinePlugins() is a synchronous state read with no dependency on
   // marketplace loading, so these two sources can be fetched concurrently.
   const inlinePlugins = getInlinePlugins()
-  const [marketplaceResult, sessionResult] = await Promise.all([
+  const pluginUrls = getPluginUrls()
+  const [marketplaceResult, sessionResult, urlResult] = await Promise.all([
     marketplaceLoader(),
     inlinePlugins.length > 0
       ? loadSessionOnlyPlugins(inlinePlugins)
+      : Promise.resolve({ plugins: [], errors: [] }),
+    pluginUrls.length > 0
+      ? loadPluginsFromUrls(pluginUrls)
       : Promise.resolve({ plugins: [], errors: [] }),
   ])
   // 3. Load built-in plugins that ship with the CLI
@@ -3178,7 +3286,7 @@ async function assemblePluginLoadResult(
   // UNLESS the installed plugin is locked by managed settings
   // (policySettings). See mergePluginSources() for details.
   const { plugins: allPlugins, errors: mergeErrors } = mergePluginSources({
-    session: sessionResult.plugins,
+    session: [...sessionResult.plugins, ...urlResult.plugins],
     marketplace: marketplaceResult.plugins,
     builtin: [...builtinResult.enabled, ...builtinResult.disabled],
     managedNames: getManagedPluginNames(),
@@ -3186,6 +3294,7 @@ async function assemblePluginLoadResult(
   const allErrors = [
     ...marketplaceResult.errors,
     ...sessionResult.errors,
+    ...urlResult.errors,
     ...mergeErrors,
   ]
 

@@ -19,6 +19,8 @@ export type ModelUsage = {
   costUSD: number
   contextWindow: number
   maxOutputTokens: number
+  canonicalModel?: string
+  provider?: string
 }
 
 export type ApiKeySource = string

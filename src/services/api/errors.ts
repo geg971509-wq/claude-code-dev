@@ -65,6 +65,26 @@ import { extractConnectionErrorDetails, formatAPIError } from './errorUtils.js'
 
 export const API_ERROR_MESSAGE_PREFIX = 'API Error'
 
+export function getAPIErrorDetail(error: APIError): string {
+  const nested = error.error
+  if (nested && typeof nested === 'object') {
+    const message = (nested as { message?: unknown }).message
+    if (typeof message === 'string' && message.length > 0) return message
+    const inner = (nested as { error?: { message?: unknown } }).error?.message
+    if (typeof inner === 'string' && inner.length > 0) return inner
+  }
+  const raw = error.message
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object') {
+      const message = (parsed as { error?: { message?: unknown } }).error
+        ?.message
+      if (typeof message === 'string' && message.length > 0) return message
+    }
+  } catch {}
+  return raw
+}
+
 export {
   APIContextOverflowError,
   APIProviderRateLimitError,
@@ -946,6 +966,15 @@ export function getAssistantMessageFromError(
     return createAssistantAPIErrorMessage({
       content: `${API_ERROR_MESSAGE_PREFIX}: ${formatAPIError(error)}`,
       error: 'unknown',
+    })
+  }
+
+  if (error instanceof APIError) {
+    const detail = getAPIErrorDetail(error)
+    return createAssistantAPIErrorMessage({
+      content: `${API_ERROR_MESSAGE_PREFIX}: ${error.status ?? 'unknown'}${detail ? ` ${detail}` : ''}`,
+      error: 'unknown',
+      status: error.status,
     })
   }
 

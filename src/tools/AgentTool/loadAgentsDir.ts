@@ -19,7 +19,7 @@ import {
   type EffortValue,
   parseEffortValue,
 } from 'src/utils/effort.js'
-import { isEnvTruthy } from 'src/utils/envUtils.js'
+import { isEnvTruthy, isSafeMode } from 'src/utils/envUtils.js'
 import { parsePositiveIntFromFrontmatter } from 'src/utils/frontmatterParser.js'
 import { lazySchema } from '@claude-code-best/core-utils/lazySchema'
 import { logError } from 'src/utils/log.js'
@@ -296,7 +296,7 @@ async function initializeAgentMemorySnapshots(
 export const getAgentDefinitionsWithOverrides = memoize(
   async (cwd: string): Promise<AgentDefinitionsResult> => {
     // Simple mode: skip custom agents, only return built-ins
-    if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
+    if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE) || isSafeMode()) {
       const builtInAgents = getBuiltInAgents()
       return {
         activeAgents: builtInAgents,

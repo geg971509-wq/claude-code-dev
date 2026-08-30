@@ -11,8 +11,13 @@
 
 import { feature } from 'bun:bundle'
 import type { Command } from '../commands.js'
-import { getSystemPrompt } from '../constants/prompts.js'
+import {
+  computeDynamicEnvInfo,
+  getScratchpadInstructions,
+  getSystemPrompt,
+} from '../constants/prompts.js'
 import { getSystemContext, getUserContext } from '../context.js'
+import { loadMemoryPrompt } from '../memdir/memdir.js'
 import type { MCPServerConnection } from '../services/mcp/types.js'
 import type { AppState } from '../state/AppStateStore.js'
 import type { Tools, ToolUseContext } from '../Tool.js'
@@ -69,11 +74,54 @@ export async function fetchSystemPromptParts({
           mainLoopModel,
           additionalWorkingDirectories,
           mcpClients,
+          {
+            excludeDynamicSections:
+              process.env.CLAUDE_CODE_EXCLUDE_DYNAMIC_SYSTEM_PROMPT_SECTIONS ===
+              '1',
+          },
         ),
     getUserContext(),
     customSystemPrompt !== undefined ? Promise.resolve({}) : getSystemContext(),
   ])
+  if (
+    process.env.CLAUDE_CODE_EXCLUDE_DYNAMIC_SYSTEM_PROMPT_SECTIONS === '1' &&
+    customSystemPrompt === undefined
+  ) {
+    const excludedSections = await getExcludedDynamicSectionsContent(
+      mainLoopModel,
+      additionalWorkingDirectories,
+    )
+    return {
+      defaultSystemPrompt,
+      userContext: { ...systemContext, ...userContext, ...excludedSections },
+      systemContext: {},
+    }
+  }
   return { defaultSystemPrompt, userContext, systemContext }
+}
+
+async function getExcludedDynamicSectionsContent(
+  model: string,
+  additionalWorkingDirectories: string[],
+): Promise<Record<string, string>> {
+  const sections = await Promise.all([
+    computeDynamicEnvInfo(additionalWorkingDirectories),
+    loadMemoryPrompt(),
+    Promise.resolve(getScratchpadInstructions()),
+  ])
+
+  return sections.reduce<Record<string, string>>((context, section) => {
+    if (section === null) return context
+    const newline = section.indexOf('\n')
+    const heading = newline === -1 ? section : section.slice(0, newline)
+    if (!heading.startsWith('# ')) {
+      throw new Error(
+        `Expected excluded dynamic section to start with "# <heading>", got "${heading}"`,
+      )
+    }
+    context[heading.slice(2)] = newline === -1 ? '' : section.slice(newline + 1)
+    return context
+  }, {})
 }
 
 /**

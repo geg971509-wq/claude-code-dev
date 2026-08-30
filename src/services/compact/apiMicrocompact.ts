@@ -86,12 +86,10 @@ export function getAPIContextManagement(options?: {
     })
   }
 
-  // Tool clearing: default enabled for all users (upstream gates on USER_TYPE=ant).
-  // Opt out via USE_API_CLEAR_TOOL_RESULTS=0 / USE_API_CLEAR_TOOL_USES=0.
   const useClearToolResults =
     process.env.USE_API_CLEAR_TOOL_RESULTS !== undefined
       ? isEnvTruthy(process.env.USE_API_CLEAR_TOOL_RESULTS)
-      : true
+      : false
   const useClearToolUses = isEnvTruthy(process.env.USE_API_CLEAR_TOOL_USES)
 
   if (!useClearToolResults && !useClearToolUses) {

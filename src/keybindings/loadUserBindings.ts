@@ -17,7 +17,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growt
 import { logEvent } from '../services/analytics/index.js'
 import { registerCleanup } from '../utils/cleanupRegistry.js'
 import { logForDebugging } from '../utils/debug.js'
-import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
+import { getClaudeConfigHomeDir, isSafeMode } from '../utils/envUtils.js'
 import { errorMessage, isENOENT } from '../utils/errors.js'
 import { createSignal } from '../utils/signal.js'
 import { jsonParse } from '../utils/slowOperations.js'
@@ -39,9 +39,12 @@ import {
  * can check the same condition consistently.
  */
 export function isKeybindingCustomizationEnabled(): boolean {
-  return getFeatureValue_CACHED_MAY_BE_STALE(
-    'tengu_keybinding_customization_release',
-    false,
+  return (
+    !isSafeMode() &&
+    getFeatureValue_CACHED_MAY_BE_STALE(
+      'tengu_keybinding_customization_release',
+      false,
+    )
   )
 }
 

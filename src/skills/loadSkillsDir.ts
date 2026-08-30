@@ -32,6 +32,7 @@ import {
 import {
   getClaudeConfigHomeDir,
   isBareMode,
+  isSafeMode,
   isEnvTruthy,
 } from '../utils/envUtils.js'
 import { isENOENT, isFsInaccessible } from '../utils/errors.js'
@@ -637,6 +638,7 @@ async function loadSkillsFromCommandsDir(
  */
 export const getSkillDirCommands = memoize(
   async (cwd: string): Promise<Command[]> => {
+    if (isSafeMode()) return []
     const userSkillsDir = join(getClaudeConfigHomeDir(), 'skills')
     const managedSkillsDir = join(getManagedFilePath(), '.claude', 'skills')
     const projectSkillsDirs = getProjectDirsUpToHome('skills', cwd)

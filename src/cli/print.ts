@@ -70,6 +70,7 @@ import { EMPTY_USAGE } from '@ant/model-provider'
 import {
   loadConversationForResume,
   type TurnInterruptionState,
+  validateResumeDropRange,
 } from 'src/utils/conversationRecovery.js'
 import type {
   MCPServerConnection,
@@ -535,6 +536,13 @@ export function canBatchWith(
   )
 }
 
+export function isForwardSubagentTextEnabled(
+  outputFormat: string | undefined,
+  forwardSubagentText: boolean | undefined,
+): boolean {
+  return outputFormat === 'stream-json' && forwardSubagentText === true
+}
+
 export async function runHeadless(
   inputPrompt: string | AsyncIterable<string>,
   getAppState: () => AppState,
@@ -547,6 +555,8 @@ export async function runHeadless(
     continue: boolean | undefined
     resume: string | boolean | undefined
     resumeSessionAt: string | undefined
+    resumeDropsTurn: string | undefined
+    replyOnResume: boolean | undefined
     verbose: boolean | undefined
     outputFormat: string | undefined
     jsonSchema: Record<string, unknown> | undefined
@@ -565,6 +575,7 @@ export async function runHeadless(
     sdkUrl: string | undefined
     replayUserMessages: boolean | undefined
     includePartialMessages: boolean | undefined
+    forwardSubagentText?: boolean | undefined
     forkSession: boolean | undefined
     rewindFiles: string | undefined
     enableAuthStatus: boolean | undefined
@@ -659,6 +670,14 @@ export async function runHeadless(
 
   if (options.resumeSessionAt && !options.resume) {
     process.stderr.write(`Error: --resume-session-at requires --resume\n`)
+    gracefulShutdownSync(1)
+    return
+  }
+
+  if (options.resumeDropsTurn && !options.resumeSessionAt) {
+    process.stderr.write(
+      `Error: --resume-drops-turn requires --resume-session-at\n`,
+    )
     gracefulShutdownSync(1)
     return
   }
@@ -781,6 +800,8 @@ export async function runHeadless(
     teleport: options.teleport,
     resume: options.resume,
     resumeSessionAt: options.resumeSessionAt,
+    resumeDropsTurn: options.resumeDropsTurn,
+    replyOnResume: options.replyOnResume,
     forkSession: options.forkSession,
     outputFormat: options.outputFormat,
     sessionStartHooksPromise: options.sessionStartHooksPromise,
@@ -965,7 +986,13 @@ export async function runHeadless(
     getAppState,
     setAppState,
     agents,
-    options,
+    {
+      ...options,
+      forwardSubagentText: isForwardSubagentTextEnabled(
+        options.outputFormat,
+        options.forwardSubagentText,
+      ),
+    },
     turnInterruptionState,
   )) {
     if (transformToStreamlined) {
@@ -1111,6 +1138,7 @@ function runHeadlessStreaming(
     fallbackModel: string | undefined
     replayUserMessages?: boolean | undefined
     includePartialMessages?: boolean | undefined
+    forwardSubagentText?: boolean | undefined
     enableAuthStatus?: boolean | undefined
     agent?: string | undefined
     setSDKStatus?: (status: SDKStatus) => void
@@ -2391,6 +2419,9 @@ function runHeadlessStreaming(
                   abortController,
                   replayUserMessages: options.replayUserMessages,
                   includePartialMessages: options.includePartialMessages,
+                  ...{
+                    forwardSubagentText: options.forwardSubagentText,
+                  },
                   handleElicitation: (serverName, params, elicitSignal) =>
                     structuredIO.handleElicitation(
                       serverName,
@@ -5360,6 +5391,8 @@ async function loadInitialMessages(
     teleport: string | true | null | undefined
     resume: string | boolean | undefined
     resumeSessionAt: string | undefined
+    resumeDropsTurn: string | undefined
+    replyOnResume: boolean | undefined
     forkSession: boolean | undefined
     outputFormat: string | undefined
     sessionStartHooksPromise?: ReturnType<typeof processSessionStartHooks>
@@ -5375,6 +5408,7 @@ async function loadInitialMessages(
       const result = await loadConversationForResume(
         undefined /* sessionId */,
         undefined /* file path */,
+        { replyOnResume: options.replyOnResume },
       )
       if (result) {
         // Match coordinator mode to the resumed session's mode
@@ -5537,6 +5571,7 @@ async function loadInitialMessages(
       const result = await loadConversationForResume(
         parsedSessionId.sessionId,
         parsedSessionId.jsonlFile || undefined,
+        { replyOnResume: options.replyOnResume },
       )
 
       // hydrateFromCCRv2InternalEvents writes an empty transcript file for
@@ -5576,6 +5611,21 @@ async function loadInitialMessages(
           )
           gracefulShutdownSync(1)
           return { messages: [] }
+        }
+
+        if (options.resumeDropsTurn) {
+          const validation = validateResumeDropRange(
+            result.messages.slice(index + 1),
+            options.resumeDropsTurn,
+          )
+          if (!validation.ok) {
+            emitLoadError(
+              `Resume rejected by --resume-drops-turn: resuming at ${options.resumeSessionAt} would discard entries not attributable to turn ${options.resumeDropsTurn}: ${validation.reason}`,
+              options.outputFormat,
+            )
+            gracefulShutdownSync(1)
+            return { messages: [] }
+          }
         }
 
         result.messages = index >= 0 ? result.messages.slice(0, index + 1) : []

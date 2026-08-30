@@ -11,13 +11,13 @@ import {
   getMemoryFiles,
 } from './utils/claudemd.js'
 import { logForDiagnosticsNoPII } from './utils/diagLogs.js'
-import { isBareMode, isEnvTruthy } from './utils/envUtils.js'
+import { isBareMode, isEnvTruthy, isSafeMode } from './utils/envUtils.js'
 import { execFileNoThrow } from './utils/execFileNoThrow.js'
 import { getBranch, getDefaultBranch, getIsGit, gitExe } from './utils/git.js'
 import { shouldIncludeGitInstructions } from './utils/gitSettings.js'
 import { logError } from './utils/log.js'
 
-const MAX_STATUS_CHARS = 1000
+const MAX_STATUS_CHARS = 2000
 
 // System prompt injection for cache breaking (ant-only, ephemeral debugging state)
 let systemPromptInjection: string | null = null
@@ -85,7 +85,7 @@ export const getGitStatus = memoize(async (): Promise<string | null> => {
     const truncatedStatus =
       status.length > MAX_STATUS_CHARS
         ? status.substring(0, MAX_STATUS_CHARS) +
-          '\n... (truncated because it exceeds 2k characters. If you need more information, run "git status" using BashTool)'
+          '\n... (truncated because it exceeds 2k characters. If you need more information, run "git status" using Bash)'
         : status
 
     logForDiagnosticsNoPII('info', 'git_status_completed', {
@@ -164,6 +164,7 @@ export const getUserContext = memoize(
     // --bare means "skip what I didn't ask for", not "ignore what I asked for".
     const shouldDisableClaudeMd =
       isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS) ||
+      isSafeMode() ||
       (isBareMode() && getAdditionalDirectoriesForClaudeMd().length === 0)
     // Await the async I/O (readFile/readdir directory walk) so the event
     // loop yields naturally at the first fs.readFile.

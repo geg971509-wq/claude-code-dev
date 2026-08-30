@@ -1432,6 +1432,12 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     fast_mode_state: FastModeStateSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
+    terminal_reason: z.string().optional(),
+    api_error_status: z.number().nullable().optional(),
+    ttft_ms: z.number().nullable().optional(),
+    ttft_stream_ms: z.number().nullable().optional(),
+    time_to_request_ms: z.number().nullable().optional(),
+    fast_mode_disabled_reason: z.string().optional(),
   }),
 )
 
@@ -1457,6 +1463,12 @@ export const SDKResultErrorSchema = lazySchema(() =>
     fast_mode_state: FastModeStateSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
+    terminal_reason: z.string().optional(),
+    api_error_status: z.number().nullable().optional(),
+    ttft_ms: z.number().nullable().optional(),
+    ttft_stream_ms: z.number().nullable().optional(),
+    time_to_request_ms: z.number().nullable().optional(),
+    fast_mode_disabled_reason: z.string().optional(),
   }),
 )
 

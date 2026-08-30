@@ -1058,6 +1058,23 @@ export function stripExcessMediaItems(
  */
 const lastAnnouncedDeferredTools = new Set<string>()
 
+type ThinkingDisplay = 'summarized' | 'omitted'
+
+export function getThinkingDisplayForRequest(
+  thinkingConfig: ThinkingConfig & { display?: ThinkingDisplay },
+  hasThinking: boolean,
+  model: string,
+): ThinkingDisplay | undefined {
+  if (
+    !hasThinking ||
+    !shouldIncludeFirstPartyOnlyBetas() ||
+    !modelSupportsThinking(model)
+  ) {
+    return undefined
+  }
+  return thinkingConfig.display
+}
+
 async function* queryModel(
   messages: Message[],
   systemPrompt: SystemPrompt,
@@ -1720,6 +1737,11 @@ async function* queryModel(
     const hasThinking =
       thinkingConfig.type !== 'disabled' &&
       !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_THINKING)
+    const thinkingDisplay = getThinkingDisplayForRequest(
+      thinkingConfig,
+      hasThinking,
+      options.model,
+    )
     let thinking: BetaMessageStreamParams['thinking'] | undefined
 
     // IMPORTANT: Do not change the adaptive-vs-budget thinking selection below
@@ -1734,6 +1756,7 @@ async function* queryModel(
         // thinking without a budget.
         thinking = {
           type: 'adaptive',
+          display: thinkingDisplay,
         } satisfies BetaMessageStreamParams['thinking']
       } else {
         // For models that do not support adaptive thinking, use the default
@@ -1749,6 +1772,7 @@ async function* queryModel(
         thinking = {
           budget_tokens: thinkingBudget,
           type: 'enabled',
+          display: thinkingDisplay,
         } satisfies BetaMessageStreamParams['thinking']
       }
     }
@@ -1912,6 +1936,7 @@ async function* queryModel(
 
   const newMessages: AssistantMessage[] = []
   let ttftMs = 0
+  let requestSentAtMs = 0
   let partialMessage: BetaMessage | undefined
   const contentBlocks: (BetaContentBlock | ConnectorTextBlock)[] = []
   const textDeltas = new Map<number, string[]>()
@@ -1956,6 +1981,7 @@ async function* queryModel(
         // awaits until response headers arrive, so this MUST be before the await
         // or the "Network TTFB" phase measurement is wrong.
         queryCheckpoint('query_api_request_sent')
+        requestSentAtMs = performance.now()
         if (!options.agentId) {
           headlessProfilerCheckpoint('api_request_sent')
         }
@@ -2553,7 +2579,9 @@ async function* queryModel(
         yield {
           type: 'stream_event',
           event: part,
-          ...(part.type === 'message_start' ? { ttftMs } : undefined),
+          ...(part.type === 'message_start'
+            ? { ttftMs, requestSentAtMs }
+            : undefined),
         }
       }
       // Clear the idle timeout watchdog now that the stream loop has exited

@@ -49,9 +49,7 @@ export interface BgStartOptions {
   env: Record<string, string | undefined>
   logPath: string
   cwd: string
-  launch?:
-    | { mode: 'claude' }
-    | { mode: 'exec'; command: string }
+  launch?: { mode: 'claude' } | { mode: 'exec'; command: string }
   routine?: string
   intent?: string
   sessionId?: string

@@ -109,7 +109,10 @@ const MAX_TOOL_PROGRESS_TRACKING_ENTRIES = 100
 const TOOL_PROGRESS_THROTTLE_MS = 30000
 const toolProgressLastSentTime = new Map<string, number>()
 
-export function* normalizeMessage(message: Message): Generator<SDKMessage> {
+export function* normalizeMessage(
+  message: Message,
+  forwardSubagentText = true,
+): Generator<SDKMessage> {
   switch (message.type) {
     case 'assistant':
       for (const _ of normalizeMessages([message])) {
@@ -135,8 +138,9 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
         taskId: string
       }
       if (
-        progressData.type === 'agent_progress' ||
-        progressData.type === 'skill_progress'
+        forwardSubagentText &&
+        (progressData.type === 'agent_progress' ||
+          progressData.type === 'skill_progress')
       ) {
         for (const _ of normalizeMessages([progressData.message])) {
           switch (_.type) {

@@ -181,7 +181,7 @@ import { getContextWindowForModel } from './utils/context.js';
 import { getEffectiveContextWindowSize } from './services/compact/effectiveWindow.js';
 import { loadConversationForResume } from './utils/conversationRecovery.js';
 import { buildDeepLinkBanner } from './utils/deepLink/banner.js';
-import { hasNodeOption, isBareMode, isEnvTruthy, isInProtectedNamespace } from './utils/envUtils.js';
+import { hasNodeOption, isBareMode, isEnvTruthy, isInProtectedNamespace, isSafeMode } from './utils/envUtils.js';
 import { refreshExampleCommands } from './utils/exampleCommands.js';
 import type { FpsMetrics } from './utils/fpsTracker.js';
 import { getWorktreePaths } from './utils/getWorktreePaths.js';
@@ -250,6 +250,7 @@ import {
   dedupClaudeAiMcpServers,
   doesEnterpriseMcpConfigExist,
   filterMcpServersByPolicy,
+  filterMcpServersForSafeMode,
   getClaudeCodeMcpConfigs,
   getMcpServerSignature,
   parseMcpConfig,
@@ -292,6 +293,7 @@ import {
   setRemoteEnvironmentLabel,
   setInitialMainLoopModel,
   setInlinePlugins,
+  setPluginUrls,
   setIsInteractive,
   setKairosActive,
   setOriginalCwd,
@@ -337,6 +339,7 @@ import { SandboxManager } from './utils/sandbox/sandbox-adapter.js';
 import { fetchSession, prepareApiRequest } from './utils/teleport/api.js';
 import {
   checkOutTeleportedSessionBranch,
+  extractCloudSessionId,
   processMessagesForTeleportResume,
   teleportToRemoteWithErrorHandling,
   validateGitState,
@@ -1014,6 +1017,9 @@ async function run(): Promise<CommanderCommand> {
   // not when displaying help. This avoids the need for env variable signaling.
   program.hook('preAction', async thisCommand => {
     profileCheckpoint('preAction_start');
+    if (thisCommand.getOptionValue('excludeDynamicSystemPromptSections')) {
+      process.env.CLAUDE_CODE_EXCLUDE_DYNAMIC_SYSTEM_PROMPT_SECTIONS = '1';
+    }
     const isAgentsCommand = thisCommand.name() === 'agents' || thisCommand.parent?.name() === 'agents';
     if (isAgentsCommand) {
       const { enableConfigs } = await import('./utils/config.js');
@@ -1058,6 +1064,11 @@ async function run(): Promise<CommanderCommand> {
     if (Array.isArray(pluginDir) && pluginDir.length > 0 && pluginDir.every(p => typeof p === 'string')) {
       setInlinePlugins(pluginDir);
       clearPluginCache('preAction: --plugin-dir inline plugins');
+    }
+    const pluginUrl = thisCommand.getOptionValue('pluginUrl');
+    if (Array.isArray(pluginUrl) && pluginUrl.length > 0 && pluginUrl.every(url => typeof url === 'string')) {
+      setPluginUrls(pluginUrl);
+      clearPluginCache('preAction: --plugin-url inline plugins');
     }
 
     runMigrations();
@@ -1116,6 +1127,7 @@ async function run(): Promise<CommanderCommand> {
       'Minimal mode: skip hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, and CLAUDE.md auto-discovery. Sets CLAUDE_CODE_SIMPLE=1. Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and keychain are never read). 3P providers (Bedrock/Vertex/Foundry) use their own credentials. Skills still resolve via /skill-name. Explicitly provide context via: --system-prompt[-file], --append-system-prompt[-file], --add-dir (CLAUDE.md dirs), --mcp-config, --settings, --agents, --plugin-dir.',
       () => true,
     )
+    .option('--safe-mode', 'Start with user customizations disabled. Sets CLAUDE_CODE_SAFE_MODE=1.', () => true)
     .addOption(new Option('--init', 'Run Setup hooks with init trigger, then continue').hideHelp())
     .addOption(new Option('--init-only', 'Run Setup and SessionStart:startup hooks, then exit').hideHelp())
     .addOption(new Option('--maintenance', 'Run Setup hooks with maintenance trigger, then continue').hideHelp())
@@ -1141,6 +1153,19 @@ async function run(): Promise<CommanderCommand> {
       '--include-partial-messages',
       'Include partial message chunks as they arrive (only works with --print and --output-format=stream-json)',
       () => true,
+    )
+    .option('--forward-subagent-text', 'Forward subagent text and thinking blocks in stream-json output', () => true)
+    .addOption(
+      new Option(
+        '--exclude-dynamic-system-prompt-sections',
+        'Move per-machine sections (cwd, env info, memory paths, git status) from the system prompt into the first user message. Only applies with the default system prompt.',
+      ).default(false),
+    )
+    .addOption(
+      new Option('--prompt-suggestions [value]', 'Enable prompt suggestions in stream-json output after each turn')
+        .choices(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off'])
+        .preset('true')
+        .argParser(value => ['true', '1', 'yes', 'on'].includes(value.toLowerCase())),
     )
     .addOption(
       new Option(
@@ -1297,10 +1322,24 @@ async function run(): Promise<CommanderCommand> {
     .addOption(
       new Option(
         '--resume-session-at <message id>',
-        'When resuming, only messages up to and including the assistant message with <message.id> (use with --resume in print mode)',
+        "When resuming, only messages up to and including the chain entry with <message.id> — any chain-entry UUID, typically the kept turn's last entry (use with --resume in print mode)",
       )
         .argParser(String)
         .hideHelp(),
+    )
+    .addOption(
+      new Option(
+        '--resume-drops-turn <message id>',
+        'With --resume-session-at in print mode: declare the prompt uuid of the turn the truncating resume intends to discard; the resume is refused if the discarded range contains anything not attributable to that turn',
+      )
+        .argParser(String)
+        .hideHelp(),
+    )
+    .addOption(
+      new Option(
+        '--reply-on-resume',
+        'When resuming, immediately query if the loaded transcript ends in a user-role message',
+      ).hideHelp(),
     )
     .addOption(
       new Option(
@@ -1329,7 +1368,7 @@ async function run(): Promise<CommanderCommand> {
     .option('--betas <betas...>', 'Beta headers to include in API requests (API key users only)')
     .option(
       '--fallback-model <model>',
-      'Enable automatic fallback to specified model when default model is overloaded (only works with --print)',
+      'Enable automatic fallback to specified model(s) when the default model is overloaded or not available. Accepts a comma-separated list to try each in order. Re-tries the primary at the start of each user turn. (only works with --print)',
     )
     .addOption(
       new Option(
@@ -1366,6 +1405,12 @@ async function run(): Promise<CommanderCommand> {
       (val: string, prev: string[]) => [...prev, val],
       [] as string[],
     )
+    .option(
+      '--plugin-url <url>',
+      'Load a plugin from a URL for this session only (repeatable)',
+      (value: string, previous: string[]) => [...previous, ...value.split(/\s+/).filter(Boolean)],
+      [] as string[],
+    )
     .option('--disable-slash-commands', 'Disable all skills', () => true)
     .option('--chrome', 'Enable Claude in Chrome integration')
     .option('--no-chrome', 'Disable Claude in Chrome integration')
@@ -1381,6 +1426,13 @@ async function run(): Promise<CommanderCommand> {
       // dir-walk). Must be set before setup() / any of the gated work runs.
       if ((options as { bare?: boolean }).bare) {
         process.env.CLAUDE_CODE_SIMPLE = '1';
+      }
+      if ((options as { safeMode?: boolean }).safeMode) {
+        process.env.CLAUDE_CODE_SAFE_MODE = '1';
+        process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS = '1';
+      }
+      if ((options as { axScreenReader?: boolean }).axScreenReader) {
+        process.env.CLAUDE_CODE_ACCESSIBILITY = '1';
       }
 
       // Ignore "code" as a prompt - treat it the same as no prompt
@@ -1624,11 +1676,51 @@ async function run(): Promise<CommanderCommand> {
       }
 
       // Extract teleport option
-      const teleport = (options as { teleport?: string | true }).teleport ?? null;
+      let teleport = (options as { teleport?: string | true }).teleport ?? null;
 
       // Extract remote option (can be true if no description provided, or a string)
-      const remoteOption = (options as { remote?: string | true }).remote;
-      const remote = remoteOption === true ? '' : (remoteOption ?? null);
+      const remoteOptions = options as { remote?: string | true; cloud?: string | true };
+      const remoteValue = remoteOptions.cloud ?? remoteOptions.remote;
+      const cloudSessionId = typeof remoteValue === 'string' ? extractCloudSessionId(remoteValue) : null;
+      let remote = cloudSessionId ? null : remoteValue === true ? '' : (remoteValue ?? null);
+      const environmentId = (options as { environment?: string }).environment;
+      const hasCloudDescription = typeof remoteValue === 'string' && remoteValue.length > 0 && !cloudSessionId;
+
+      if (environmentId && !/^ccpool_[A-Za-z0-9_]+$/.test(environmentId)) {
+        process.stderr.write(
+          chalk.red(`Error: --environment expects a self-hosted environment id (ccpool_...), got ${environmentId}\n`),
+        );
+        process.exit(1);
+      }
+      if (environmentId && (teleport || options.resume || options.continue)) {
+        process.stderr.write(
+          chalk.red('Error: --environment cannot be combined with --resume, --continue, or --teleport\n'),
+        );
+        process.exit(1);
+      }
+      if (environmentId && sessionId) {
+        process.stderr.write(chalk.red('Error: --environment cannot be combined with --session-id\n'));
+        process.exit(1);
+      }
+      if (environmentId && cloudSessionId) {
+        process.stderr.write(
+          chalk.red(
+            'Error: --environment creates a new session; it cannot be combined with --cloud <session_id|url>\n',
+          ),
+        );
+        process.exit(1);
+      }
+      if (cloudSessionId) {
+        if (teleport || options.resume || options.continue) {
+          process.stderr.write(
+            chalk.red('Error: --cloud <session_id|url> cannot be combined with --resume, --continue, or --teleport\n'),
+          );
+          process.exit(1);
+        }
+        teleport = cloudSessionId;
+      } else if (environmentId && remote === null) {
+        remote = '';
+      }
 
       // Extract --remote-control / --rc flag (enable bridge in interactive session)
       const remoteControlOption =
@@ -1638,6 +1730,10 @@ async function run(): Promise<CommanderCommand> {
       let remoteControl = false;
       const remoteControlName =
         typeof remoteControlOption === 'string' && remoteControlOption.length > 0 ? remoteControlOption : undefined;
+      const sessionNamePrefix = (options as { remoteControlSessionNamePrefix?: string }).remoteControlSessionNamePrefix;
+      if (sessionNamePrefix) {
+        process.env.CLAUDE_CODE_REMOTE_CONTROL_SESSION_NAME_PREFIX = sessionNamePrefix;
+      }
 
       // Validate session ID if provided
       if (sessionId) {
@@ -1928,13 +2024,18 @@ async function run(): Promise<CommanderCommand> {
         }
       }
 
+      const safeModeEnabled = isSafeMode();
+      dynamicMcpConfig = filterMcpServersForSafeMode(dynamicMcpConfig);
+
       // Extract Claude in Chrome option and enforce claude.ai subscriber check (unless user is ant)
       const chromeOpts = options as { chrome?: boolean };
       // Store the explicit CLI flag so teammates can inherit it
       setChromeFlagOverride(chromeOpts.chrome);
       const enableClaudeInChrome =
-        shouldEnableClaudeInChrome(chromeOpts.chrome) && (process.env.USER_TYPE === 'ant' || isClaudeAISubscriber());
-      const autoEnableClaudeInChrome = !enableClaudeInChrome && shouldAutoEnableClaudeInChrome();
+        !safeModeEnabled &&
+        shouldEnableClaudeInChrome(chromeOpts.chrome) &&
+        (process.env.USER_TYPE === 'ant' || isClaudeAISubscriber());
+      const autoEnableClaudeInChrome = !safeModeEnabled && !enableClaudeInChrome && shouldAutoEnableClaudeInChrome();
 
       if (enableClaudeInChrome) {
         const platform = getPlatform();
@@ -2019,7 +2120,7 @@ async function run(): Promise<CommanderCommand> {
       // `type: 'stdio'`. An enterprise-config ant with the GB gate on would
       // otherwise process.exit(1). Chrome has the same latent issue but has
       // shipped without incident; chicago places itself correctly.
-      if (feature('CHICAGO_MCP') && getPlatform() !== 'unknown' && !getIsNonInteractiveSession()) {
+      if (feature('CHICAGO_MCP') && !safeModeEnabled && getPlatform() !== 'unknown' && !getIsNonInteractiveSession()) {
         try {
           const { getChicagoEnabled } = await import('src/utils/computerUse/gates.js');
           if (getChicagoEnabled()) {
@@ -2235,6 +2336,13 @@ async function run(): Promise<CommanderCommand> {
         process.exit(1);
       }
 
+      if ((options as { promptSuggestions?: boolean }).promptSuggestions !== undefined) {
+        if (!isNonInteractiveSession || outputFormat !== 'stream-json') {
+          writeToStderr(`Error: --prompt-suggestions requires --print and --output-format=stream-json.\n`);
+          process.exit(1);
+        }
+      }
+
       // Validate sdkUrl is only used with appropriate formats (formats are auto-set above)
       if (sdkUrl) {
         if (inputFormat !== 'stream-json' || outputFormat !== 'stream-json') {
@@ -2261,6 +2369,11 @@ async function run(): Promise<CommanderCommand> {
         }
       }
 
+      if (options.forwardSubagentText && (!isNonInteractiveSession || outputFormat !== 'stream-json')) {
+        writeToStderr(`Error: --forward-subagent-text requires --print and --output-format=stream-json.\n`);
+        process.exit(1);
+      }
+
       // Validate --no-session-persistence is only used with print mode
       if (options.sessionPersistence === false && !isNonInteractiveSession) {
         writeToStderr(`Error: --no-session-persistence can only be used with --print mode.`);
@@ -2270,6 +2383,17 @@ async function run(): Promise<CommanderCommand> {
       const effectivePrompt = prompt || '';
       let inputPrompt = await getInputPrompt(effectivePrompt, (inputFormat ?? 'text') as 'text' | 'stream-json');
       profileCheckpoint('action_after_input_prompt');
+
+      if (environmentId && hasCloudDescription && typeof inputPrompt === 'string' && inputPrompt.length > 0) {
+        writeToStderr(
+          'Error: --environment with --cloud <description> cannot also take a positional prompt or piped stdin. Pass the task as the description, or drop --cloud.\n',
+        );
+        process.exit(1);
+      }
+      if (environmentId && remote === '' && typeof inputPrompt === 'string') {
+        remote = inputPrompt;
+        inputPrompt = '';
+      }
 
       // Activate proactive mode BEFORE getTools() so SleepTool.isEnabled()
       // (which returns isProactiveActive()) passes and Sleep is included.
@@ -3346,8 +3470,11 @@ async function run(): Promise<CommanderCommand> {
             sdkUrl,
             replayUserMessages: effectiveReplayUserMessages,
             includePartialMessages: effectiveIncludePartialMessages,
+            forwardSubagentText: options.forwardSubagentText,
             forkSession: options.forkSession || false,
             resumeSessionAt: options.resumeSessionAt || undefined,
+            resumeDropsTurn: options.resumeDropsTurn || undefined,
+            replyOnResume: options.replyOnResume,
             rewindFiles: options.rewindFiles,
             enableAuthStatus: options.enableAuthStatus,
             agent: agentCli,
@@ -3969,6 +4096,7 @@ async function run(): Promise<CommanderCommand> {
             hasInitialPrompt ? remote : null,
             new AbortController().signal,
             currentBranch || undefined,
+            environmentId,
           );
           if (!createdSession) {
             logEvent('tengu_remote_create_session_error', {
@@ -4460,25 +4588,44 @@ async function run(): Promise<CommanderCommand> {
   );
 
   // Enable teleport/remote flags for all builds but keep them undocumented until GA
+  program.addOption(new Option('--teleport [session]', 'Resume a teleport session, optionally specify session ID'));
+  program.addOption(new Option('--remote [description|session_id|url]', 'Deprecated alias for --cloud').hideHelp());
   program.addOption(
-    new Option('--teleport [session]', 'Resume a teleport session, optionally specify session ID').hideHelp(),
+    new Option(
+      '--cloud [description|session_id|url]',
+      'Create a cloud session with the given description, or attach to an existing one by session ID or claude.ai/code URL',
+    ),
   );
   program.addOption(
-    new Option('--remote [description]', 'Create a remote session with the given description').hideHelp(),
+    new Option(
+      '--environment <environment_id>',
+      'Create a new cloud session that runs on the given self-hosted environment (ccpool_...)',
+    ),
   );
+  program.addOption(new Option('--bg, --background', 'Run this session in the background'));
+  program.addOption(new Option('--ax-screen-reader', 'Render screen-reader friendly output (flat text)'));
   if (feature('BRIDGE_MODE')) {
     program.addOption(
       new Option(
         '--remote-control [name]',
         'Start an interactive session with Remote Control enabled (optionally named)',
-      )
-        .argParser(value => value || true)
-        .hideHelp(),
+      ).argParser(value => value || true),
     );
     program.addOption(
       new Option('--rc [name]', 'Alias for --remote-control').argParser(value => value || true).hideHelp(),
     );
   }
+
+  program.addOption(
+    new Option(
+      '--remote-control-session-name-prefix <prefix>',
+      'Prefix for auto-generated Remote Control session names (default: hostname)',
+    ).argParser(value => {
+      const prefix = value.trim();
+      if (!prefix) throw new InvalidArgumentError('Session name prefix cannot be empty');
+      return prefix;
+    }),
+  );
 
   if (feature('HARD_FAIL')) {
     program.addOption(new Option('--hard-fail', 'Crash on logError calls instead of silently logging').hideHelp());

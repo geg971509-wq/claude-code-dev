@@ -101,6 +101,13 @@ export function isBareMode(): boolean {
   )
 }
 
+export function isSafeMode(): boolean {
+  return (
+    isEnvTruthy(process.env.CLAUDE_CODE_SAFE_MODE) ||
+    process.argv.includes('--safe-mode')
+  )
+}
+
 /**
  * Parses an array of environment variable strings into a key-value object
  * @param envVars Array of strings in KEY=VALUE format

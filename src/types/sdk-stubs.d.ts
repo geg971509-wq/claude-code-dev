@@ -20,6 +20,8 @@ declare module '*/sdk/coreTypes.generated.js' {
     costUSD: number
     contextWindow: number
     maxOutputTokens: number
+    canonicalModel?: string
+    provider?: string
   }
   export type ApiKeySource = string
   export type ModelInfo = {

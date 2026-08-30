@@ -86,7 +86,9 @@ import {
 import { notifyCommandLifecycle } from './utils/commandLifecycle.js'
 import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import {
+  getDefaultMainLoopModel,
   getRuntimeMainLoopModel,
+  parseUserSpecifiedModel,
   renderModelName,
 } from './utils/model/model.js'
 import {
@@ -290,6 +292,8 @@ export async function* query(
 > {
   const consumedCommandUuids: string[] = []
   const consumedAutonomyCommands: QueuedCommand[] = []
+  const mainLoopModelAtTurnStart = params.toolUseContext.options.mainLoopModel
+  const useClaudeFallbackChain = isClaudeBehaviorProvider()
 
   // Create Langfuse trace for this query turn (no-op if not configured).
   // When called as a sub-agent, langfuseTrace is already set by runAgent()
@@ -379,6 +383,9 @@ export async function* query(
       paramsWithTrace.toolUseContext.langfuseRootTrace = null
       paramsWithTrace.toolUseContext.langfuseBatchSpan = null
     }
+    if (useClaudeFallbackChain) {
+      params.toolUseContext.options.mainLoopModel = mainLoopModelAtTurnStart
+    }
 
     // Clear JSC's native Performance buffers. OTel (otperformance) references
     // globalThis.performance which stores marks/measures/resource timings in a
@@ -404,6 +411,16 @@ export async function* query(
     notifyCommandLifecycle(uuid, 'completed')
   }
   return terminal!
+}
+
+function isClaudeBehaviorProvider(): boolean {
+  const provider = getAPIProvider()
+  return (
+    provider !== 'openai' &&
+    provider !== 'codex' &&
+    provider !== 'gemini' &&
+    provider !== 'grok'
+  )
 }
 
 async function* queryLoop(
@@ -454,6 +471,22 @@ async function* queryLoop(
     transition: undefined,
   }
   const budgetTracker = feature('TOKEN_BUDGET') ? createBudgetTracker() : null
+  const useClaudeFallbackChain = isClaudeBehaviorProvider()
+  const configuredFallbackModels: string[] = []
+  if (useClaudeFallbackChain) {
+    for (const candidate of fallbackModel?.split(',') ?? []) {
+      const trimmed = candidate.trim()
+      if (!trimmed) continue
+      const resolved = parseUserSpecifiedModel(
+        trimmed === 'default' ? getDefaultMainLoopModel() : trimmed,
+      )
+      if (!configuredFallbackModels.includes(resolved)) {
+        configuredFallbackModels.push(resolved)
+      }
+    }
+  }
+  let fallbackChain: string[] | undefined
+  let fallbackIndex = 0
 
   // Cross-iteration tool-call streak tracker (TOOL_LOOP_DETECTION). Loop-local
   // like taskBudgetRemaining: one query() call == one user prompt, which is
@@ -815,13 +848,22 @@ async function* queryLoop(
 
     const appState = toolUseContext.getAppState()
     const permissionMode = appState.toolPermissionContext.mode
-    let currentModel = getRuntimeMainLoopModel({
+    const primaryModel = getRuntimeMainLoopModel({
       permissionMode,
       mainLoopModel: toolUseContext.options.mainLoopModel,
       exceeds200kTokens:
         permissionMode === 'plan' &&
         doesMostRecentAssistantMessageExceed200k(messagesForQuery),
     })
+    if (useClaudeFallbackChain) {
+      fallbackChain ??= [
+        primaryModel,
+        ...configuredFallbackModels.filter(model => model !== primaryModel),
+      ]
+    }
+    let currentModel = useClaudeFallbackChain
+      ? (fallbackChain?.[fallbackIndex] ?? primaryModel)
+      : primaryModel
 
     queryCheckpoint('query_setup_end')
 
@@ -905,7 +947,9 @@ async function* queryLoop(
               isNonInteractiveSession:
                 toolUseContext.options.isNonInteractiveSession,
               verbose: toolUseContext.options.verbose,
-              fallbackModel,
+              fallbackModel: useClaudeFallbackChain
+                ? fallbackChain?.[fallbackIndex + 1]
+                : fallbackModel,
               onStreamingFallback: () => {
                 streamingFallbackOccured = true
               },
@@ -1122,9 +1166,16 @@ async function* queryLoop(
             }
           }
         } catch (innerError) {
-          if (innerError instanceof FallbackTriggeredError && fallbackModel) {
+          const nextFallbackModel = useClaudeFallbackChain
+            ? fallbackChain?.[fallbackIndex + 1]
+            : fallbackModel
+          if (
+            innerError instanceof FallbackTriggeredError &&
+            nextFallbackModel
+          ) {
             // Fallback was triggered - switch model and retry
-            currentModel = fallbackModel
+            if (useClaudeFallbackChain) fallbackIndex++
+            currentModel = nextFallbackModel
             attemptWithFallback = true
 
             // Clear assistant messages since we'll retry the entire request
@@ -1150,7 +1201,7 @@ async function* queryLoop(
             }
 
             // Update tool use context with new model
-            toolUseContext.options.mainLoopModel = fallbackModel
+            toolUseContext.options.mainLoopModel = nextFallbackModel
 
             // Thinking signatures are model-bound: replaying a protected-thinking
             // block (e.g. capybara) to an unprotected fallback (e.g. opus) 400s.
@@ -1164,7 +1215,7 @@ async function* queryLoop(
               original_model:
                 innerError.originalModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               fallback_model:
-                fallbackModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                nextFallbackModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               entrypoint:
                 'cli' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               queryChainId: queryChainIdForAnalytics,

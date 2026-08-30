@@ -44,6 +44,7 @@ import {
   dedupClaudeAiMcpServers,
   doesEnterpriseMcpConfigExist,
   filterMcpServersByPolicy,
+  filterMcpServersForSafeMode,
   getClaudeCodeMcpConfigs,
   isMcpServerDisabled,
   setMcpServerEnabled,
@@ -142,6 +143,9 @@ export function useManageMCPConnections(
   dynamicMcpConfig: Record<string, ScopedMcpServerConfig> | undefined,
   isStrictMcpConfig = false,
 ) {
+  const effectiveDynamicMcpConfig = filterMcpServersForSafeMode(
+    dynamicMcpConfig ?? {},
+  )
   const store = useAppStateStore()
   const _authVersion = useAppState(s => s.authVersion)
   // Incremented by /reload-plugins (refreshActivePlugins) to pick up newly
@@ -765,8 +769,8 @@ export function useManageMCPConnections(
     async function initializeServersAsPending() {
       const { servers: existingConfigs, errors: mcpErrors } = isStrictMcpConfig
         ? { servers: {}, errors: [] }
-        : await getClaudeCodeMcpConfigs(dynamicMcpConfig)
-      const configs = { ...existingConfigs, ...dynamicMcpConfig }
+        : await getClaudeCodeMcpConfigs(effectiveDynamicMcpConfig)
+      const configs = { ...existingConfigs, ...effectiveDynamicMcpConfig }
 
       // Add MCP errors to plugin errors for UI visibility (deduplicated)
       addErrorsToAppState(setAppState, mcpErrors)
@@ -870,13 +874,16 @@ export function useManageMCPConnections(
       const { servers: claudeCodeConfigs, errors: mcpErrors } =
         isStrictMcpConfig
           ? { servers: {}, errors: [] }
-          : await getClaudeCodeMcpConfigs(dynamicMcpConfig, claudeaiPromise)
+          : await getClaudeCodeMcpConfigs(
+              effectiveDynamicMcpConfig,
+              claudeaiPromise,
+            )
       if (cancelled) return
 
       // Add MCP errors to plugin errors for UI visibility (deduplicated)
       addErrorsToAppState(setAppState, mcpErrors)
 
-      const configs = { ...claudeCodeConfigs, ...dynamicMcpConfig }
+      const configs = { ...claudeCodeConfigs, ...effectiveDynamicMcpConfig }
 
       // Start connecting to Claude Code servers (don't wait - runs concurrently with Phase 2)
       // Filter out disabled servers to avoid unnecessary connection attempts

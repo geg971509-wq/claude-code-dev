@@ -24,6 +24,12 @@ export function getBridgeBaseUrlOverride(): string | undefined {
   return process.env.CLAUDE_BRIDGE_BASE_URL || undefined
 }
 
+export function getBridgeSessionNamePrefix(): string | undefined {
+  const prefix =
+    process.env.CLAUDE_CODE_REMOTE_CONTROL_SESSION_NAME_PREFIX?.trim()
+  return prefix || undefined
+}
+
 /**
  * Access token for bridge API calls: dev override first, then the OAuth
  * keychain. Undefined means "not logged in".

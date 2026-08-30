@@ -28,14 +28,19 @@ import {
 } from './fileHistory.js'
 import { logError } from './log.js'
 import {
+  CANCEL_MESSAGE,
   createAssistantMessage,
   createUserMessage,
   filterOrphanedThinkingOnlyMessages,
   filterUnresolvedToolUses,
   filterWhitespaceOnlyAssistantMessages,
+  INTERRUPT_MESSAGE,
+  INTERRUPT_MESSAGE_FOR_TOOL_USE,
   isToolUseResultMessage,
   NO_RESPONSE_REQUESTED,
   normalizeMessages,
+  REJECT_MESSAGE,
+  SYNTHETIC_MODEL,
 } from './messages.js'
 import { copyPlanForResume } from './plans.js'
 import { processSessionStartHooks } from './sessionStart.js'
@@ -164,6 +169,7 @@ export function deserializeMessages(serializedMessages: Message[]): Message[] {
  */
 export function deserializeMessagesWithInterruptDetection(
   serializedMessages: Message[],
+  replyOnResume = false,
 ): DeserializeResult {
   try {
     // Transform legacy attachment types before processing
@@ -233,6 +239,7 @@ export function deserializeMessagesWithInterruptDetection(
       m => m.type !== 'system' && m.type !== 'progress',
     )
     if (
+      !replyOnResume &&
       lastRelevantIdx !== -1 &&
       filteredMessages[lastRelevantIdx]!.type === 'user'
     ) {
@@ -250,6 +257,339 @@ export function deserializeMessagesWithInterruptDetection(
     logError(error as Error)
     throw error
   }
+}
+
+const RESUME_DROP_TURN_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+const RESUME_DROP_FURNITURE_ATTACHMENTS = new Set<string>([
+  'agent_listing_delta',
+  'agent_mention',
+  'peer_mention',
+  'already_read_file',
+  'attention_budget',
+  'audio_transcript',
+  'auto_mode',
+  'auto_mode_exit',
+  'budget_usd',
+  'command_permissions',
+  'compact_file_reference',
+  'context_efficiency',
+  'critical_system_reminder',
+  'date_change',
+  'deferred_tools_delta',
+  'diagnostics',
+  'directory',
+  'dynamic_skill',
+  'edited_image_file',
+  'edited_text_file',
+  'file',
+  'goal_status',
+  'hook_additional_context',
+  'hook_blocking_error',
+  'hook_cancelled',
+  'hook_deferred_tool',
+  'hook_error_during_execution',
+  'hook_non_blocking_error',
+  'hook_permission_decision',
+  'hook_plugin_listing',
+  'hook_stopped_continuation',
+  'hook_success',
+  'hook_system_message',
+  'invoked_skills',
+  'max_turns_reached',
+  'mcp_instructions_delta',
+  'mcp_dropped_tools_delta',
+  'mcp_resource',
+  'memory_update',
+  'nested_memory',
+  'opened_file_in_ide',
+  'output_style',
+  'output_token_usage',
+  'pdf_reference',
+  'plan_file_reference',
+  'plan_mode',
+  'plan_mode_exit',
+  'plan_mode_reentry',
+  'proactivity',
+  'read_truncation_notice',
+  'relevant_memories',
+  'selected_lines_in_diff',
+  'selected_lines_in_ide',
+  'skill_listing',
+  'structured_output',
+  'task_reminder',
+  'team_context',
+  'teammate_shutdown_batch',
+  'todo_reminder',
+  'token_usage',
+  'tool_search_usage_reminder',
+  'total_tokens_reminder',
+  'ultra_effort_enter',
+  'ultra_effort_exit',
+  'ultrathink_effort',
+  'workflow_keyword_request',
+  'workflow_size_guideline_change',
+] as const)
+
+const MEMORY_CORRECTION_SUFFIX =
+  "\n\nNote: The user's next message may contain a correction or preference. Pay close attention — if they explain what went wrong or how they'd prefer you to work, consider saving that to memory for future sessions."
+
+function isResumeDropSpecialToolError(content: string): boolean {
+  return (
+    content === INTERRUPT_MESSAGE ||
+    content === INTERRUPT_MESSAGE_FOR_TOOL_USE ||
+    content === CANCEL_MESSAGE ||
+    content === CANCEL_MESSAGE + MEMORY_CORRECTION_SUFFIX ||
+    content === REJECT_MESSAGE ||
+    content === REJECT_MESSAGE + MEMORY_CORRECTION_SUFFIX
+  )
+}
+
+type ResumeDropValidation = { ok: true } | { ok: false; reason: string }
+
+function isHumanResumeSource(message: Message): boolean {
+  if (message.origin === undefined) return true
+  if (typeof message.origin !== 'object' || message.origin === null)
+    return false
+  if (!('kind' in message.origin)) return false
+  return (
+    message.origin.kind === 'human' ||
+    message.origin.kind === 'auto-continuation'
+  )
+}
+
+function isInterruptedUserMessage(message: Message): boolean {
+  const content = message.message?.content
+  if (typeof content === 'string') {
+    return (
+      content === INTERRUPT_MESSAGE ||
+      content === INTERRUPT_MESSAGE_FOR_TOOL_USE
+    )
+  }
+  if (!Array.isArray(content) || content.length !== 1) return false
+  const block = content[0]
+  return (
+    block !== null &&
+    typeof block === 'object' &&
+    block.type === 'text' &&
+    (block.text === INTERRUPT_MESSAGE ||
+      block.text === INTERRUPT_MESSAGE_FOR_TOOL_USE)
+  )
+}
+
+function isSyntheticResumeError(message: Message): boolean {
+  if (message.type !== 'user') return false
+  const content = message.message?.content
+  const prefixes = [
+    INTERRUPT_MESSAGE,
+    INTERRUPT_MESSAGE_FOR_TOOL_USE,
+    CANCEL_MESSAGE,
+  ]
+  if (typeof content === 'string') {
+    return prefixes.some(prefix => content.startsWith(prefix))
+  }
+  if (!Array.isArray(content) || content.length === 0) return false
+  return content.every(block => {
+    const text =
+      block.type === 'text'
+        ? block.text
+        : block.type === 'tool_result' &&
+            block.is_error === true &&
+            typeof block.content === 'string'
+          ? block.content
+          : undefined
+    return (
+      typeof text === 'string' &&
+      prefixes.some(prefix => text.startsWith(prefix))
+    )
+  })
+}
+
+function isSpecialResumeToolError(message: Message): boolean {
+  const content = message.message?.content
+  if (!Array.isArray(content) || content.length === 0) return false
+  return content.every(
+    block =>
+      block.type === 'tool_result' &&
+      block.is_error === true &&
+      typeof block.content === 'string' &&
+      isResumeDropSpecialToolError(block.content),
+  )
+}
+
+function isToolResultOnlyResumeMessage(message: Message): boolean {
+  const content = message.message?.content
+  return (
+    Array.isArray(content) &&
+    content.length > 0 &&
+    content.every(
+      block =>
+        block !== null &&
+        typeof block === 'object' &&
+        block.type === 'tool_result',
+    )
+  )
+}
+
+function isSyntheticNoResponse(message: Message): boolean {
+  if (
+    message.type !== 'assistant' ||
+    message.message?.model !== SYNTHETIC_MODEL
+  ) {
+    return false
+  }
+  const content = message.message.content
+  return (
+    Array.isArray(content) &&
+    content.length === 1 &&
+    content[0]?.type === 'text' &&
+    content[0].text === NO_RESPONSE_REQUESTED
+  )
+}
+
+function isResumeFurnitureBeforeTurn(message: Message): boolean {
+  if (message.type === 'user') {
+    return (
+      isHumanResumeSource(message) &&
+      message.isCompactSummary !== true &&
+      (isInterruptedUserMessage(message) ||
+        isSpecialResumeToolError(message) ||
+        (message.isMeta === true && message.promptSource === undefined))
+    )
+  }
+  if (message.type === 'assistant') return isSyntheticNoResponse(message)
+  if (message.type === 'system' || message.type === 'progress') return true
+  return (
+    message.type === 'attachment' &&
+    message.attachment?.type !== 'mcp_resource' &&
+    message.attachment?.type !== 'structured_output' &&
+    RESUME_DROP_FURNITURE_ATTACHMENTS.has(message.attachment?.type ?? '')
+  )
+}
+
+function describeResumeDropEntry(message: Message, index: number): string {
+  const attachment =
+    message.type === 'attachment' ? ` (${message.attachment?.type})` : ''
+  return `entry ${index} [type=${message.type}${attachment}, uuid=${message.uuid}]`
+}
+
+export function validateResumeDropRange(
+  entries: Message[],
+  turnId: string,
+): ResumeDropValidation {
+  if (!RESUME_DROP_TURN_UUID.test(turnId)) {
+    return { ok: false, reason: `declared turn id is not a UUID: ${turnId}` }
+  }
+
+  let start = 0
+  while (
+    start < entries.length &&
+    isResumeFurnitureBeforeTurn(entries[start]!)
+  ) {
+    start++
+  }
+  if (start === entries.length) return { ok: true }
+
+  const first = entries[start]!
+  if (first.type !== 'user' || first.uuid !== turnId) {
+    return {
+      ok: false,
+      reason: `range does not start with the declared turn prompt; first discarded ${describeResumeDropEntry(first, start)}`,
+    }
+  }
+  if (
+    first.isMeta === true ||
+    first.isCompactSummary === true ||
+    first.stackedExpansion === true ||
+    isSyntheticResumeError(first) ||
+    isToolResultOnlyResumeMessage(first)
+  ) {
+    return {
+      ok: false,
+      reason: `declared turn id names a non-prompt user entry; ${describeResumeDropEntry(first, start)}`,
+    }
+  }
+  if (!isHumanResumeSource(first)) {
+    return {
+      ok: false,
+      reason: `declared turn id names an externally-sourced entry; ${describeResumeDropEntry(first, start)}`,
+    }
+  }
+  if (
+    entries
+      .slice(start)
+      .some(
+        entry =>
+          entry.type === 'attachment' &&
+          entry.attachment?.type === 'poll_events',
+      )
+  ) {
+    return { ok: false, reason: 'range contains a delivered poll-event record' }
+  }
+
+  for (let index = start + 1; index < entries.length; index++) {
+    const entry = entries[index]!
+    if (
+      entry.type === 'assistant' ||
+      entry.type === 'system' ||
+      entry.type === 'progress'
+    ) {
+      continue
+    }
+    if (entry.type === 'attachment') {
+      if (entry.attachment?.type === 'queued_command') {
+        return {
+          ok: false,
+          reason: `range contains absorbed queued content; ${describeResumeDropEntry(entry, index)}`,
+        }
+      }
+      if (
+        !RESUME_DROP_FURNITURE_ATTACHMENTS.has(entry.attachment?.type ?? '')
+      ) {
+        return {
+          ok: false,
+          reason: `range contains a non-furniture attachment; ${describeResumeDropEntry(entry, index)}`,
+        }
+      }
+      continue
+    }
+    if (entry.type !== 'user') {
+      return {
+        ok: false,
+        reason: `range contains an unrecognized entry; ${describeResumeDropEntry(entry, index)}`,
+      }
+    }
+    if (entry.uuid === turnId) continue
+    if (entry.isCompactSummary === true) {
+      return {
+        ok: false,
+        reason: `range contains a compaction summary; ${describeResumeDropEntry(entry, index)}`,
+      }
+    }
+    if (!isHumanResumeSource(entry)) {
+      return {
+        ok: false,
+        reason: `range contains an externally-sourced user entry; ${describeResumeDropEntry(entry, index)}`,
+      }
+    }
+    if (entry.stackedExpansion === true) continue
+    if (isInterruptedUserMessage(entry)) continue
+    if (isToolResultOnlyResumeMessage(entry)) continue
+    if (entry.isMeta === true && entry.promptSource !== undefined) {
+      return {
+        ok: false,
+        reason: `range contains a system-injected turn prompt; ${describeResumeDropEntry(entry, index)}`,
+      }
+    }
+    if (entry.isMeta === true) continue
+    return {
+      ok: false,
+      reason: `range contains a user entry not attributable to the declared turn; ${describeResumeDropEntry(entry, index)}`,
+    }
+  }
+
+  return { ok: true }
 }
 
 /**
@@ -483,6 +823,7 @@ export async function loadMessagesFromJsonlPath(path: string): Promise<{
 export async function loadConversationForResume(
   source: string | LogOption | undefined,
   sourceJsonlFile: string | undefined,
+  options: { replyOnResume?: boolean } = {},
 ): Promise<{
   messages: Message[]
   turnInterruptionState: TurnInterruptionState
@@ -587,7 +928,10 @@ export async function loadConversationForResume(
     restoreSkillStateFromMessages(messages!)
 
     // Deserialize messages to handle unresolved tool uses and ensure proper format
-    const deserialized = deserializeMessagesWithInterruptDetection(messages!)
+    const deserialized = deserializeMessagesWithInterruptDetection(
+      messages!,
+      options.replyOnResume === true,
+    )
     messages = deserialized.messages
 
     // Process session start hooks for resume

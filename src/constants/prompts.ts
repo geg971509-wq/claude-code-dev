@@ -445,6 +445,7 @@ export async function getSystemPrompt(
   model: string,
   additionalWorkingDirectories?: string[],
   mcpClients?: MCPServerConnection[],
+  options?: { excludeDynamicSections?: boolean },
 ): Promise<string[]> {
   if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
     return [
@@ -456,7 +457,9 @@ export async function getSystemPrompt(
   const [skillToolCommands, outputStyleConfig, envInfo] = await Promise.all([
     getSkillToolCommands(cwd),
     getOutputStyleConfig(),
-    computeSimpleEnvInfo(model, additionalWorkingDirectories),
+    options?.excludeDynamicSections
+      ? Promise.resolve(computeStaticEnvInfo(model))
+      : computeSimpleEnvInfo(model, additionalWorkingDirectories),
   ])
 
   const settings = getInitialSettings()
@@ -470,7 +473,7 @@ export async function getSystemPrompt(
     return [
       `\nYou are an autonomous agent. Use the available tools to do useful work.`,
       getSystemRemindersSection(),
-      await loadMemoryPrompt(),
+      options?.excludeDynamicSections ? null : await loadMemoryPrompt(),
       envInfo,
       getLanguageSection(settings.language),
       // When delta enabled, instructions are announced via persisted
@@ -478,7 +481,7 @@ export async function getSystemPrompt(
       isMcpInstructionsDeltaEnabled()
         ? null
         : getMcpInstructionsSection(mcpClients),
-      getScratchpadInstructions(),
+      options?.excludeDynamicSections ? null : getScratchpadInstructions(),
       SUMMARIZE_TOOL_RESULTS_SECTION,
       getProactiveSection(),
     ].filter(s => s !== null)
@@ -493,9 +496,13 @@ export async function getSystemPrompt(
     systemPromptSection('ant_model_override', () =>
       getAntModelOverrideSection(),
     ),
-    systemPromptSection('env_info_simple', () =>
-      computeSimpleEnvInfo(model, additionalWorkingDirectories),
-    ),
+    options?.excludeDynamicSections
+      ? systemPromptSection('env_info_static', () =>
+          computeStaticEnvInfo(model),
+        )
+      : systemPromptSection('env_info_simple', () =>
+          computeSimpleEnvInfo(model, additionalWorkingDirectories),
+        ),
     systemPromptSection('language', () =>
       getLanguageSection(settings.language),
     ),
@@ -539,8 +546,13 @@ export async function getSystemPrompt(
       : []),
   ]
 
-  const resolvedDynamicSections =
-    await resolveSystemPromptSections(dynamicSections)
+  const resolvedDynamicSections = await resolveSystemPromptSections(
+    options?.excludeDynamicSections
+      ? dynamicSections.filter(
+          section => section.name !== 'memory' && section.name !== 'scratchpad',
+        )
+      : dynamicSections,
+  )
 
   return [
     // --- Static content (cacheable) ---
@@ -636,8 +648,6 @@ export async function computeSimpleEnvInfo(
   modelId: string,
   additionalWorkingDirectories?: string[],
 ): Promise<string> {
-  const [isGit, unameSR] = await Promise.all([getIsGit(), getUnameSR()])
-
   // Undercover: strip all model name/ID references. See computeEnvInfo.
   // DCE: inline the USER_TYPE check at each site — do NOT hoist to a const.
   let modelDescription: string | null = null
@@ -655,24 +665,8 @@ export async function computeSimpleEnvInfo(
     ? `Assistant knowledge cutoff is ${cutoff}.`
     : null
 
-  const cwd = getCwd()
-  const isWorktree = getCurrentWorktreeSession() !== null
-
   const envItems = [
-    `Primary working directory: ${cwd}`,
-    isWorktree
-      ? `This is a git worktree — an isolated copy of the repository. Run all commands from this directory. Do NOT \`cd\` to the original repository root.`
-      : null,
-    [`Is a git repository: ${isGit}`],
-    additionalWorkingDirectories && additionalWorkingDirectories.length > 0
-      ? `Additional working directories:`
-      : null,
-    additionalWorkingDirectories && additionalWorkingDirectories.length > 0
-      ? additionalWorkingDirectories
-      : null,
-    `Platform: ${env.platform}`,
-    getShellInfoLine(),
-    `OS Version: ${unameSR}`,
+    ...(await computeDynamicEnvItems(additionalWorkingDirectories)),
     modelDescription,
     knowledgeCutoffMessage,
     process.env.USER_TYPE === 'ant' && isUndercover()
@@ -691,6 +685,65 @@ export async function computeSimpleEnvInfo(
     `You have been invoked in the following environment: `,
     ...prependBullets(envItems),
   ].join(`\n`)
+}
+
+async function computeDynamicEnvItems(
+  additionalWorkingDirectories?: string[],
+): Promise<Array<string | string[]>> {
+  const [isGit, unameSR] = await Promise.all([getIsGit(), getUnameSR()])
+  const isWorktree = getCurrentWorktreeSession() !== null
+  return [
+    `Primary working directory: ${getCwd()}`,
+    isWorktree
+      ? `This is a git worktree — an isolated copy of the repository. Run all commands from this directory. Do NOT \`cd\` to the original repository root.`
+      : null,
+    `Is a git repository: ${isGit}`,
+    additionalWorkingDirectories && additionalWorkingDirectories.length > 0
+      ? `Additional working directories:`
+      : null,
+    additionalWorkingDirectories && additionalWorkingDirectories.length > 0
+      ? additionalWorkingDirectories
+      : null,
+    `Platform: ${env.platform}`,
+    getShellInfoLine(),
+    `OS Version: ${unameSR}`,
+  ].filter(item => item !== null)
+}
+
+export async function computeDynamicEnvInfo(
+  additionalWorkingDirectories?: string[],
+): Promise<string> {
+  return [
+    `# Environment`,
+    `You have been invoked in the following environment: `,
+    ...prependBullets(
+      await computeDynamicEnvItems(additionalWorkingDirectories),
+    ),
+  ].join(`\n`)
+}
+
+export function computeStaticEnvInfo(modelId: string): string {
+  let modelDescription: string | null = null
+  if (!(process.env.USER_TYPE === 'ant' && isUndercover())) {
+    const marketingName = getDisplayNameForModel(modelId)
+    modelDescription = marketingName
+      ? `You are powered by the model named ${marketingName}. The exact model ID is ${modelId}.`
+      : `You are powered by the model ${modelId}.`
+  }
+
+  const cutoff = getKnowledgeCutoff(modelId)
+  const envItems = [
+    modelDescription,
+    cutoff ? `Assistant knowledge cutoff is ${cutoff}.` : null,
+    process.env.USER_TYPE === 'ant' && isUndercover()
+      ? null
+      : getLatestModelsLine(),
+    process.env.USER_TYPE === 'ant' && isUndercover()
+      ? null
+      : `Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains). Claude is also accessible via Claude in Chrome (a browsing agent), Claude in Excel (a spreadsheet agent), and Cowork (desktop automation for non-developers).`,
+  ].filter(item => item !== null)
+
+  return [`# Environment`, ...prependBullets(envItems)].join(`\n`)
 }
 
 // @[MODEL LAUNCH]: Add a knowledge cutoff date for the new model.
