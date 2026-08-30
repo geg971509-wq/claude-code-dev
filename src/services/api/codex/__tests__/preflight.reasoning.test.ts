@@ -19,7 +19,7 @@ describe('sanitizeCodexRequest reasoning replay', () => {
       include: ['reasoning.encrypted_content'],
     } as never)
 
-    expect(out.input).toEqual([
+    expect(out.input as unknown).toEqual([
       {
         type: 'reasoning',
         encrypted_content: 'encrypted-1',
