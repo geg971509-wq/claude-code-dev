@@ -94,8 +94,8 @@ describe('responseToCodexAssistantBlocks', () => {
   })
 
   test('uses output_text only when structured answer items are absent', () => {
-    expect(responseToCodexAssistantBlocks(makeResponse([], 'fallback'))).toEqual([
-      { type: 'text', text: 'fallback' },
-    ])
+    expect(
+      responseToCodexAssistantBlocks(makeResponse([], 'fallback')),
+    ).toEqual([{ type: 'text', text: 'fallback' }])
   })
 })
