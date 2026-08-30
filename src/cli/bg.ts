@@ -33,7 +33,13 @@ async function listStoredJobs(): Promise<SessionEntry[]> {
       const entry = jsonParse(
         await readFile(join(getSessionJobsDir(), file), 'utf-8'),
       ) as SessionEntry
-      if (entry && typeof entry.sessionId === 'string') jobs.push(entry)
+      if (
+        entry &&
+        typeof entry.sessionId === 'string' &&
+        typeof entry.cwd === 'string'
+      ) {
+        jobs.push(entry)
+      }
     } catch {
       // Corrupt job file — leave it in place for manual recovery.
     }
