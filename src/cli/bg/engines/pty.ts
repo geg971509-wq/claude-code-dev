@@ -61,6 +61,7 @@ export class PtyEngine implements BgEngine {
         CLAUDE_CODE_SESSION_KIND: 'bg',
         CLAUDE_CODE_SESSION_NAME: opts.sessionName,
         CLAUDE_CODE_SESSION_LOG: opts.logPath,
+        CLAUDE_CODE_SESSION_ARGS: JSON.stringify(opts.args),
         CLAUDE_CODE_SESSION_ENGINE: 'pty',
         CLAUDE_CODE_PTY_SOCKET: socketPath,
         CLAUDE_CODE_PTY_TOKEN: tokenPath,
