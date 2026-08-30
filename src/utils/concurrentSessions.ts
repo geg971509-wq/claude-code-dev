@@ -13,6 +13,7 @@ import { errorMessage, isFsInaccessible } from './errors.js'
 import { isProcessRunning } from './genericProcessUtils.js'
 import { getPlatform } from './platform.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
+import { atomicWriteFile } from './sessionStoragePortable.js'
 import { getAgentId } from './teammate.js'
 import { getUdsMessagingSocketPath } from './udsMessaging.js'
 
@@ -97,16 +98,24 @@ export async function registerSession(): Promise<boolean> {
     await chmod(dir, 0o700)
     const launchArgs = getSessionLaunchArgs()
     const launchMode = getSessionLaunchMode()
-    const existingJob = feature('BG_SESSIONS') && launchArgs
+    const existingJob = feature('BG_SESSIONS') && kind === 'bg'
       ? await readFile(join(dir, 'jobs', `${getSessionId()}.json`), 'utf8')
           .then(raw => jsonParse(raw) as Record<string, unknown>)
           .catch(() => undefined)
       : undefined
     const metadata = {
+      // The parent writes the durable job record before the child has
+      // necessarily registered its PID. Merge that record when available so
+      // child registration cannot erase user-facing metadata (notably
+      // --name), stable job IDs, worktree ownership, or launch intent.
+      ...(existingJob ?? {}),
       pid: process.pid,
       sessionId: getSessionId(),
       cwd: getOriginalCwd(),
-      startedAt: Date.now(),
+      startedAt:
+        typeof existingJob?.startedAt === 'number'
+          ? existingJob.startedAt
+          : Date.now(),
       kind,
       entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT,
       ...(feature('CROSS_SESSION_MESSAGING')
@@ -114,7 +123,10 @@ export async function registerSession(): Promise<boolean> {
         : {}),
       ...(feature('BG_SESSIONS')
         ? {
-            name: process.env.CLAUDE_CODE_SESSION_NAME,
+            name:
+              typeof existingJob?.name === 'string'
+                ? existingJob.name
+                : process.env.CLAUDE_CODE_SESSION_NAME,
             logPath: process.env.CLAUDE_CODE_SESSION_LOG,
             agent: process.env.CLAUDE_CODE_AGENT,
             args: launchArgs,
@@ -136,9 +148,11 @@ export async function registerSession(): Promise<boolean> {
                 : { mode: 'claude', args: launchArgs },
             routine: process.env.CLAUDE_CODE_SESSION_ROUTINE,
             intent: process.env.CLAUDE_CODE_SESSION_INTENT,
-            ...(existingJob?.worktreePath
-              ? { worktreePath: existingJob.worktreePath }
-              : {}),
+            // A routine with no prompt intentionally remains idle; all other
+            // registered background sessions are now running.
+            status:
+              existingJob?.status === 'idle' ? 'idle' : kind === 'bg' ? 'running' : existingJob?.status,
+            updatedAt: Date.now(),
         }
       : {}),
     }
@@ -151,7 +165,7 @@ export async function registerSession(): Promise<boolean> {
         const jobsDir = join(dir, 'jobs')
         await mkdir(jobsDir, { recursive: true, mode: 0o700 })
         await chmod(jobsDir, 0o700)
-        await writeFile(
+        await atomicWriteFile(
           join(jobsDir, `${metadata.sessionId}.json`),
           jsonStringify(metadata),
           { mode: 0o600 },
@@ -189,7 +203,43 @@ async function updatePidFile(patch: Record<string, unknown>): Promise<void> {
       string,
       unknown
     >
-    await writeFile(pidFile, jsonStringify({ ...data, ...patch }))
+    const updated = { ...data, ...patch }
+    await writeFile(pidFile, jsonStringify(updated))
+
+    // Keep the durable job envelope in lockstep with the PID registry. This
+    // matters for user renames and /resume: the durable file is what `ps`,
+    // `stop`, `respawn`, and `rm` use when the child is between registrations
+    // or has already exited. A session switch moves the record to the new
+    // filename while preserving its stable jobId.
+    if (feature('BG_SESSIONS') && typeof data.sessionId === 'string') {
+      const oldSessionId = data.sessionId
+      const newSessionId =
+        typeof updated.sessionId === 'string' ? updated.sessionId : oldSessionId
+      const oldJobPath = join(getSessionsDir(), 'jobs', `${oldSessionId}.json`)
+      const job = await readFile(oldJobPath, 'utf8')
+        .then(raw => jsonParse(raw) as Record<string, unknown>)
+        .catch(() => undefined)
+      if (job) {
+        const nextJob = {
+          ...job,
+          ...patch,
+          pid: process.pid,
+          sessionId: newSessionId,
+          updatedAt: Date.now(),
+        }
+        const newJobPath = join(
+          getSessionsDir(),
+          'jobs',
+          `${newSessionId}.json`,
+        )
+        await atomicWriteFile(newJobPath, jsonStringify(nextJob), {
+          mode: 0o600,
+        })
+        if (newJobPath !== oldJobPath) {
+          await unlink(oldJobPath).catch(() => {})
+        }
+      }
+    }
   } catch (e) {
     logForDebugging(
       `[concurrentSessions] updatePidFile failed: ${errorMessage(e)}`,

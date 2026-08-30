@@ -722,12 +722,14 @@ export async function handleBgStart(args: string[]): Promise<void> {
   const beforeTerminator = args.indexOf('--')
   const scan = beforeTerminator >= 0 ? args.slice(0, beforeTerminator) : args
   const execIndex = scan.findIndex(a => a === '--exec' || a.startsWith('--exec='))
+  const execToken = execIndex >= 0 ? scan[execIndex]! : undefined
+  const execUsesEquals = execToken?.startsWith('--exec=') ?? false
   const execCommand =
     execIndex < 0
       ? undefined
-      : scan[execIndex]!.startsWith('--exec=')
-        ? scan[execIndex]!.slice('--exec='.length)
-        : scan.slice(execIndex + 1).join(' ')
+      : execUsesEquals
+        ? execToken!.slice('--exec='.length)
+        : args.slice(execIndex + 1).join(' ')
 
   if (execIndex >= 0 && !execCommand?.trim()) {
     console.error('--exec requires a command.')
@@ -735,35 +737,50 @@ export async function handleBgStart(args: string[]): Promise<void> {
     return
   }
 
-  const routineIndex = scan.findIndex(a => a === '--routine' || a.startsWith('--routine='))
+  // In `--exec <command>` form the command consumes every remaining argv
+  // token, so flags after `--exec` are command text rather than Claude
+  // metadata. In `--exec=<command>` form, trailing options remain available
+  // for metadata parsing, matching the reference CLI's split behavior.
+  const execMetadataArgs =
+    execIndex < 0
+      ? scan
+      : execUsesEquals
+        ? args.slice(0, execIndex).concat(args.slice(execIndex + 1))
+        : args.slice(0, execIndex)
+  const execMetadataTerminator = execMetadataArgs.indexOf('--')
+  const execMetadataScan =
+    execMetadataTerminator >= 0
+      ? execMetadataArgs.slice(0, execMetadataTerminator)
+      : execMetadataArgs
+
+  const optionScan = execIndex >= 0 ? execMetadataScan : scan
+  const routineIndex = optionScan.findIndex(a => a === '--routine' || a.startsWith('--routine='))
   let routine: string | undefined
-  if (routineIndex >= 0) {
-    routine = scan[routineIndex]!.startsWith('--routine=')
-      ? scan[routineIndex]!.slice('--routine='.length)
-      : scan[routineIndex + 1]
+  if (routineIndex >= 0 && execIndex < 0) {
+    routine = optionScan[routineIndex]!.startsWith('--routine=')
+      ? optionScan[routineIndex]!.slice('--routine='.length)
+      : optionScan[routineIndex + 1]
     if (!routine || routine.startsWith('-')) {
       console.error('--routine requires a name.')
       process.exitCode = 1
       return
     }
   }
-  if (execIndex >= 0) routine = undefined
 
-  const nameIndex = scan.findIndex(a => a === '--name' || a === '-n' || a.startsWith('--name='))
+  const nameIndex = optionScan.findIndex(a => a === '--name' || a === '-n' || a.startsWith('--name='))
   const displayName =
     nameIndex < 0
       ? undefined
-      : scan[nameIndex]!.startsWith('--name=')
-        ? scan[nameIndex]!.slice('--name='.length)
-        : scan[nameIndex + 1]
+      : optionScan[nameIndex]!.startsWith('--name=')
+        ? optionScan[nameIndex]!.slice('--name='.length)
+        : optionScan[nameIndex + 1]
 
   // `--exec` consumes the remaining command text. Only the display name is
   // composable, matching the reference behavior; other Claude flags are not
   // silently forwarded to an unrelated shell command.
   if (execIndex >= 0) {
-    const ignored = scan.filter(
+    const ignored = optionScan.filter(
       (arg, index) =>
-        index !== execIndex &&
         !(index === nameIndex || index === nameIndex + 1) &&
         arg.startsWith('-') &&
         arg !== '--exec' &&
