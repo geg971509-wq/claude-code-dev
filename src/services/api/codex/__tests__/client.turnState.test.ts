@@ -5,10 +5,7 @@ import {
   getCodexClient,
 } from '../client.js'
 
-function createResponsesFixture(
-  id: string,
-  headers?: HeadersInit,
-): Response {
+function createResponsesFixture(id: string, headers?: HeadersInit): Response {
   return new Response(
     JSON.stringify({
       id,
