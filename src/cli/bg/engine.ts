@@ -20,6 +20,8 @@ export interface SessionEntry {
   updatedAt?: number
   bridgeSessionId?: string
   agent?: string
+  /** Original CLI arguments, persisted for `respawn`. */
+  args?: string[]
   tmuxSessionName?: string
   engine?: 'tmux' | 'detached' | 'pty'
   ptySocketPath?: string

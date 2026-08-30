@@ -23,6 +23,20 @@ function getSessionsDir(): string {
   return join(getClaudeConfigHomeDir(), 'sessions')
 }
 
+function getSessionLaunchArgs(): string[] | undefined {
+  if (!feature('BG_SESSIONS')) return undefined
+  const raw = process.env.CLAUDE_CODE_SESSION_ARGS
+  if (!raw) return undefined
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) && parsed.every(a => typeof a === 'string')
+      ? parsed
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Kind override from env. Set by the spawner (`claude --bg`, daemon
  * supervisor) so the child can register without the parent having to
@@ -75,30 +89,44 @@ export async function registerSession(): Promise<boolean> {
   try {
     await mkdir(dir, { recursive: true, mode: 0o700 })
     await chmod(dir, 0o700)
+    const launchArgs = getSessionLaunchArgs()
+    const metadata = {
+      pid: process.pid,
+      sessionId: getSessionId(),
+      cwd: getOriginalCwd(),
+      startedAt: Date.now(),
+      kind,
+      entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT,
+      ...(feature('CROSS_SESSION_MESSAGING')
+        ? { messagingSocketPath: getUdsMessagingSocketPath() }
+        : {}),
+      ...(feature('BG_SESSIONS')
+        ? {
+            name: process.env.CLAUDE_CODE_SESSION_NAME,
+            logPath: process.env.CLAUDE_CODE_SESSION_LOG,
+            agent: process.env.CLAUDE_CODE_AGENT,
+            args: launchArgs,
+            engine: process.env.CLAUDE_CODE_SESSION_ENGINE,
+            tmuxSessionName: process.env.CLAUDE_CODE_TMUX_SESSION,
+            ptySocketPath: process.env.CLAUDE_CODE_PTY_SOCKET,
+            ptyTokenPath: process.env.CLAUDE_CODE_PTY_TOKEN,
+          }
+        : {}),
+    }
     await writeFile(
       pidFile,
-      jsonStringify({
-        pid: process.pid,
-        sessionId: getSessionId(),
-        cwd: getOriginalCwd(),
-        startedAt: Date.now(),
-        kind,
-        entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT,
-        ...(feature('CROSS_SESSION_MESSAGING')
-          ? { messagingSocketPath: getUdsMessagingSocketPath() }
-          : {}),
-        ...(feature('BG_SESSIONS')
-          ? {
-              name: process.env.CLAUDE_CODE_SESSION_NAME,
-              logPath: process.env.CLAUDE_CODE_SESSION_LOG,
-              agent: process.env.CLAUDE_CODE_AGENT,
-              engine: process.env.CLAUDE_CODE_SESSION_ENGINE,
-              ptySocketPath: process.env.CLAUDE_CODE_PTY_SOCKET,
-              ptyTokenPath: process.env.CLAUDE_CODE_PTY_TOKEN,
-            }
-          : {}),
-      }),
+      jsonStringify(metadata),
     )
+    if (feature('BG_SESSIONS') && launchArgs) {
+      const jobsDir = join(dir, 'jobs')
+      await mkdir(jobsDir, { recursive: true, mode: 0o700 })
+      await chmod(jobsDir, 0o700)
+      await writeFile(
+        join(jobsDir, `${metadata.sessionId}.json`),
+        jsonStringify(metadata),
+        { mode: 0o600 },
+      )
+    }
     // --resume / /resume mutates getSessionId() via switchSession. Without
     // this, the PID file's sessionId goes stale and `claude ps` sparkline
     // reads the wrong transcript.
