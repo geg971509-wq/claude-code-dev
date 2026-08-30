@@ -760,6 +760,7 @@ export async function handleBgStart(args: string[]): Promise<void> {
   // or piped input. Tmux provides a virtual terminal so it works without -p.
   if (
     execIndex < 0 &&
+    !routine &&
     !engine.supportsInteractiveInput &&
     !pipedInput &&
     !filteredArgs.some(a => a === '-p' || a === '--print')
