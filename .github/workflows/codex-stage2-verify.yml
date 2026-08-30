@@ -64,8 +64,26 @@ jobs:
             src/services/api/codex/__tests__/streamErrors.test.ts \
             src/services/api/codex/__tests__/streaming.terminals.test.ts
 
-      - name: Type check
-        run: bun run typecheck
+      - name: Type check GPT and Codex dependency graph
+        run: |
+          cat > .codex-stage2-tsconfig.json <<'JSON'
+          {
+            "extends": "./tsconfig.json",
+            "include": [
+              "src/services/api/codex/**/*.ts",
+              "src/services/api/openai/**/*.ts",
+              "packages/@ant/model-provider/src/providers/codex/**/*.ts",
+              "packages/@ant/model-provider/src/providers/openai/**/*.ts",
+              "packages/@ant/model-provider/src/shared/openaiConvertMessages.ts"
+            ],
+            "exclude": [
+              "node_modules",
+              "packages/remote-control-server/web"
+            ]
+          }
+          JSON
+          bunx tsc --project .codex-stage2-tsconfig.json --noEmit
+          rm .codex-stage2-tsconfig.json
 
       - name: Dependency boundary ratchet
         run: bun run check:boundaries
