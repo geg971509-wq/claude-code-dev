@@ -932,6 +932,13 @@ function stripManagedSessionId(args: string[]): string[] {
   const result: string[] = []
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!
+    // Everything after `--` is literal prompt/command text. In particular,
+    // a prompt may intentionally be the string `--session-id` and must not
+    // be consumed as the value of a managed option.
+    if (arg === '--') {
+      result.push(...args.slice(index))
+      break
+    }
     if (arg.startsWith('--session-id=')) continue
     if (arg === '--session-id') {
       if (args[index + 1] !== undefined) index++
@@ -1208,9 +1215,15 @@ export async function handleBgStart(args: string[]): Promise<void> {
       console.error(`warning: --exec ignores ${ignored.join(' ')} (only --name composes)`)
   }
 
-  const filteredArgs = (execIndex >= 0 ? [] : args).filter(
-    a => a !== '--bg' && a !== '--background' && a !== '--pipe',
-  )
+  const filteredArgs =
+    execIndex >= 0
+      ? []
+      : args.filter((arg, index) => {
+          // Preserve all literal arguments after the Commander terminator.
+          // Control flags are only recognized before `--`.
+          if (beforeTerminator >= 0 && index > beforeTerminator) return true
+          return arg !== '--bg' && arg !== '--background' && arg !== '--pipe'
+        })
   const pipedInput = execIndex >= 0 ? '' : await readBackgroundStdin()
 
   // Engines without interactive TTY input (e.g. detached) require -p/--print
