@@ -118,14 +118,22 @@ export async function registerSession(): Promise<boolean> {
       jsonStringify(metadata),
     )
     if (feature('BG_SESSIONS') && launchArgs) {
-      const jobsDir = join(dir, 'jobs')
-      await mkdir(jobsDir, { recursive: true, mode: 0o700 })
-      await chmod(jobsDir, 0o700)
-      await writeFile(
-        join(jobsDir, `${metadata.sessionId}.json`),
-        jsonStringify(metadata),
-        { mode: 0o600 },
-      )
+      try {
+        const jobsDir = join(dir, 'jobs')
+        await mkdir(jobsDir, { recursive: true, mode: 0o700 })
+        await chmod(jobsDir, 0o700)
+        await writeFile(
+          join(jobsDir, `${metadata.sessionId}.json`),
+          jsonStringify(metadata),
+          { mode: 0o600 },
+        )
+      } catch (e) {
+        // Job persistence is an enhancement; a failure must not make an
+        // otherwise successful PID registration look like a failed session.
+        logForDebugging(
+          `[concurrentSessions] job persistence failed: ${errorMessage(e)}`,
+        )
+      }
     }
     // --resume / /resume mutates getSessionId() via switchSession. Without
     // this, the PID file's sessionId goes stale and `claude ps` sparkline
