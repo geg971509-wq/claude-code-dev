@@ -26,6 +26,18 @@ export interface SessionEntry {
   engine?: 'tmux' | 'detached' | 'pty'
   ptySocketPath?: string
   ptyTokenPath?: string
+  /** Stable short identifier used by `attach`, `logs`, `stop`, `respawn`, and `rm`. */
+  jobId?: string
+  /** Reference-compatible launch metadata for respawn and recovery. */
+  launch?:
+    | { mode: 'claude'; args: string[] }
+    | { mode: 'exec'; command: string }
+  routine?: string
+  intent?: string
+  worktreePath?: string
+  worktreeOwnershipToken?: string
+  exitCode?: number | null
+  error?: string
 }
 
 export interface BgStartOptions {
@@ -34,6 +46,12 @@ export interface BgStartOptions {
   env: Record<string, string | undefined>
   logPath: string
   cwd: string
+  launch?:
+    | { mode: 'claude' }
+    | { mode: 'exec'; command: string }
+  routine?: string
+  intent?: string
+  sessionId?: string
 }
 
 export interface BgStartResult {

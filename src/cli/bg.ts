@@ -8,6 +8,7 @@ import { jsonParse } from '../utils/slowOperations.js'
 import { peekForStdinData } from '../utils/process.js'
 import { selectEngine } from './bg/engines/index.js'
 import type { BgEngine, SessionEntry } from './bg/engine.js'
+import { writeJobRecord, type BgLaunch } from './bg/jobStore.js'
 
 export type { SessionEntry } from './bg/engine.js'
 
@@ -577,26 +578,17 @@ export async function rmHandler(target: string | undefined): Promise<void> {
 
 const MAX_BACKGROUND_STDIN_BYTES = 256 * 1024
 
-/**
- * Read a piped prompt before detaching the background child.
- *
- * Background engines intentionally do not inherit stdin: detached children
- * must never compete with the parent CLI for terminal input. When the caller
- * supplies a pipe, consume it here and pass the resulting prompt as a normal
- * positional argument instead.
- */
 async function readBackgroundStdin(): Promise<string> {
   if (process.stdin.isTTY) return ''
-
   let data = ''
   let truncated = false
   const onData = (chunk: string | Buffer): void => {
     const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
-    if (data.length >= MAX_BACKGROUND_STDIN_BYTES) {
+    const remaining = MAX_BACKGROUND_STDIN_BYTES - data.length
+    if (remaining <= 0) {
       truncated = true
       return
     }
-    const remaining = MAX_BACKGROUND_STDIN_BYTES - data.length
     if (text.length > remaining) {
       data += text.slice(0, remaining)
       truncated = true
@@ -604,20 +596,30 @@ async function readBackgroundStdin(): Promise<string> {
     }
     data += text
   }
-
   process.stdin.setEncoding('utf8')
   process.stdin.on('data', onData)
   const timedOut = await peekForStdinData(process.stdin, 3_000)
   process.stdin.off('data', onData)
-
   if (timedOut && data.length === 0) return ''
-  if (truncated) {
-    console.error(
-      `Warning: piped background input exceeds ${MAX_BACKGROUND_STDIN_BYTES} bytes; truncated.`,
-    )
-  }
+  if (truncated)
+    console.error(`Warning: piped background input exceeds ${MAX_BACKGROUND_STDIN_BYTES} bytes; truncated.`)
   return data.replace(/\r?\n$/, '')
 }
+
+function stripManagedSessionId(args: string[]): string[] {
+  const result: string[] = []
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!
+    if (arg.startsWith('--session-id=')) continue
+    if (arg === '--session-id') {
+      if (args[index + 1] !== undefined) index++
+      continue
+    }
+    result.push(arg)
+  }
+  return result
+}
+
 /**
  * `claude daemon bg [args]` — start a background session.
  *
@@ -627,23 +629,67 @@ async function readBackgroundStdin(): Promise<string> {
 export async function handleBgStart(args: string[]): Promise<void> {
   const engine = await selectEngine()
 
-  // Strip dispatch-only flags before spawning the child. In particular,
-  // --pipe is a background launcher hint, not a main-session option.
-  const filteredArgs = args.filter(
+  const beforeTerminator = args.indexOf('--')
+  const scan = beforeTerminator >= 0 ? args.slice(0, beforeTerminator) : args
+  const execIndex = scan.findIndex(a => a === '--exec' || a.startsWith('--exec='))
+  const execCommand =
+    execIndex < 0
+      ? undefined
+      : scan[execIndex]!.startsWith('--exec=')
+        ? scan[execIndex]!.slice('--exec='.length)
+        : scan.slice(execIndex + 1).join(' ')
+
+  if (execIndex >= 0 && !execCommand?.trim()) {
+    console.error('--exec requires a command.')
+    process.exitCode = 1
+    return
+  }
+
+  const routineIndex = scan.findIndex(a => a === '--routine' || a.startsWith('--routine='))
+  let routine: string | undefined
+  if (routineIndex >= 0) {
+    routine = scan[routineIndex]!.startsWith('--routine=')
+      ? scan[routineIndex]!.slice('--routine='.length)
+      : scan[routineIndex + 1]
+    if (!routine || routine.startsWith('-')) {
+      console.error('--routine requires a name.')
+      process.exitCode = 1
+      return
+    }
+  }
+
+  const nameIndex = scan.findIndex(a => a === '--name' || a === '-n' || a.startsWith('--name='))
+  const displayName =
+    nameIndex < 0
+      ? undefined
+      : scan[nameIndex]!.startsWith('--name=')
+        ? scan[nameIndex]!.slice('--name='.length)
+        : scan[nameIndex + 1]
+
+  // `--exec` consumes the remaining command text. Only the display name is
+  // composable, matching the reference behavior; other Claude flags are not
+  // silently forwarded to an unrelated shell command.
+  if (execIndex >= 0) {
+    const ignored = scan.filter(
+      (arg, index) =>
+        index !== execIndex &&
+        !(index === nameIndex || index === nameIndex + 1) &&
+        arg !== '--bg' &&
+        arg !== '--background',
+    )
+    if (ignored.length > 0)
+      console.error(`warning: --exec ignores ${ignored.join(' ')} (only --name composes)`)
+  }
+
+  const filteredArgs = (execIndex >= 0 ? [] : args).filter(
     a => a !== '--bg' && a !== '--background' && a !== '--pipe',
   )
-  const pipedInput = await readBackgroundStdin()
-
-  // Reference behavior reads non-TTY stdin in the parent and appends it after
-  // the user's explicit arguments. `--` keeps piped text from being parsed as
-  // another option by Commander in the child process.
-  if (pipedInput) {
-    filteredArgs.push('--', pipedInput)
-  }
+  const pipedInput = execIndex >= 0 ? '' : await readBackgroundStdin()
 
   // Engines without interactive TTY input (e.g. detached) require -p/--print
   // or piped input. Tmux provides a virtual terminal so it works without -p.
   if (
+    execIndex < 0 &&
     !engine.supportsInteractiveInput &&
     !pipedInput &&
     !filteredArgs.some(a => a === '-p' || a === '--print')
@@ -665,7 +711,9 @@ export async function handleBgStart(args: string[]): Promise<void> {
     return
   }
 
-  const sessionName = `claude-bg-${randomUUID().slice(0, 8)}`
+  const sessionId = randomUUID()
+  const jobId = sessionId.slice(0, 8)
+  const sessionName = displayName || `claude-bg-${jobId}`
   const logPath = join(
     getClaudeConfigHomeDir(),
     'sessions',
@@ -674,23 +722,56 @@ export async function handleBgStart(args: string[]): Promise<void> {
   )
 
   try {
+    const launch: BgLaunch =
+      execIndex >= 0
+        ? { mode: 'exec', command: execCommand!.trim() }
+        : { mode: 'claude', args: filteredArgs }
+    const managedArgs =
+      execIndex >= 0
+        ? []
+        : ['--session-id', sessionId, ...stripManagedSessionId(filteredArgs)]
+    if (pipedInput) managedArgs.push('--', pipedInput)
+
     const result = await engine.start({
       sessionName,
-      args: filteredArgs,
+      args: managedArgs,
       env: { ...process.env },
       logPath,
       cwd: process.cwd(),
+      launch,
+      routine,
+      intent: execCommand?.trim() || (pipedInput || undefined),
+      sessionId,
     })
 
-    console.log(`Background session started: ${result.sessionName}`)
+    await writeJobRecord({
+      pid: result.pid,
+      sessionId,
+      jobId,
+      cwd: process.cwd(),
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      kind: 'bg',
+      name: displayName || sessionName,
+      logPath: result.logPath,
+      engine: result.engineUsed,
+      tmuxSessionName: result.engineUsed === 'tmux' ? sessionName : undefined,
+      routine,
+      intent: execCommand?.trim() || (pipedInput || undefined),
+      launch,
+      args: managedArgs,
+      status: routine && !execCommand && !pipedInput ? 'idle' : 'starting',
+    })
+
+    console.log(`Background session started: ${jobId}`)
     console.log(`  Engine: ${result.engineUsed}`)
     console.log(`  Log: ${result.logPath}`)
     console.log()
     console.log(
-      `Use \`claude daemon attach ${result.sessionName}\` to reconnect.`,
+      `Use \`claude daemon attach ${jobId}\` to reconnect.`,
     )
     console.log(`Use \`claude daemon status\` to check status.`)
-    console.log(`Use \`claude daemon kill ${result.sessionName}\` to stop.`)
+    console.log(`Use \`claude daemon kill ${jobId}\` to stop.`)
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e))
     process.exitCode = 1

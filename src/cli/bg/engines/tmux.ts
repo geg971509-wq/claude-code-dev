@@ -1,6 +1,7 @@
 import { spawnSync } from 'child_process'
 import { execFileNoThrow } from '../../../utils/execFileNoThrow.js'
 import { buildCliLaunch, quoteCliLaunch } from '../../../utils/cliLaunch.js'
+import { buildShellLaunch } from '../launch.js'
 import type {
   BgEngine,
   BgStartOptions,
@@ -18,31 +19,31 @@ export class TmuxEngine implements BgEngine {
   }
 
   async start(opts: BgStartOptions): Promise<BgStartResult> {
-    const launch = buildCliLaunch(opts.args, {
-      env: {
-        ...opts.env,
-        CLAUDE_CODE_SESSION_KIND: 'bg',
-        CLAUDE_CODE_SESSION_NAME: opts.sessionName,
-        CLAUDE_CODE_SESSION_LOG: opts.logPath,
-        CLAUDE_CODE_SESSION_ARGS: JSON.stringify(opts.args),
-        CLAUDE_CODE_TMUX_SESSION: opts.sessionName,
-      } as NodeJS.ProcessEnv,
-    })
-
-    const cmd = quoteCliLaunch(launch)
-
+    const env: NodeJS.ProcessEnv = {
+      ...opts.env,
+      CLAUDE_CODE_SESSION_KIND: 'bg',
+      CLAUDE_CODE_SESSION_NAME: opts.sessionName,
+      CLAUDE_CODE_SESSION_LOG: opts.logPath,
+      CLAUDE_CODE_SESSION_ARGS: JSON.stringify(opts.args),
+      CLAUDE_CODE_TMUX_SESSION: opts.sessionName,
+      ...(opts.sessionId ? { CLAUDE_CODE_SESSION_ID: opts.sessionId } : {}),
+      ...(opts.routine ? { CLAUDE_CODE_SESSION_ROUTINE: opts.routine } : {}),
+      ...(opts.intent ? { CLAUDE_CODE_SESSION_INTENT: opts.intent } : {}),
+      CLAUDE_CODE_SESSION_LAUNCH_MODE: opts.launch?.mode ?? 'claude',
+      ...(opts.launch?.mode === 'exec'
+        ? { CLAUDE_CODE_SESSION_EXEC: opts.launch.command }
+        : {}),
+    }
+    const launch =
+      opts.launch?.mode === 'exec'
+        ? buildShellLaunch(opts.launch.command, env)
+        : buildCliLaunch(opts.args, { env })
     const result = spawnSync(
       'tmux',
-      ['new-session', '-d', '-s', opts.sessionName, cmd],
-      { stdio: 'inherit', env: launch.env },
+      ['new-session', '-d', '-s', opts.sessionName, quoteCliLaunch(launch)],
+      { stdio: 'inherit', env: launch.env, cwd: opts.cwd },
     )
-
-    if (result.status !== 0) {
-      throw new Error('Failed to create tmux session.')
-    }
-
-    // tmux doesn't directly report the child PID; we return 0.
-    // The actual session process writes its own PID file.
+    if (result.status !== 0) throw new Error('Failed to create tmux session.')
     return {
       pid: 0,
       sessionName: opts.sessionName,
@@ -52,20 +53,12 @@ export class TmuxEngine implements BgEngine {
   }
 
   async attach(session: SessionEntry): Promise<void> {
-    if (!session.tmuxSessionName) {
+    if (!session.tmuxSessionName)
       throw new Error(`Session ${session.sessionId} has no tmux session name.`)
-    }
-
-    const result = spawnSync(
-      'tmux',
-      ['attach-session', '-t', session.tmuxSessionName],
-      { stdio: 'inherit' },
-    )
-
-    if (result.status !== 0) {
-      throw new Error(
-        `Failed to attach to tmux session '${session.tmuxSessionName}'.`,
-      )
-    }
+    const result = spawnSync('tmux', ['attach-session', '-t', session.tmuxSessionName], {
+      stdio: 'inherit',
+    })
+    if (result.status !== 0)
+      throw new Error(`Failed to attach to tmux session '${session.tmuxSessionName}'.`)
   }
 }

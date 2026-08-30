@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process'
 import { mkdir, rm } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { buildCliLaunch } from '../../../utils/cliLaunch.js'
+import { buildShellLaunch } from '../launch.js'
 import { getClaudeConfigHomeDir } from '../../../utils/envUtils.js'
 import { atomicWriteFile } from '../../../utils/sessionStoragePortable.js'
 import { jsonStringify } from '../../../utils/slowOperations.js'
@@ -42,31 +43,35 @@ export class PtyEngine implements BgEngine {
   }
 
   async start(opts: BgStartOptions): Promise<BgStartResult> {
-    const hostDir = join(
-      getClaudeConfigHomeDir(),
-      'sessions',
-      'pty',
-      opts.sessionName,
-    )
+    const hostDir = join(getClaudeConfigHomeDir(), 'sessions', 'pty', opts.sessionName)
     const socketPath = join(hostDir, 'host.sock')
     const tokenPath = join(hostDir, 'host.token')
     const readyPath = join(hostDir, 'host.ready.json')
     const ackPath = join(hostDir, 'host.ready.ack')
     const configPath = join(hostDir, 'host.config.json')
-    await mkdir(dirname(opts.logPath), { recursive: true, mode: 0o700 })
     await mkdir(hostDir, { recursive: true, mode: 0o700 })
-    const launch = buildCliLaunch(opts.args, {
-      env: {
-        ...opts.env,
-        CLAUDE_CODE_SESSION_KIND: 'bg',
-        CLAUDE_CODE_SESSION_NAME: opts.sessionName,
-        CLAUDE_CODE_SESSION_LOG: opts.logPath,
-        CLAUDE_CODE_SESSION_ARGS: JSON.stringify(opts.args),
-        CLAUDE_CODE_SESSION_ENGINE: 'pty',
-        CLAUDE_CODE_PTY_SOCKET: socketPath,
-        CLAUDE_CODE_PTY_TOKEN: tokenPath,
-      },
-    })
+
+    const env: NodeJS.ProcessEnv = {
+      ...opts.env,
+      CLAUDE_CODE_SESSION_KIND: 'bg',
+      CLAUDE_CODE_SESSION_NAME: opts.sessionName,
+      CLAUDE_CODE_SESSION_LOG: opts.logPath,
+      CLAUDE_CODE_SESSION_ARGS: JSON.stringify(opts.args),
+      CLAUDE_CODE_SESSION_ENGINE: 'pty',
+      CLAUDE_CODE_PTY_SOCKET: socketPath,
+      CLAUDE_CODE_PTY_TOKEN: tokenPath,
+      ...(opts.sessionId ? { CLAUDE_CODE_SESSION_ID: opts.sessionId } : {}),
+      ...(opts.routine ? { CLAUDE_CODE_SESSION_ROUTINE: opts.routine } : {}),
+      ...(opts.intent ? { CLAUDE_CODE_SESSION_INTENT: opts.intent } : {}),
+      CLAUDE_CODE_SESSION_LAUNCH_MODE: opts.launch?.mode ?? 'claude',
+      ...(opts.launch?.mode === 'exec'
+        ? { CLAUDE_CODE_SESSION_EXEC: opts.launch.command }
+        : {}),
+    }
+    const launch =
+      opts.launch?.mode === 'exec'
+        ? buildShellLaunch(opts.launch.command, env)
+        : buildCliLaunch(opts.args, { env })
     const config: PtyHostConfig = {
       version: 1,
       readyPath,
@@ -93,12 +98,7 @@ export class PtyEngine implements BgEngine {
       const pid = await waitForReady(readyPath)
       await atomicWriteFile(ackPath, '', { mode: 0o600 })
       await rm(readyPath, { force: true })
-      return {
-        pid,
-        sessionName: opts.sessionName,
-        logPath: opts.logPath,
-        engineUsed: 'pty',
-      }
+      return { pid, sessionName: opts.sessionName, logPath: opts.logPath, engineUsed: 'pty' }
     } catch (error) {
       host.kill('SIGTERM')
       await rm(hostDir, { recursive: true, force: true })
