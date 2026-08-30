@@ -89,6 +89,23 @@ export async function listLiveSessions(): Promise<SessionEntry[]> {
     }
   }
 
+  // `--exec` has no Claude child to write the normal PID registry file. Use
+  // the durable job record as the source of truth for those sessions (and as
+  // a short startup bridge for tmux-backed Claude jobs).
+  const storedJobs = await listStoredJobs()
+  for (const job of storedJobs) {
+    if (sessions.some(session => session.sessionId === job.sessionId)) continue
+    const live =
+      resolveSessionEngine(job) === 'tmux' && job.tmuxSessionName
+        ? spawnSync('tmux', ['has-session', '-t', job.tmuxSessionName], {
+            stdio: 'ignore',
+          }).status === 0
+        : Number.isSafeInteger(job.pid) && job.pid > 1 && isProcessRunning(job.pid)
+    if (live) sessions.push(job)
+    else if (job.status === 'starting' || job.status === 'running')
+      void writeJobRecord({ ...job, status: 'exited', updatedAt: Date.now() }).catch(() => {})
+  }
+
   return sessions
 }
 
@@ -187,6 +204,7 @@ export async function psHandler(_args: string[]): Promise<void> {
   for (const s of sessions) {
     const engineType = resolveSessionEngine(s)
     const parts: string[] = [
+      `  ID: ${s.jobId ?? s.sessionId.slice(0, 8)}`,
       `  PID: ${s.pid}`,
       `  Kind: ${s.kind}`,
       `  Engine: ${engineType}`,
@@ -195,6 +213,7 @@ export async function psHandler(_args: string[]): Promise<void> {
     ]
 
     if (s.name) parts.push(`  Name: ${s.name}`)
+    if (s.routine) parts.push(`  Routine: ${s.routine}`)
     if (s.startedAt) parts.push(`  Started: ${formatTime(s.startedAt)}`)
     if (s.status) parts.push(`  Status: ${s.status}`)
     if (s.waitingFor) parts.push(`  Waiting for: ${s.waitingFor}`)
