@@ -297,15 +297,55 @@ async function doRefresh(stored: CodexStoredAuth): Promise<CodexStoredAuth> {
   return next
 }
 
-export async function refreshCodexAuthIfNeeded(): Promise<CodexStoredAuth | null> {
-  const stored = readCodexAuth()
-  if (!stored) return null
-  if (!needsRefresh(stored)) return stored
+function startRefresh(stored: CodexStoredAuth): Promise<CodexStoredAuth> {
   if (refreshInFlight) return refreshInFlight
   refreshInFlight = doRefresh(stored).finally(() => {
     refreshInFlight = null
   })
   return refreshInFlight
+}
+
+export async function refreshCodexAuthIfNeeded(): Promise<CodexStoredAuth | null> {
+  const stored = readCodexAuth()
+  if (!stored) return null
+  if (!needsRefresh(stored)) return stored
+  return startRefresh(stored)
+}
+
+/**
+ * Recover once after the Codex backend rejects a subscription bearer.
+ *
+ * Expiry claims are advisory: a token may be revoked server-side while still
+ * looking fresh locally. Match Codex by reloading shared credentials first,
+ * then forcing one refresh only when the rejected token is still current.
+ */
+export async function refreshCodexAuthAfterUnauthorized(
+  rejectedAccessToken?: string,
+): Promise<CodexStoredAuth | null> {
+  if (!isCodexSubscriptionAuth()) {
+    return readCodexAuth()
+  }
+
+  const stored = readCodexAuth()
+  if (!stored) return null
+
+  if (
+    rejectedAccessToken &&
+    stored.accessToken &&
+    stored.accessToken !== rejectedAccessToken
+  ) {
+    logForDebugging(
+      '[Codex] Reusing credentials rotated by another request after 401',
+    )
+    return stored
+  }
+
+  if (!stored.refreshToken) {
+    return stored
+  }
+
+  logForDebugging('[Codex] Refreshing subscription credentials after 401')
+  return startRefresh(stored)
 }
 
 export async function resolveCodexRequestContext(): Promise<CodexRequestContext> {

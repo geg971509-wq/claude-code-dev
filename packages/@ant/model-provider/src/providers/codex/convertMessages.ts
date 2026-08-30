@@ -10,6 +10,9 @@ import { normalizeCodexCallId, resolveCodexCallId } from './callIds.js'
 type ContentBlock = {
   type: string
   text?: string
+  thinking?: string
+  signature?: string
+  data?: string
   source?: {
     type?: string
     data?: string
@@ -206,6 +209,32 @@ function pushAssistantMessage(
   } as unknown as ResponseInputItem)
 }
 
+function pushReasoningItem(
+  items: ResponseInputItem[],
+  block: ContentBlock,
+): void {
+  const encryptedContent =
+    typeof block.signature === 'string' && block.signature.length > 0
+      ? block.signature
+      : typeof block.data === 'string' && block.data.length > 0
+        ? block.data
+        : undefined
+  if (!encryptedContent) {
+    return
+  }
+
+  const summaryText =
+    typeof block.thinking === 'string' ? block.thinking.trim() : ''
+  items.push({
+    type: 'reasoning',
+    encrypted_content: encryptedContent,
+    summary:
+      summaryText.length > 0
+        ? [{ type: 'summary_text', text: summaryText }]
+        : [],
+  } as unknown as ResponseInputItem)
+}
+
 function stringifyToolInput(input: unknown): string {
   if (typeof input === 'string') {
     return input
@@ -324,6 +353,13 @@ function convertAssistantContentToInputItems(
   for (const block of content) {
     if (typeof block === 'string') {
       textParts.push(block)
+      continue
+    }
+
+    if (block.type === 'thinking' || block.type === 'redacted_thinking') {
+      pushAssistantMessage(items, textParts)
+      textParts.length = 0
+      pushReasoningItem(items, block)
       continue
     }
 

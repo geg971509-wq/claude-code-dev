@@ -84,6 +84,42 @@ function sanitizeFunctionCallOutputItem(
   } as ResponseInputItem
 }
 
+function sanitizeReasoningItem(
+  item: Record<string, unknown>,
+): ResponseInputItem {
+  const encryptedContent = assertString(
+    item.encrypted_content,
+    'reasoning.encrypted_content',
+  )
+  const summary = item.summary ?? []
+
+  if (encryptedContent.length === 0) {
+    throw new Error(
+      'Codex preflight: reasoning.encrypted_content is required for store:false replay.',
+    )
+  }
+  if (
+    !Array.isArray(summary) ||
+    !summary.every(
+      part =>
+        isRecord(part) &&
+        part.type === 'summary_text' &&
+        typeof part.text === 'string',
+    )
+  ) {
+    throw new Error(
+      'Codex preflight: reasoning.summary must contain summary_text items.',
+    )
+  }
+
+  return {
+    ...item,
+    type: 'reasoning',
+    encrypted_content: encryptedContent,
+    summary,
+  } as unknown as ResponseInputItem
+}
+
 function sanitizeInputItem(item: unknown): ResponseInputItem {
   if (!isRecord(item) || typeof item.type !== 'string') {
     throw new Error('Codex preflight: each input item requires a type.')
@@ -96,6 +132,8 @@ function sanitizeInputItem(item: unknown): ResponseInputItem {
       return sanitizeFunctionCallItem(item)
     case 'function_call_output':
       return sanitizeFunctionCallOutputItem(item)
+    case 'reasoning':
+      return sanitizeReasoningItem(item)
     default:
       throw new Error(
         `Codex preflight: unsupported input item type "${item.type}".`,

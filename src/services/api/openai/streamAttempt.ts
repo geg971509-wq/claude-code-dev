@@ -8,7 +8,10 @@ import {
   parseRetryAfterMs,
 } from '@ant/model-provider'
 import { getOrCreateUserID } from '../../../utils/config.js'
-import { isChatGPTAuthEnabled } from './chatgptAuth.js'
+import {
+  isChatGPTAuthEnabled,
+  refreshChatGPTAuthAfterUnauthorized,
+} from './chatgptAuth.js'
 import { getOpenAIClient } from './client.js'
 import { applyKimiAuthToEnv, isKimiAuthEnabled } from './kimiAuth.js'
 import { getOfficialOpenAIPromptCacheKey } from './openaiShared.js'
@@ -28,6 +31,10 @@ import {
   type OpenAIStreamAttempt,
   type ResponsesReasoningEffort,
 } from './responsesAdapter.js'
+import {
+  applyCodexReasoningToRequest,
+  resolveCodexResponsesReasoningEffort,
+} from './codexReasoning.js'
 
 export type OpenAIStreamRequest = {
   model: string
@@ -48,6 +55,38 @@ export type PreparedOpenAIStreamRequest = {
   route: OpenAIRawStreamRoute
   promptCacheKey?: string
   createAttempt: (signal: AbortSignal) => Promise<OpenAIStreamAttempt>
+}
+
+function getHttpErrorStatus(error: unknown): number | null {
+  if (
+    error &&
+    typeof error === 'object' &&
+    typeof (error as { status?: unknown }).status === 'number'
+  ) {
+    return (error as { status: number }).status
+  }
+  return null
+}
+
+function normalizeBuiltResponsesReasoning<T extends object>(
+  builtRequest: T,
+  model: string,
+  effort: ResponsesReasoningEffort | undefined,
+): T {
+  const requestRecord = builtRequest as Record<string, unknown>
+  if (effort) {
+    // Builders retain legacy compatibility transforms. Reset to the resolved
+    // model-catalog value before the shared Codex normalizer decides whether a
+    // summary parameter is valid for this effort.
+    requestRecord.reasoning = { effort }
+  } else {
+    delete requestRecord.reasoning
+  }
+  applyCodexReasoningToRequest(requestRecord, {
+    model,
+    provider: 'openai',
+  })
+  return builtRequest
 }
 
 export function prepareOpenAIStreamRequest(
@@ -74,43 +113,72 @@ export function prepareOpenAIStreamRequest(
   const promptCacheKey = defaultPromptCacheKey
     ? (resolveOpenAIPromptCacheKey() ?? defaultPromptCacheKey)
     : undefined
+  const responsesReasoningEffort =
+    route === 'chat-completions'
+      ? request.reasoningEffort
+      : (resolveCodexResponsesReasoningEffort({
+          model: request.model,
+          configured: request.reasoningEffort,
+          provider: 'openai',
+        }) as ResponsesReasoningEffort | undefined)
 
   return {
     route,
     promptCacheKey,
     createAttempt: async signal => {
       if (useChatGPTResponses) {
-        return createChatGPTResponsesStream({
-          request: buildChatGPTResponsesRequest({
+        const chatGPTRequest = normalizeBuiltResponsesReasoning(
+          buildChatGPTResponsesRequest({
             model: request.model,
             messages: request.messages,
             tools: request.tools,
             toolChoice: request.toolChoice,
-            reasoningEffort: request.reasoningEffort,
+            reasoningEffort: responsesReasoningEffort,
             promptCacheKey,
             sessionId,
             // Inject here so buildChatGPTResponsesRequest stays I/O-free.
             installationId: getOrCreateUserID(),
             outputFormat: request.outputFormat,
           }),
-          signal,
-          sessionId,
-          fetchOverride: request.fetchOverride,
-        })
+          request.model,
+          responsesReasoningEffort,
+        )
+        const createChatGPTAttempt = () =>
+          createChatGPTResponsesStream({
+            request: chatGPTRequest,
+            signal,
+            sessionId,
+            fetchOverride: request.fetchOverride,
+          })
+
+        try {
+          return await createChatGPTAttempt()
+        } catch (error) {
+          if (getHttpErrorStatus(error) !== 401) {
+            throw error
+          }
+          await refreshChatGPTAuthAfterUnauthorized()
+          return createChatGPTAttempt()
+        }
       }
 
       if (useOfficialResponses) {
-        return createOfficialResponsesStream({
-          request: buildOfficialResponsesRequest({
+        const officialRequest = normalizeBuiltResponsesReasoning(
+          buildOfficialResponsesRequest({
             model: request.model,
             messages: request.messages,
             tools: request.tools,
             toolChoice: request.toolChoice,
-            reasoningEffort: request.reasoningEffort,
+            reasoningEffort: responsesReasoningEffort,
             maxOutputTokens: request.maxTokens,
             promptCacheKey,
             outputFormat: request.outputFormat,
           }),
+          request.model,
+          responsesReasoningEffort,
+        )
+        return createOfficialResponsesStream({
+          request: officialRequest,
           signal,
           sessionId,
           fetchOverride: request.fetchOverride,
