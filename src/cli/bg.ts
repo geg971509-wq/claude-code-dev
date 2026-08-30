@@ -772,13 +772,32 @@ export async function respawnHandler(
         intent: job.intent,
         sessionId: job.sessionId,
       })
+      // As with initial starts, a fast child can register before the parent
+      // receives the engine result. Keep its post-setup runtime fields while
+      // retaining the original launch recipe used for future respawns.
+      const childRegistration = (await listStoredJobs()).find(
+        candidate => candidate.sessionId === job.sessionId,
+      )
       await writeJobRecord({
         ...job,
-        pid: result.pid,
+        ...(childRegistration ?? {}),
+        pid:
+          childRegistration &&
+          Number.isSafeInteger(childRegistration.pid) &&
+          childRegistration.pid > 1
+            ? childRegistration.pid
+            : result.pid,
+        cwd: childRegistration?.cwd ?? job.cwd,
+        startedAt: childRegistration?.startedAt ?? job.startedAt,
         engine: result.engineUsed,
         tmuxSessionName:
-          result.engineUsed === 'tmux' ? sessionName : job.tmuxSessionName,
-        status: 'starting',
+          result.engineUsed === 'tmux' ? sessionName : undefined,
+        name: job.name,
+        launch: job.launch,
+        args: job.args,
+        routine: job.routine,
+        intent: job.intent,
+        status: childRegistration?.status ?? 'starting',
         updatedAt: Date.now(),
       })
       console.log(`respawned ${job.jobId ?? job.sessionId.slice(0, 8)} (${result.engineUsed})`)
@@ -1248,7 +1267,15 @@ export async function handleBgStart(args: string[]): Promise<void> {
       sessionId,
     })
 
-    await writeJobRecord({
+    // The child may have completed setup and registered itself before the
+    // parent receives the spawn result. Preserve that registration when it
+    // contains the post-setup worktree cwd/real PID/status; otherwise the
+    // parent's initial record would roll those fields back to the launch cwd
+    // and make later rm/ps operations observe stale metadata.
+    const childRegistration = (await listStoredJobs()).find(
+      job => job.sessionId === sessionId,
+    )
+    const parentJob: BgJobRecord = {
       pid: result.pid,
       sessionId,
       jobId,
@@ -1265,6 +1292,31 @@ export async function handleBgStart(args: string[]): Promise<void> {
       launch,
       args: managedArgs,
       status: routine && !execCommand && !pipedInput ? 'idle' : 'starting',
+    }
+    await writeJobRecord({
+      ...parentJob,
+      ...(childRegistration ?? {}),
+      // Parent-owned launch metadata is authoritative; the child only
+      // contributes runtime fields that can change during setup.
+      pid:
+        childRegistration &&
+        Number.isSafeInteger(childRegistration.pid) &&
+        childRegistration.pid > 1
+          ? childRegistration.pid
+          : parentJob.pid,
+      cwd: childRegistration?.cwd ?? parentJob.cwd,
+      startedAt: childRegistration?.startedAt ?? parentJob.startedAt,
+      engine: result.engineUsed,
+      logPath: result.logPath,
+      tmuxSessionName:
+        result.engineUsed === 'tmux' ? sessionName : undefined,
+      name: displayName,
+      launch,
+      args: managedArgs,
+      routine,
+      intent: launchIntent,
+      status: childRegistration?.status ?? parentJob.status,
+      updatedAt: Date.now(),
     })
 
     console.log(`Background session started: ${jobId}`)
