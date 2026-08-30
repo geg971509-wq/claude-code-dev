@@ -77,7 +77,7 @@ export function parseCodexResponsesRetryAfterMs(
   message: string,
 ): number | null {
   const match = message.match(
-    /try again in\s*(\d+(?:\.\d+)?)\s*(s|ms|seconds?)/i,
+    /try again in\s*(\d+(?:\.\d+)?)\s*(ms|seconds?|s)\b/i,
   )
   if (!match) return null
 
@@ -155,7 +155,9 @@ export function createCodexResponsesStreamError(
 
     case 'server_is_overloaded':
     case 'slow_down':
-      return streamError(details, { retryable: true, status: 503 })
+      // Codex surfaces these as ServerOverloaded and intentionally does not
+      // retry the same model automatically; the caller can select another.
+      return streamError(details, { retryable: false, status: 503 })
 
     case 'insufficient_quota':
       return streamError(details, { retryable: false, status: 429 })
