@@ -28,6 +28,7 @@ import {
   type OpenAIStreamAttempt,
   type ResponsesReasoningEffort,
 } from './responsesAdapter.js'
+import { resolveCodexResponsesReasoningEffort } from './codexReasoning.js'
 
 export type OpenAIStreamRequest = {
   model: string
@@ -74,6 +75,14 @@ export function prepareOpenAIStreamRequest(
   const promptCacheKey = defaultPromptCacheKey
     ? (resolveOpenAIPromptCacheKey() ?? defaultPromptCacheKey)
     : undefined
+  const responsesReasoningEffort =
+    route === 'chat-completions'
+      ? request.reasoningEffort
+      : (resolveCodexResponsesReasoningEffort({
+          model: request.model,
+          configured: request.reasoningEffort,
+          provider: 'openai',
+        }) as ResponsesReasoningEffort | undefined)
 
   return {
     route,
@@ -86,7 +95,7 @@ export function prepareOpenAIStreamRequest(
             messages: request.messages,
             tools: request.tools,
             toolChoice: request.toolChoice,
-            reasoningEffort: request.reasoningEffort,
+            reasoningEffort: responsesReasoningEffort,
             promptCacheKey,
             sessionId,
             // Inject here so buildChatGPTResponsesRequest stays I/O-free.
@@ -106,7 +115,7 @@ export function prepareOpenAIStreamRequest(
             messages: request.messages,
             tools: request.tools,
             toolChoice: request.toolChoice,
-            reasoningEffort: request.reasoningEffort,
+            reasoningEffort: responsesReasoningEffort,
             maxOutputTokens: request.maxTokens,
             promptCacheKey,
             outputFormat: request.outputFormat,
