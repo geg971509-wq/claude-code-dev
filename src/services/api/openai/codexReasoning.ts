@@ -11,25 +11,16 @@ export type CodexWireReasoningEffort =
 
 export type CodexReasoningProvider = 'openai' | 'codex'
 
+type ReasoningEnv = Readonly<Record<string, string | undefined>>
+
 type ResolveCodexReasoningEffortOptions = {
   model: string
   configured?: unknown
   provider: CodexReasoningProvider
-  env?: NodeJS.ProcessEnv
+  env?: ReasoningEnv
   supportedEfforts?: readonly string[]
   multiAgentOverride?: string
 }
-
-const STANDARD_EFFORTS = new Set([
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-  'disabled',
-])
 
 const EFFORT_ASCENDING = [
   'none',
@@ -65,8 +56,8 @@ function inferSupportedEfforts(model: string): string[] {
 
   // Codex obtains this information from its model catalog. The development
   // client has no dynamic catalog for third-party OpenAI endpoints, so keep
-  // the inference intentionally conservative and allow an explicit catalog
-  // projection through *_SUPPORTED_REASONING_EFFORTS.
+  // the inference conservative and allow an explicit catalog projection via
+  // *_SUPPORTED_REASONING_EFFORTS.
   const version = normalized.match(/^gpt-5\.(\d+)(?:-|$)/)
   if (version) {
     const minor = Number(version[1])
@@ -121,24 +112,27 @@ function providerEnvPrefix(provider: CodexReasoningProvider): 'OPENAI' | 'CODEX'
 function resolveRawEffort(
   configured: unknown,
   provider: CodexReasoningProvider,
-  env: NodeJS.ProcessEnv,
+  env: ReasoningEnv,
 ): unknown {
   const prefix = providerEnvPrefix(provider)
-  const providerOverride = env[`${prefix}_REASONING_EFFORT`]
-  const globalOverride = env.CLAUDE_CODE_EFFORT_LEVEL
-  const rawOverride = providerOverride ?? globalOverride
-  const normalizedOverride = normalizedString(rawOverride)
+  const providerOverride = normalizedString(
+    env[`${prefix}_REASONING_EFFORT`],
+  )
+  const globalOverride = normalizedString(env.CLAUDE_CODE_EFFORT_LEVEL)
+  const override = providerOverride ?? globalOverride
 
+  if (override === 'unset') {
+    return undefined
+  }
   if (
-    normalizedOverride === undefined ||
-    normalizedOverride === 'auto' ||
-    normalizedOverride === 'unset' ||
-    normalizedOverride === 'default'
+    override === undefined ||
+    override === 'auto' ||
+    override === 'default'
   ) {
     return configured
   }
 
-  return normalizedOverride
+  return override
 }
 
 /**
@@ -181,17 +175,14 @@ export function resolveCodexResponsesReasoningEffort({
     const supported =
       supportedEfforts ?? envSupported ?? inferSupportedEfforts(model)
     const override = normalizedString(
-      multiAgentOverride ??
-        env[`${prefix}_MULTI_AGENT_REASONING_EFFORT`],
+      multiAgentOverride ?? env[`${prefix}_MULTI_AGENT_REASONING_EFFORT`],
     )
     return selectUltraFallback(supported, override)
   }
 
-  // Codex allows model-catalog-specific custom effort strings. Preserve them
-  // instead of narrowing every request to today's static SDK union.
-  return STANDARD_EFFORTS.has(normalized)
-    ? (normalized as CodexWireReasoningEffort)
-    : (normalized as CodexWireReasoningEffort)
+  // Codex permits catalog-specific custom effort values. Preserve them at
+  // this protocol boundary instead of narrowing requests to a stale SDK union.
+  return normalized as CodexWireReasoningEffort
 }
 
 export function applyCodexReasoningToRequest(
@@ -208,13 +199,17 @@ export function applyCodexReasoningToRequest(
   })
 
   if (!effort) {
+    delete request.reasoning
     return
   }
 
   request.reasoning = {
     ...existing,
     effort,
-    ...(existing.summary === undefined && effort !== 'max'
+    ...(existing.summary === undefined &&
+    effort !== 'max' &&
+    effort !== 'none' &&
+    effort !== 'disabled'
       ? { summary: 'auto' }
       : {}),
   }
