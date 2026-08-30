@@ -102,6 +102,11 @@ function getTokenExpiryMs(token: string): number | null {
   return typeof exp === 'number' ? exp * 1000 : null
 }
 
+function isTokenFresh(token: string): boolean {
+  const expiresAt = getTokenExpiryMs(token)
+  return expiresAt !== null && expiresAt > Date.now() + REFRESH_SKEW_MS
+}
+
 function extractAccountId(tokens: {
   idToken?: string
   accessToken?: string
@@ -143,6 +148,19 @@ async function readStoredAuth(path: string): Promise<ChatGPTAuthTokens | null> {
   } catch {
     return null
   }
+}
+
+async function readAvailableTokens(options?: {
+  logCodexFallback?: boolean
+}): Promise<ChatGPTAuthTokens | null> {
+  const local = await readStoredAuth(authFilePath())
+  if (local) return local
+
+  const codex = await readStoredAuth(codexAuthFilePath())
+  if (codex && options?.logCodexFallback !== false) {
+    logForDebugging('[OpenAI] Using ChatGPT auth from Codex auth.json')
+  }
+  return codex
 }
 
 async function saveStoredAuth(tokens: ChatGPTAuthTokens): Promise<void> {
@@ -314,6 +332,57 @@ async function refreshTokens(
   }
 }
 
+let refreshInFlight: Promise<ChatGPTAuthTokens> | null = null
+
+export function _resetChatGPTAuthForTests(): void {
+  refreshInFlight = null
+}
+
+async function refreshAndPersist(
+  staleTokens: ChatGPTAuthTokens,
+): Promise<ChatGPTAuthTokens> {
+  const latestBefore = await readAvailableTokens({ logCodexFallback: false })
+  if (
+    latestBefore?.accessToken &&
+    latestBefore.accessToken !== staleTokens.accessToken &&
+    isTokenFresh(latestBefore.accessToken)
+  ) {
+    return latestBefore
+  }
+
+  const refreshed = await refreshTokens(staleTokens)
+  const latestAfter = await readAvailableTokens({ logCodexFallback: false })
+  if (
+    latestAfter?.accessToken &&
+    latestAfter.accessToken !== staleTokens.accessToken &&
+    latestAfter.accessToken !== refreshed.accessToken &&
+    isTokenFresh(latestAfter.accessToken)
+  ) {
+    return latestAfter
+  }
+
+  await saveStoredAuth(refreshed)
+  logForDebugging('[OpenAI] Rotated ChatGPT access token')
+  return refreshed
+}
+
+function startRefresh(
+  tokens: ChatGPTAuthTokens,
+): Promise<ChatGPTAuthTokens> {
+  if (refreshInFlight) return refreshInFlight
+  refreshInFlight = refreshAndPersist(tokens).finally(() => {
+    refreshInFlight = null
+  })
+  return refreshInFlight
+}
+
+function toChatGPTAuth(tokens: ChatGPTAuthTokens): ChatGPTAuth {
+  return {
+    accessToken: tokens.accessToken,
+    accountId: tokens.accountId ?? extractAccountId(tokens),
+  }
+}
+
 export async function completeChatGPTDeviceLogin(
   deviceCode: ChatGPTDeviceCode,
   signal?: AbortSignal,
@@ -337,13 +406,7 @@ export async function removeChatGPTAuth(): Promise<void> {
 }
 
 export async function getValidChatGPTAuth(): Promise<ChatGPTAuth> {
-  let tokens = await readStoredAuth(authFilePath())
-  if (!tokens) {
-    tokens = await readStoredAuth(codexAuthFilePath())
-    if (tokens) {
-      logForDebugging('[OpenAI] Using ChatGPT auth from Codex auth.json')
-    }
-  }
+  let tokens = await readAvailableTokens()
   if (!tokens) {
     throw new Error(
       'ChatGPT account is not logged in. Run /login and select ChatGPT account with subscription.',
@@ -351,11 +414,36 @@ export async function getValidChatGPTAuth(): Promise<ChatGPTAuth> {
   }
   const expiresAt = getTokenExpiryMs(tokens.accessToken)
   if (expiresAt !== null && expiresAt <= Date.now() + REFRESH_SKEW_MS) {
-    tokens = await refreshTokens(tokens)
-    await saveStoredAuth(tokens)
+    tokens = await startRefresh(tokens)
   }
-  return {
-    accessToken: tokens.accessToken,
-    accountId: tokens.accountId ?? extractAccountId(tokens),
+  return toChatGPTAuth(tokens)
+}
+
+/**
+ * Reload shared credentials and recover once when ChatGPT rejects a bearer.
+ * A server-side revocation may happen before the JWT expiry, so this path
+ * deliberately forces refresh only when the rejected token is still current.
+ */
+export async function refreshChatGPTAuthAfterUnauthorized(
+  rejectedAccessToken?: string,
+): Promise<ChatGPTAuth> {
+  const tokens = await readAvailableTokens({ logCodexFallback: false })
+  if (!tokens) {
+    throw new Error(
+      'ChatGPT account is not logged in. Run /login and select ChatGPT account with subscription.',
+    )
   }
+
+  if (
+    rejectedAccessToken &&
+    tokens.accessToken !== rejectedAccessToken
+  ) {
+    logForDebugging(
+      '[OpenAI] Reusing ChatGPT credentials rotated by another request after 401',
+    )
+    return toChatGPTAuth(tokens)
+  }
+
+  logForDebugging('[OpenAI] Refreshing ChatGPT credentials after 401')
+  return toChatGPTAuth(await startRefresh(tokens))
 }
