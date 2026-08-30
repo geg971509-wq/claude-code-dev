@@ -1,6 +1,7 @@
 import { readdir, readFile, mkdir, chmod, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
+import { isENOENT } from '../../utils/errors.js'
 import { atomicWriteFile } from '../../utils/sessionStoragePortable.js'
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
 import type { SessionEntry } from './engine.js'
@@ -181,13 +182,18 @@ export async function updateJobRecord(
   return updated
 }
 
-export async function removeJobRecord(
-  job: Pick<BgJobRecord, 'sessionId'>,
-): Promise<void> {
-  await unlink(jobFilePath(job)).catch(() => {})
+export async function removeJobRecord(job: Pick<BgJobRecord, 'sessionId'>): Promise<void> {
+  try {
+    await unlink(jobFilePath(job))
+  } catch (error) {
+    // A concurrent cleanup may have already removed the record. All other
+    // failures must reach rmHandler so it does not report a false success.
+    if (!isENOENT(error)) throw error
+  }
 }
 
 export function formatJobTargetError(error: JobTargetError): string {
   if (error.kind === 'not-found') return `No job matching '${error.target}'`
   return `Ambiguous prefix '${error.target}', matches: ${error.matches.join(', ')}`
 }
+
