@@ -19,6 +19,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           ref: codex/responses-terminal-parity-20260830
+          fetch-depth: 0
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -64,26 +65,30 @@ jobs:
             src/services/api/codex/__tests__/streamErrors.test.ts \
             src/services/api/codex/__tests__/streaming.terminals.test.ts
 
-      - name: Type check GPT and Codex dependency graph
+      - name: Compare TypeScript diagnostics with main
         run: |
-          cat > .codex-stage2-tsconfig.json <<'JSON'
-          {
-            "extends": "./tsconfig.json",
-            "include": [
-              "src/services/api/codex/**/*.ts",
-              "src/services/api/openai/**/*.ts",
-              "packages/@ant/model-provider/src/providers/codex/**/*.ts",
-              "packages/@ant/model-provider/src/providers/openai/**/*.ts",
-              "packages/@ant/model-provider/src/shared/openaiConvertMessages.ts"
-            ],
-            "exclude": [
-              "node_modules",
-              "packages/remote-control-server/web"
-            ]
-          }
-          JSON
-          bunx tsc --project .codex-stage2-tsconfig.json --noEmit
-          rm .codex-stage2-tsconfig.json
+          set -euo pipefail
+          bunx tsc --noEmit > /tmp/branch-tsc.txt 2>&1 || true
+
+          git worktree add --detach /tmp/claude-code-dev-main origin/main
+          ln -s "$GITHUB_WORKSPACE/node_modules" /tmp/claude-code-dev-main/node_modules
+          (
+            cd /tmp/claude-code-dev-main
+            "$HOME/.bun/bin/bunx" tsc --noEmit > /tmp/main-tsc.txt 2>&1 || true
+          )
+
+          grep 'error TS[0-9]' /tmp/branch-tsc.txt | sort -u > /tmp/branch-errors.txt || true
+          grep 'error TS[0-9]' /tmp/main-tsc.txt | sort -u > /tmp/main-errors.txt || true
+          comm -13 /tmp/main-errors.txt /tmp/branch-errors.txt > /tmp/new-errors.txt
+
+          echo "main diagnostics: $(wc -l < /tmp/main-errors.txt)"
+          echo "branch diagnostics: $(wc -l < /tmp/branch-errors.txt)"
+          if [[ -s /tmp/new-errors.txt ]]; then
+            echo 'New TypeScript diagnostics introduced by this branch:'
+            cat /tmp/new-errors.txt
+            exit 1
+          fi
+          echo 'No new TypeScript diagnostics introduced by this branch.'
 
       - name: Dependency boundary ratchet
         run: bun run check:boundaries
