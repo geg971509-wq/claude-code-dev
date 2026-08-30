@@ -185,6 +185,10 @@ export function resolveCodexResponsesReasoningEffort({
   return normalized as CodexWireReasoningEffort
 }
 
+function supportsReasoningSummary(effort: string): boolean {
+  return effort !== 'max' && effort !== 'none' && effort !== 'disabled'
+}
+
 export function applyCodexReasoningToRequest(
   request: Record<string, unknown>,
   options: Omit<ResolveCodexReasoningEffortOptions, 'configured'>,
@@ -203,14 +207,16 @@ export function applyCodexReasoningToRequest(
     return
   }
 
-  request.reasoning = {
+  const normalized: Record<string, unknown> = {
     ...existing,
     effort,
-    ...(existing.summary === undefined &&
-    effort !== 'max' &&
-    effort !== 'none' &&
-    effort !== 'disabled'
-      ? { summary: 'auto' }
-      : {}),
   }
+  if (supportsReasoningSummary(effort)) {
+    if (normalized.summary === undefined) {
+      normalized.summary = 'auto'
+    }
+  } else {
+    delete normalized.summary
+  }
+  request.reasoning = normalized
 }
