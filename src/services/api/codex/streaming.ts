@@ -1,4 +1,6 @@
 import { randomUUID } from 'crypto'
+import { ProviderStreamError, resolveCodexCallId } from '@ant/model-provider'
+import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type {
   Response,
   ResponseCreateParamsNonStreaming,
@@ -13,13 +15,15 @@ import {
   createAssistantMessage,
   normalizeContentFromAPI,
 } from '../../../utils/messages.js'
-import { getCodexClient } from './client.js'
-import { ProviderStreamError, resolveCodexCallId } from '@ant/model-provider'
 import {
   isSemanticOpenAIEvent,
   withOpenAIStreamIdleTimeout,
 } from '../openai/openaiShared.js'
-import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+import { getCodexClient } from './client.js'
+import {
+  createCodexIncompleteStreamError,
+  createCodexResponsesStreamError,
+} from './streamErrors.js'
 
 export type RawAssistantBlock =
   | { type: 'text'; text: string }
@@ -44,8 +48,6 @@ type CodexStreamState = {
   completedBlocks: Array<RawAssistantBlock | undefined>
   partialMessage?: AssistantMessage['message']
   finalResponse?: Response
-  incompleteResponse?: Response
-  failedResponse?: Response
 }
 
 export function getCodexUsage(
@@ -105,21 +107,22 @@ function createToolUseBlock(
   }
 }
 
+/** Codex concatenates every output_text/refusal part in item order. */
 function getCompletedTextFromItem(item: ResponseOutputItem): string | null {
   if (item.type !== 'message' || item.role !== 'assistant') {
     return null
   }
 
+  const parts: string[] = []
   for (const content of (item as ResponseOutputMessage).content) {
     if (content.type === 'output_text' && content.text.length > 0) {
-      return content.text
-    }
-    if (content.type === 'refusal' && content.refusal.length > 0) {
-      return content.refusal
+      parts.push(content.text)
+    } else if (content.type === 'refusal' && content.refusal.length > 0) {
+      parts.push(content.refusal)
     }
   }
 
-  return null
+  return parts.length > 0 ? parts.join('') : null
 }
 
 function getCompletedAssistantBlocks(
@@ -143,18 +146,12 @@ function getCodexStopReason(
     : 'end_turn'
 }
 
-function emitTrailingTextDelta(
+function emitTextDelta(
   output: StreamEvent[],
   index: number,
-  currentText: string,
-  finalText: string,
+  text: string,
 ): void {
-  if (!finalText.startsWith(currentText)) {
-    return
-  }
-
-  const delta = finalText.slice(currentText.length)
-  if (delta.length === 0) {
+  if (text.length === 0) {
     return
   }
 
@@ -165,10 +162,49 @@ function emitTrailingTextDelta(
       index,
       delta: {
         type: 'text_delta',
-        text: delta,
+        text,
       },
     } as any,
   } as StreamEvent)
+}
+
+function emitTrailingTextDelta(
+  output: StreamEvent[],
+  index: number,
+  currentText: string,
+  finalText: string,
+): void {
+  if (!finalText.startsWith(currentText)) {
+    return
+  }
+
+  emitTextDelta(output, index, finalText.slice(currentText.length))
+}
+
+function reconcileCompletedContentPart(
+  output: StreamEvent[],
+  index: number,
+  currentText: string,
+  finalText: string,
+): string {
+  if (
+    finalText.length === 0 ||
+    currentText === finalText ||
+    currentText.endsWith(finalText)
+  ) {
+    return currentText
+  }
+
+  if (finalText.startsWith(currentText)) {
+    emitTrailingTextDelta(output, index, currentText, finalText)
+    return finalText
+  }
+
+  // A content part may arrive without delta events. Since a Responses output
+  // message is one assistant block in Codex, append the completed part rather
+  // than replacing text from preceding parts.
+  emitTextDelta(output, index, finalText)
+  return currentText + finalText
 }
 
 function emitTrailingToolDelta(
@@ -217,22 +253,9 @@ function responseToRawAssistantBlocks(response: Response): RawAssistantBlock[] {
       continue
     }
 
-    if (item.type !== 'message' || item.role !== 'assistant') {
-      continue
-    }
-
-    for (const content of (item as ResponseOutputMessage).content) {
-      if (content.type === 'output_text' && content.text.length > 0) {
-        blocks.push({
-          type: 'text',
-          text: content.text,
-        })
-      } else if (content.type === 'refusal' && content.refusal.length > 0) {
-        blocks.push({
-          type: 'text',
-          text: content.refusal,
-        })
-      }
+    const text = getCompletedTextFromItem(item)
+    if (text !== null) {
+      blocks.push({ type: 'text', text })
     }
   }
 
@@ -296,8 +319,6 @@ function handleCodexStreamEvent(params: {
   output: StreamEvent[]
   partialMessage: AssistantMessage['message'] | undefined
   finalResponse?: Response
-  failedResponse?: Response
-  incompleteResponse?: Response
 } {
   const { event, start } = params
   const output: StreamEvent[] = []
@@ -305,8 +326,6 @@ function handleCodexStreamEvent(params: {
   const completedBlocks = params.completedBlocks
   let partialMessage = params.partialMessage
   let finalResponse: Response | undefined
-  let failedResponse: Response | undefined
-  let incompleteResponse: Response | undefined
 
   const ensureMessageStart = (response: Response): void => {
     if (partialMessage) {
@@ -376,6 +395,7 @@ function handleCodexStreamEvent(params: {
     if (!block) {
       return
     }
+
     completedBlocks[index] = { ...block }
     output.push({
       type: 'stream_event',
@@ -387,11 +407,22 @@ function handleCodexStreamEvent(params: {
     delete contentBlocks[index]
   }
 
+  const flushOpenBlocks = (): void => {
+    const indexes = Object.keys(contentBlocks)
+      .map(Number)
+      .filter(Number.isFinite)
+      .sort((left, right) => left - right)
+    for (const index of indexes) {
+      emitCompletedBlock(index)
+    }
+  }
+
   switch (event.type) {
     case 'response.created':
     case 'response.in_progress':
       ensureMessageStart(event.response)
       break
+
     case 'response.output_item.added':
       if (event.item.type === 'function_call') {
         ensureToolUseBlock(event.output_index, event.item)
@@ -402,25 +433,17 @@ function handleCodexStreamEvent(params: {
         ensureTextBlock(event.output_index)
       }
       break
+
     case 'response.output_text.delta':
     case 'response.refusal.delta': {
       const block = ensureTextBlock(event.output_index)
       if (block.type === 'text') {
         block.text += event.delta
       }
-      output.push({
-        type: 'stream_event',
-        event: {
-          type: 'content_block_delta',
-          index: event.output_index,
-          delta: {
-            type: 'text_delta',
-            text: event.delta,
-          },
-        } as any,
-      } as StreamEvent)
+      emitTextDelta(output, event.output_index, event.delta)
       break
     }
+
     case 'response.function_call_arguments.delta': {
       const block = ensureToolUseBlock(event.output_index, {
         id: event.item_id,
@@ -441,18 +464,23 @@ function handleCodexStreamEvent(params: {
       } as StreamEvent)
       break
     }
+
     case 'response.output_text.done':
     case 'response.refusal.done': {
       const block = ensureTextBlock(event.output_index)
       const finalText =
         event.type === 'response.output_text.done' ? event.text : event.refusal
       if (block.type === 'text') {
-        emitTrailingTextDelta(output, event.output_index, block.text, finalText)
-        block.text = finalText
+        block.text = reconcileCompletedContentPart(
+          output,
+          event.output_index,
+          block.text,
+          finalText,
+        )
       }
-      emitCompletedBlock(event.output_index)
       break
     }
+
     case 'response.function_call_arguments.done': {
       const block = ensureToolUseBlock(event.output_index, {
         id: event.item_id,
@@ -470,34 +498,28 @@ function handleCodexStreamEvent(params: {
         )
         block.input = event.arguments
       }
-      emitCompletedBlock(event.output_index)
       break
     }
+
     case 'response.output_item.done':
-      if (
-        event.item.type === 'message' &&
-        event.item.role === 'assistant' &&
-        contentBlocks[event.output_index]
-      ) {
+      if (event.item.type === 'message' && event.item.role === 'assistant') {
+        const block = ensureTextBlock(event.output_index)
         const finalText = getCompletedTextFromItem(event.item)
-        if (finalText !== null) {
-          const block = contentBlocks[event.output_index]
-          if (block.type === 'text') {
-            emitTrailingTextDelta(
-              output,
-              event.output_index,
-              block.text,
-              finalText,
-            )
-            block.text = finalText
-          }
+        if (block.type === 'text' && finalText !== null) {
+          emitTrailingTextDelta(
+            output,
+            event.output_index,
+            block.text,
+            finalText,
+          )
+          block.text = finalText
         }
         emitCompletedBlock(event.output_index)
-      } else if (
-        event.item.type === 'function_call' &&
-        contentBlocks[event.output_index]
-      ) {
-        const block = contentBlocks[event.output_index]
+      } else if (event.item.type === 'function_call') {
+        const block = ensureToolUseBlock(event.output_index, {
+          ...event.item,
+          arguments: '',
+        })
         if (block.type === 'tool_use') {
           block.id = resolveCodexCallId(
             event.item.call_id,
@@ -515,14 +537,11 @@ function handleCodexStreamEvent(params: {
         emitCompletedBlock(event.output_index)
       }
       break
-    case 'response.completed':
-    case 'response.incomplete': {
+
+    case 'response.completed': {
       ensureMessageStart(event.response)
-      if (event.type === 'response.completed') {
-        finalResponse = event.response
-      } else {
-        incompleteResponse = event.response
-      }
+      flushOpenBlocks()
+      finalResponse = event.response
       const assistantBlocks = getCompletedAssistantBlocks(completedBlocks)
       output.push({
         type: 'stream_event',
@@ -543,19 +562,27 @@ function handleCodexStreamEvent(params: {
       } as StreamEvent)
       break
     }
+
+    case 'response.incomplete':
+      throw createCodexIncompleteStreamError(event)
+
     case 'response.failed':
-      failedResponse = event.response
-      break
+      throw createCodexResponsesStreamError(
+        event,
+        'Codex Responses response failed',
+      )
+
     case 'error':
-      throw new Error(event.message)
+      throw createCodexResponsesStreamError(
+        event,
+        'Codex Responses stream error',
+      )
   }
 
   return {
     output,
     partialMessage,
     finalResponse,
-    failedResponse,
-    incompleteResponse,
   }
 }
 
@@ -564,24 +591,16 @@ function selectResponse(
   streamedResponse?: Response,
 ): CodexStreamResult {
   const response =
-    [
-      streamedResponse,
-      state.finalResponse,
-      state.incompleteResponse,
-      state.failedResponse,
-    ].find(
+    [streamedResponse, state.finalResponse].find(
       candidate =>
         candidate !== undefined &&
         responseToRawAssistantBlocks(candidate).length > 0,
     ) ??
     streamedResponse ??
-    state.finalResponse ??
-    state.incompleteResponse ??
-    state.failedResponse
+    state.finalResponse
 
   return {
     response,
-    incompleteResponse: state.incompleteResponse,
     partialMessage: state.partialMessage,
     assistantBlocks:
       response !== undefined &&
@@ -637,20 +656,19 @@ export async function* streamCodexAttempt(params: {
 
       state.partialMessage = handled.partialMessage
       state.finalResponse = handled.finalResponse ?? state.finalResponse
-      state.incompleteResponse =
-        handled.incompleteResponse ?? state.incompleteResponse
-      state.failedResponse = handled.failedResponse ?? state.failedResponse
 
       for (const out of handled.output) {
         if (out.type === 'stream_event') {
-          const ev = out.event as { type?: string }
-          if (ev.type === 'message_stop') sawTerminal = true
+          const streamEvent = out.event as { type?: string }
+          if (streamEvent.type === 'message_stop') {
+            sawTerminal = true
+          }
           // committed only gates REPL yield buffering. Assistant is assembled
           // at message_stop; idle/stall after text must stay retryable.
           if (
             !committed &&
             (isSemanticOpenAIEvent(out.event as BetaRawMessageStreamEvent) ||
-              ev.type === 'message_stop')
+              streamEvent.type === 'message_stop')
           ) {
             committed = true
             if (params.emitPrimaryEvents !== false) {
@@ -659,9 +677,14 @@ export async function* streamCodexAttempt(params: {
             prelude.length = 0
           }
         }
-        if (params.emitPrimaryEvents === false) continue
-        if (committed) yield out
-        else prelude.push(out)
+        if (params.emitPrimaryEvents === false) {
+          continue
+        }
+        if (committed) {
+          yield out
+        } else {
+          prelude.push(out)
+        }
       }
     }
 
@@ -672,12 +695,7 @@ export async function* streamCodexAttempt(params: {
       streamedResponse = undefined
     }
 
-    if (
-      !sawTerminal &&
-      !state.finalResponse &&
-      !state.incompleteResponse &&
-      !state.failedResponse
-    ) {
+    if (!sawTerminal || !state.finalResponse) {
       throw new ProviderStreamError(
         'Codex stream ended before a terminal event',
         {
