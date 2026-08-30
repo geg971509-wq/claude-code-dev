@@ -31,6 +31,7 @@ jobs:
             src/services/api/codex/index.ts \
             src/services/api/codex/requestMetadata.ts \
             src/services/api/codex/__tests__/client.identity.test.ts \
+            src/services/api/codex/__tests__/client.turnState.test.ts \
             src/services/api/codex/__tests__/request.runner.ts \
             src/services/api/codex/__tests__/requestMetadata.test.ts
 
