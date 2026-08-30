@@ -8,7 +8,15 @@ import { jsonParse } from '../utils/slowOperations.js'
 import { peekForStdinData } from '../utils/process.js'
 import { selectEngine } from './bg/engines/index.js'
 import type { BgEngine, SessionEntry } from './bg/engine.js'
-import { writeJobRecord, type BgLaunch } from './bg/jobStore.js'
+import {
+  formatJobTargetError,
+  listJobRecords,
+  removeJobRecord,
+  resolveJobTarget,
+  writeJobRecord,
+  type BgJobRecord,
+  type BgLaunch,
+} from './bg/jobStore.js'
 
 export type { SessionEntry } from './bg/engine.js'
 
@@ -20,33 +28,8 @@ function getSessionJobsDir(): string {
   return join(getSessionsDir(), 'jobs')
 }
 
-async function listStoredJobs(): Promise<SessionEntry[]> {
-  let files: string[]
-  try {
-    files = await readdir(getSessionJobsDir())
-  } catch {
-    return []
-  }
-
-  const jobs: SessionEntry[] = []
-  for (const file of files) {
-    if (!/^.+\.json$/.test(file)) continue
-    try {
-      const entry = jsonParse(
-        await readFile(join(getSessionJobsDir(), file), 'utf-8'),
-      ) as SessionEntry
-      if (
-        entry &&
-        typeof entry.sessionId === 'string' &&
-        typeof entry.cwd === 'string'
-      ) {
-        jobs.push(entry)
-      }
-    } catch {
-      // Corrupt job file — leave it in place for manual recovery.
-    }
-  }
-  return jobs
+async function listStoredJobs(): Promise<BgJobRecord[]> {
+  return listJobRecords()
 }
 
 async function getEngineForSession(session: SessionEntry): Promise<BgEngine> {
@@ -123,6 +106,9 @@ export function findSession(
   return sessions.find(
     s =>
       s.sessionId === target ||
+      s.jobId === target ||
+      s.jobId?.startsWith(target) ||
+      s.sessionId.startsWith(target) ||
       s.pid === asNum ||
       (s.name && s.name === target),
   )
@@ -414,12 +400,13 @@ export async function stopHandler(target: string | undefined): Promise<void> {
   }
 
   const sessions = await listLiveSessions()
-  const session = findSession(sessions, target)
-  if (!session) {
-    console.error(`Session not found: ${target}`)
+  const resolved = resolveJobTarget(sessions as BgJobRecord[], target)
+  if (!('sessionId' in resolved)) {
+    console.error(formatJobTargetError(resolved))
     process.exitCode = 1
     return
   }
+  const session = resolved
 
   const result = signalSession(session, 'SIGTERM')
   if (!result.ok) {
@@ -428,7 +415,19 @@ export async function stopHandler(target: string | undefined): Promise<void> {
     return
   }
 
-  console.log(`stopped ${session.sessionId}`)
+  const stored = (await listStoredJobs()).find(
+    job => job.sessionId === session.sessionId,
+  )
+  if (stored) {
+    await writeJobRecord({
+      ...stored,
+      status: 'stopped',
+      waitingFor: undefined,
+      updatedAt: Date.now(),
+      error: undefined,
+    })
+  }
+  console.log(`stopped ${session.jobId ?? session.sessionId.slice(0, 8)}`)
   const pidFile = join(getSessionsDir(), `${session.pid}.json`)
   void unlink(pidFile).catch(() => {})
 }
@@ -443,6 +442,15 @@ export async function stopHandler(target: string | undefined): Promise<void> {
 export async function respawnHandler(
   target: string | undefined,
 ): Promise<void> {
+  if (target === '--help' || target === '-h') {
+    console.log('Usage: claude respawn <id>|--all\n\n  Restart a background session with the current Claude binary.')
+    return
+  }
+  if (target?.startsWith('-') && target !== '--all') {
+    console.error(`unknown option '${target}'\nUsage: claude respawn <id>|--all`)
+    process.exitCode = 1
+    return
+  }
   if (!target) {
     console.error('Usage: claude respawn <id|--all>')
     process.exitCode = 1
@@ -451,25 +459,32 @@ export async function respawnHandler(
 
   const liveSessions = await listLiveSessions()
   const storedJobs = await listStoredJobs()
-  const jobs =
+  const jobs: BgJobRecord[] =
     target === '--all'
-      ? storedJobs.length > 0
-        ? storedJobs
-        : liveSessions.filter(s => s.kind === 'bg')
-      : [
-          liveSessions.find(s => findSession([s], target)) ??
-            storedJobs.find(s => findSession([s], target)),
-        ].filter((s): s is SessionEntry => s !== undefined)
+      ? liveSessions.filter(s => s.kind === 'bg') as BgJobRecord[]
+      : (() => {
+          const all = [...storedJobs]
+          for (const live of liveSessions) {
+            if (!all.some(job => job.sessionId === live.sessionId))
+              all.push(live as BgJobRecord)
+          }
+          const resolved = resolveJobTarget(all, target)
+          if (!('sessionId' in resolved)) {
+            console.error(formatJobTargetError(resolved))
+            process.exitCode = 1
+            return []
+          }
+          return [resolved]
+        })()
 
   if (jobs.length === 0) {
-    console.error(`Session not found: ${target}`)
-    process.exitCode = 1
+    if (target === '--all') console.log('no live jobs to respawn')
     return
   }
 
   let failures = 0
   for (const job of jobs) {
-    if (!job.args) {
+    if (!job.args && job.launch?.mode !== 'exec') {
       console.error(
         `Cannot respawn ${job.sessionId}: launch arguments were not recorded.`,
       )
@@ -513,17 +528,25 @@ export async function respawnHandler(
         job.logPath ?? join(getSessionsDir(), 'logs', `${sessionName}.log`)
       const result = await engine.start({
         sessionName,
-        args: job.args,
+        args: job.args ?? [],
         env: { ...process.env },
         logPath,
         cwd: job.cwd,
+        launch: job.launch ?? { mode: 'claude' },
+        routine: job.routine,
+        intent: job.intent,
+        sessionId: job.sessionId,
       })
-      // The relaunched child receives a fresh session ID and writes a new job
-      // record. Retire the old record only after spawn succeeds.
-      void unlink(join(getSessionJobsDir(), `${job.sessionId}.json`)).catch(
-        () => {},
-      )
-      console.log(`respawned ${job.sessionId} (${result.engineUsed})`)
+      await writeJobRecord({
+        ...job,
+        pid: result.pid,
+        engine: result.engineUsed,
+        tmuxSessionName:
+          result.engineUsed === 'tmux' ? sessionName : job.tmuxSessionName,
+        status: 'starting',
+        updatedAt: Date.now(),
+      })
+      console.log(`respawned ${job.jobId ?? job.sessionId.slice(0, 8)} (${result.engineUsed})`)
     } catch (error) {
       console.error(
         `Failed to respawn ${job.sessionId}: ${
@@ -543,6 +566,15 @@ export async function respawnHandler(
  * conversation record and can still be inspected or archived manually.
  */
 export async function rmHandler(target: string | undefined): Promise<void> {
+  if (target === '--help' || target === '-h') {
+    console.log('Usage: claude rm <id>\n\n  Delete a background job record. Logs are retained.')
+    return
+  }
+  if (target?.startsWith('-')) {
+    console.error(`unknown option '${target}'\nUsage: claude rm <id>`)
+    process.exitCode = 1
+    return
+  }
   if (!target) {
     console.error('Usage: claude rm <id>')
     process.exitCode = 1
@@ -550,22 +582,29 @@ export async function rmHandler(target: string | undefined): Promise<void> {
   }
 
   const liveSessions = await listLiveSessions()
-  if (findSession(liveSessions, target)) {
+  const liveResolution = resolveJobTarget(liveSessions as BgJobRecord[], target)
+  if ('sessionId' in liveResolution) {
     console.error('Session is still active; stop it before removing the job.')
     process.exitCode = 1
     return
   }
-
-  const job = (await listStoredJobs()).find(s => findSession([s], target))
-  if (!job) {
-    console.error(`Session not found: ${target}`)
+  if (liveResolution.kind === 'ambiguous') {
+    console.error(formatJobTargetError(liveResolution))
     process.exitCode = 1
     return
   }
 
+  const storedResolution = resolveJobTarget(await listStoredJobs(), target)
+  if (!('sessionId' in storedResolution)) {
+    console.error(formatJobTargetError(storedResolution))
+    process.exitCode = 1
+    return
+  }
+  const job = storedResolution
+
   try {
-    await unlink(join(getSessionJobsDir(), `${job.sessionId}.json`))
-    console.log(`removed ${job.sessionId}`)
+    await removeJobRecord(job)
+    console.log(`removed ${job.jobId ?? job.sessionId.slice(0, 8)}`)
   } catch (error) {
     console.error(
       `Failed to remove ${job.sessionId}: ${
