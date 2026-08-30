@@ -6,12 +6,72 @@ import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { isProcessRunning } from '../utils/genericProcessUtils.js'
 import { jsonParse } from '../utils/slowOperations.js'
 import { selectEngine } from './bg/engines/index.js'
-import type { SessionEntry } from './bg/engine.js'
+import type { BgEngine, SessionEntry } from './bg/engine.js'
 
 export type { SessionEntry } from './bg/engine.js'
 
 function getSessionsDir(): string {
   return join(getClaudeConfigHomeDir(), 'sessions')
+}
+
+function getSessionJobsDir(): string {
+  return join(getSessionsDir(), 'jobs')
+}
+
+async function listStoredJobs(): Promise<SessionEntry[]> {
+  let files: string[]
+  try {
+    files = await readdir(getSessionJobsDir())
+  } catch {
+    return []
+  }
+
+  const jobs: SessionEntry[] = []
+  for (const file of files) {
+    if (!/^.+\.json$/.test(file)) continue
+    try {
+      const entry = jsonParse(
+        await readFile(join(getSessionJobsDir(), file), 'utf-8'),
+      ) as SessionEntry
+      if (entry && typeof entry.sessionId === 'string') jobs.push(entry)
+    } catch {
+      // Corrupt job file — leave it in place for manual recovery.
+    }
+  }
+  return jobs
+}
+
+async function getEngineForSession(session: SessionEntry): Promise<BgEngine> {
+  const engineType = resolveSessionEngine(session)
+  if (engineType === 'tmux') {
+    const { TmuxEngine } = await import('./bg/engines/tmux.js')
+    const engine = new TmuxEngine()
+    if (!(await engine.available())) {
+      throw new Error('tmux is no longer available for this session.')
+    }
+    return engine
+  }
+  if (engineType === 'pty') {
+    const { PtyEngine } = await import('./bg/engines/pty.js')
+    const engine = new PtyEngine()
+    if (!(await engine.available())) {
+      throw new Error('The PTY engine is no longer available for this session.')
+    }
+    return engine
+  }
+  const { DetachedEngine } = await import('./bg/engines/detached.js')
+  return new DetachedEngine()
+}
+
+async function waitForSessionExit(session: SessionEntry): Promise<void> {
+  if (resolveSessionEngine(session) === 'tmux') {
+    await new Promise(resolve => setTimeout(resolve, 250))
+    return
+  }
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline && isProcessRunning(session.pid)) {
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
 }
 
 export async function listLiveSessions(): Promise<SessionEntry[]> {
@@ -331,7 +391,7 @@ export async function killHandler(target: string | undefined): Promise<void> {
 }
 
 /**
- * `claude daemon stop <target>` — gracefully stop a background session.
+ * `claude stop <target>` — gracefully stop a background session.
  *
  * Unlike `kill`, this never escalates to SIGKILL. The child gets a chance to
  * flush its transcript and remove its own registry entry, matching the
@@ -363,6 +423,132 @@ export async function stopHandler(target: string | undefined): Promise<void> {
   console.log(`stopped ${session.sessionId}`)
   const pidFile = join(getSessionsDir(), `${session.pid}.json`)
   void unlink(pidFile).catch(() => {})
+}
+
+/**
+ * `claude respawn <id|--all>` — restart background jobs with this binary.
+ *
+ * Jobs created before launch-argument persistence was added are reported as
+ * non-respawnable instead of guessing at a command line. Stored logs and
+ * transcripts are intentionally preserved.
+ */
+export async function respawnHandler(
+  target: string | undefined,
+): Promise<void> {
+  if (!target) {
+    console.error('Usage: claude respawn <id|--all>')
+    process.exitCode = 1
+    return
+  }
+
+  const liveSessions = await listLiveSessions()
+  const storedJobs = await listStoredJobs()
+  const jobs =
+    target === '--all'
+      ? storedJobs.length > 0
+        ? storedJobs
+        : liveSessions.filter(s => s.kind === 'bg')
+      : [
+          liveSessions.find(s => findSession([s], target)) ??
+            storedJobs.find(s => findSession([s], target)),
+        ].filter((s): s is SessionEntry => s !== undefined)
+
+  if (jobs.length === 0) {
+    console.error(`Session not found: ${target}`)
+    process.exitCode = 1
+    return
+  }
+
+  let failures = 0
+  for (const job of jobs) {
+    if (!job.args || job.args.length === 0) {
+      console.error(
+        `Cannot respawn ${job.sessionId}: launch arguments were not recorded.`,
+      )
+      failures++
+      continue
+    }
+
+    const live = liveSessions.find(
+      s =>
+        s.sessionId === job.sessionId ||
+        (job.name !== undefined && s.name === job.name),
+    )
+    if (live) {
+      const stopped = signalSession(live, 'SIGTERM')
+      if (!stopped.ok) {
+        console.error(`Cannot stop ${live.sessionId}: ${stopped.reason}`)
+        failures++
+        continue
+      }
+      await waitForSessionExit(live)
+      void unlink(join(getSessionsDir(), `${live.pid}.json`)).catch(() => {})
+    }
+
+    try {
+      const engine = await getEngineForSession(job)
+      const sessionName =
+        job.name ?? job.tmuxSessionName ?? `claude-bg-${job.sessionId.slice(0, 8)}`
+      const logPath =
+        job.logPath ?? join(getSessionsDir(), 'logs', `${sessionName}.log`)
+      const result = await engine.start({
+        sessionName,
+        args: job.args,
+        env: { ...process.env },
+        logPath,
+        cwd: job.cwd,
+      })
+      console.log(`respawned ${job.sessionId} (${result.engineUsed})`)
+    } catch (error) {
+      console.error(
+        `Failed to respawn ${job.sessionId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      )
+      failures++
+    }
+  }
+
+  if (failures > 0) process.exitCode = 1
+}
+
+/**
+ * `claude rm <id>` — remove stopped job metadata while retaining logs.
+ * Keeping the log is deliberate: unlike a worktree, it is the user's
+ * conversation record and can still be inspected or archived manually.
+ */
+export async function rmHandler(target: string | undefined): Promise<void> {
+  if (!target) {
+    console.error('Usage: claude rm <id>')
+    process.exitCode = 1
+    return
+  }
+
+  const liveSessions = await listLiveSessions()
+  if (findSession(liveSessions, target)) {
+    console.error('Session is still active; stop it before removing the job.')
+    process.exitCode = 1
+    return
+  }
+
+  const job = (await listStoredJobs()).find(s => findSession([s], target))
+  if (!job) {
+    console.error(`Session not found: ${target}`)
+    process.exitCode = 1
+    return
+  }
+
+  try {
+    await unlink(join(getSessionJobsDir(), `${job.sessionId}.json`))
+    console.log(`removed ${job.sessionId}`)
+  } catch (error) {
+    console.error(
+      `Failed to remove ${job.sessionId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    )
+    process.exitCode = 1
+  }
 }
 
 /**

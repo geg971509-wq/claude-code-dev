@@ -326,6 +326,23 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (
+    feature('BG_SESSIONS') &&
+    (args[0] === 'respawn' || args[0] === 'rm')
+  ) {
+    profileCheckpoint('cli_daemon_path');
+    await ensureFastPathSettingsLoaded();
+    const { enableConfigs } = await import('../utils/config.js');
+    enableConfigs();
+    const bg = await import('../cli/bg.js');
+    if (args[0] === 'respawn') {
+      await bg.respawnHandler(args[1]);
+    } else {
+      await bg.rmHandler(args[1]);
+    }
+    return;
+  }
+
   // Backward-compat: ps/logs/attach/kill → daemon <sub> (deprecated).
   if (
     feature('BG_SESSIONS') &&
