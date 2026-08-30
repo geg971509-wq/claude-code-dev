@@ -87,9 +87,7 @@ describe('queryModelCodex request', () => {
     const metadata = requestBody?.client_metadata as
       | Record<string, unknown>
       | undefined
-    expect(typeof metadata?.[CODEX_INSTALLATION_ID_METADATA_KEY]).toBe(
-      'string',
-    )
+    expect(typeof metadata?.[CODEX_INSTALLATION_ID_METADATA_KEY]).toBe('string')
     expect(metadata?.session_id).toBe(metadata?.thread_id)
     expect(metadata?.[CODEX_WINDOW_ID_HEADER]).toBe(
       `${String(metadata?.thread_id)}:0`,
