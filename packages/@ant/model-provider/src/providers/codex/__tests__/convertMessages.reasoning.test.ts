@@ -29,7 +29,7 @@ describe('anthropicMessagesToCodexInput reasoning replay', () => {
       ]),
     ])
 
-    expect(items).toEqual([
+    expect(items as unknown).toEqual([
       {
         type: 'reasoning',
         encrypted_content: 'encrypted-reasoning-1',
@@ -70,7 +70,7 @@ describe('anthropicMessagesToCodexInput reasoning replay', () => {
       ]),
     ])
 
-    expect(items).toEqual([
+    expect(items as unknown).toEqual([
       {
         type: 'reasoning',
         encrypted_content: 'encrypted-redacted-reasoning',
@@ -87,7 +87,7 @@ describe('anthropicMessagesToCodexInput reasoning replay', () => {
       ]),
     ])
 
-    expect(items).toEqual([
+    expect(items as unknown).toEqual([
       {
         type: 'message',
         role: 'assistant',
