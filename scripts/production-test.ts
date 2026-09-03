@@ -49,7 +49,10 @@ function parseArgs(args: string[]): Options {
   return options
 }
 
-function cleanEnvironment(root: string, offline: boolean): Record<string, string> {
+function cleanEnvironment(
+  root: string,
+  offline: boolean,
+): Record<string, string> {
   const env = Object.fromEntries(
     Object.entries(process.env).flatMap(([key, value]) =>
       typeof value === 'string' ? [[key, value]] : [],
@@ -156,7 +159,9 @@ async function smokeRuntime(
 
     if (result.timedOut) throw new Error(`${label} timed out`)
     if (result.exitCode !== 0) {
-      throw new Error(`${label} exited ${result.exitCode}: ${summarize(result)}`)
+      throw new Error(
+        `${label} exited ${result.exitCode}: ${summarize(result)}`,
+      )
     }
     if (`${result.stdout}${result.stderr}`.trim().length === 0) {
       throw new Error(`${label} produced no output`)
