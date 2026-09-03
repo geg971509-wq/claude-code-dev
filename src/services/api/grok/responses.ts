@@ -36,7 +36,9 @@ import { prepareGrokResponsesStreamRequest } from './client.js'
 
 const DEFAULT_GROK_OUTPUT_LIMIT_FOR_DISPLAY = 64_000
 
-function systemPromptInput(systemPrompt: SystemPrompt): Record<string, unknown>[] {
+function systemPromptInput(
+  systemPrompt: SystemPrompt,
+): Record<string, unknown>[] {
   if (systemPrompt.length === 0) return []
   return [
     {
@@ -85,22 +87,16 @@ export async function* queryModelGrokResponses(
       }),
     ),
   )
-  const standardTools = toolSchemas.filter(
-    (tool): tool is BetaToolUnion => {
-      const value = tool as unknown as Record<string, unknown>
-      return (
-        value.type !== 'advisor_20260301' &&
-        value.type !== 'computer_20250124'
-      )
-    },
-  )
+  const standardTools = toolSchemas.filter((tool): tool is BetaToolUnion => {
+    const value = tool as unknown as Record<string, unknown>
+    return (
+      value.type !== 'advisor_20260301' && value.type !== 'computer_20250124'
+    )
+  })
   const responseTools = anthropicToolsToGrokResponses(standardTools)
   const toolChoice = anthropicToolChoiceToGrokResponses(options.toolChoice)
   const appliedEffort = resolveAppliedEffort(options.model, options.effortValue)
-  const reasoningEffort = normalizeGrokReasoningEffort(
-    grokModel,
-    appliedEffort,
-  )
+  const reasoningEffort = normalizeGrokReasoningEffort(grokModel, appliedEffort)
   const sessionId = getSessionId()
 
   const requestRecord: Record<string, unknown> = {
