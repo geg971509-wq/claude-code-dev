@@ -37,8 +37,7 @@ const NATIVE_FRAMEWORKS = new Set([
   'UIKit',
 ])
 
-const STATIC_IMPORT_RE =
-  /(?:from\s+|import\s*)["']((?:\.\.?\/)[^"']+\.js)["']/g
+const STATIC_IMPORT_RE = /(?:from\s+|import\s*)["']((?:\.\.?\/)[^"']+\.js)["']/g
 const DYNAMIC_IMPORT_RE = /import\(\s*["']([^"']+)["']\s*\)/g
 const REQUIRE_RE = /__require\(\s*["']([^"']+)["']\s*\)/g
 const NODE_REQUIRE_RE = /nodeRequire\(\s*["']([^"']+)["']\s*\)/g
@@ -63,7 +62,10 @@ function normalizePath(path: string): string {
   return path.replaceAll('\\', '/')
 }
 
-async function collectJsFiles(root: string, directory = root): Promise<string[]> {
+async function collectJsFiles(
+  root: string,
+  directory = root,
+): Promise<string[]> {
   const files: string[] = []
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const absolute = join(directory, entry.name)
@@ -113,7 +115,10 @@ function pushFinding(
   findings.push({ ...finding, snippet: sourceLine.trim().slice(0, 120) })
 }
 
-function resetMatches(line: string, pattern: RegExp): IterableIterator<RegExpMatchArray> {
+function resetMatches(
+  line: string,
+  pattern: RegExp,
+): IterableIterator<RegExpMatchArray> {
   pattern.lastIndex = 0
   return line.matchAll(pattern)
 }
@@ -126,7 +131,9 @@ function groupByModule(items: Finding[]): Map<string, Finding[]> {
     grouped.set(item.module, group)
   }
   return new Map(
-    [...grouped.entries()].sort((left, right) => right[1].length - left[1].length),
+    [...grouped.entries()].sort(
+      (left, right) => right[1].length - left[1].length,
+    ),
   )
 }
 
