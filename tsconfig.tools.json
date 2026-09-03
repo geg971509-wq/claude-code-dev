@@ -3,10 +3,6 @@
   "compilerOptions": {
     "types": ["bun", "node"]
   },
-  "include": [
-    "build.ts",
-    "vite.config.ts",
-    "scripts/**/*.ts"
-  ],
+  "include": ["build.ts", "vite.config.ts", "scripts/**/*.ts"],
   "exclude": ["node_modules"]
 }
