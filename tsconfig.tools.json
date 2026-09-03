@@ -1,8 +1,16 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "types": ["bun", "node"]
+    "allowImportingTsExtensions": true
   },
-  "include": ["build.ts", "vite.config.ts", "scripts/**/*.ts"],
-  "exclude": ["node_modules"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "packages/**/*.ts",
+    "packages/**/*.tsx",
+    "build.ts",
+    "vite.config.ts",
+    "scripts/**/*.ts"
+  ],
+  "exclude": ["node_modules", "packages/remote-control-server/web"]
 }
