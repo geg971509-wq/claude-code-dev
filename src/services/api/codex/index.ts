@@ -116,6 +116,16 @@ export async function* queryModelCodex(
         instructions: systemPrompt.join('\n\n'),
       }),
       ...(codexTools.length > 0 && { tools: codexTools }),
+      ...(options.outputFormat && {
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'side_query_output',
+            schema: options.outputFormat.schema,
+            strict: true,
+          },
+        },
+      }),
       ...(!subscription &&
         options.temperatureOverride !== undefined && {
           temperature: options.temperatureOverride,
