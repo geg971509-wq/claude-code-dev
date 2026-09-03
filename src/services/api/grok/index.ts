@@ -51,6 +51,7 @@ import {
   anthropicToolChoiceToOpenAI,
   adaptOpenAIStreamToAnthropic,
   ProviderStreamError,
+  resolveGrokApiBackend,
   resolveGrokModel,
 } from '@ant/model-provider'
 import { normalizeMessagesForAPI } from '../../../utils/messages.js'
@@ -73,6 +74,7 @@ import {
   normalizeContentFromAPI,
 } from '../../../utils/messages.js'
 import { sleep } from '../../../utils/sleep.js'
+import { queryModelGrokResponses } from './responses.js'
 
 type GrokUsageCounters = {
   input_tokens: number
@@ -89,9 +91,11 @@ const EMPTY_USAGE: GrokUsageCounters = {
 }
 
 /**
- * Grok (xAI) query path. Grok uses an OpenAI-compatible API, so we reuse
- * the OpenAI message/tool converters and stream adapter. Only the client
- * (different base URL + API key) and model mapping are Grok-specific.
+ * Grok (xAI) query path.
+ *
+ * grok-build's current grok-4.5/4.6 catalog uses the Responses API. Legacy or
+ * custom model IDs retain the OpenAI-compatible Chat Completions path so older
+ * gateways keep working. The backend may be overridden via GROK_API_BACKEND.
  */
 export async function* queryModelGrok(
   messages: Message[],
@@ -106,6 +110,24 @@ export async function* queryModelGrok(
   const includeErrorStack = options.verbose === true || isDebugMode()
   try {
     const grokModel = resolveGrokModel(options.model)
+    const backend = resolveGrokApiBackend(grokModel)
+    if (backend === 'responses') {
+      yield* queryModelGrokResponses(
+        messages,
+        systemPrompt,
+        tools,
+        signal,
+        options,
+        grokModel,
+      )
+      return
+    }
+    if (backend === 'messages') {
+      throw new Error(
+        'Grok Messages backend was selected, but this Claude Code adapter does not yet expose the optional xAI /messages transport. Use the official default Responses backend or Chat Completions compatibility mode.',
+      )
+    }
+
     const messagesForAPI = normalizeMessagesForAPI(messages, tools)
 
     const toolSchemas = await Promise.all(
@@ -142,16 +164,9 @@ export async function* queryModelGrok(
     })
 
     logForDebugging(
-      `[Grok] Calling model=${grokModel}, messages=${openaiMessages.length}, tools=${openaiTools.length}`,
+      `[Grok] Calling model=${grokModel}, backend=chat_completions, messages=${openaiMessages.length}, tools=${openaiTools.length}`,
     )
 
-    // Codex: keep the idle watchdog; retry the sampling request whenever the
-    // stream dies before message_stop, committed or not — the assistant
-    // message is assembled at message_stop, so a dead attempt leaves nothing
-    // behind but transient REPL text that the retry overwrites. Handshake 5xx
-    // still goes through withTransientOpenAIRetry. Scaffolding and
-    // thinking-only events stay in `prelude` so the retry replays them in
-    // order.
     const streamMaxRetries = getOpenAIStreamMaxRetries()
     const thinkingLoopMaxRetries = getThinkingLoopMaxRetries()
     let streamRetries = 0
