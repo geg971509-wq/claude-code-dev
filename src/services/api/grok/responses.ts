@@ -35,6 +35,7 @@ import { executeOpenAIStream } from '../openai/streamExecutor.js'
 import { prepareGrokResponsesStreamRequest } from './client.js'
 
 const DEFAULT_GROK_OUTPUT_LIMIT_FOR_DISPLAY = 64_000
+const GROK_USD_TICKS_PER_USD = 10_000_000_000
 
 function systemPromptInput(
   systemPrompt: SystemPrompt,
@@ -47,6 +48,27 @@ function systemPromptInput(
       content: systemPrompt.join('\n\n'),
     },
   ]
+}
+
+async function* captureGrokReportedCost(
+  stream: AsyncIterable<Record<string, unknown>>,
+  onReportedCost: (costUSD: number) => void,
+): AsyncGenerator<Record<string, unknown>, void> {
+  for await (const event of stream) {
+    const response =
+      event.response && typeof event.response === 'object'
+        ? (event.response as Record<string, unknown>)
+        : undefined
+    const usage =
+      response?.usage && typeof response.usage === 'object'
+        ? (response.usage as Record<string, unknown>)
+        : undefined
+    const ticks = usage?.cost_in_usd_ticks
+    if (typeof ticks === 'number' && Number.isFinite(ticks) && ticks > 0) {
+      onReportedCost(ticks / GROK_USD_TICKS_PER_USD)
+    }
+    yield event
+  }
 }
 
 /**
@@ -138,6 +160,7 @@ export async function* queryModelGrokResponses(
   }
   const request = requestRecord as unknown as ResponseCreateParamsStreaming
   const start = Date.now()
+  let reportedCostUSD: number | undefined
   const execution = yield* executeOpenAIStream({
     preparedAttempt: prepareGrokResponsesStreamRequest({
       request,
@@ -147,7 +170,13 @@ export async function* queryModelGrokResponses(
       fetchOverride: options.fetchOverride as typeof fetch | undefined,
       source: options.querySource,
     }),
-    adapter: adaptResponsesStreamToAnthropic,
+    adapter: (stream, model) =>
+      adaptResponsesStreamToAnthropic(
+        captureGrokReportedCost(stream, costUSD => {
+          reportedCostUSD = costUSD
+        }),
+        model,
+      ),
     model: grokModel,
     tools,
     signal,
@@ -167,15 +196,9 @@ export async function* queryModelGrokResponses(
   }
 
   if (execution.usage.input_tokens + execution.usage.output_tokens > 0) {
-    const costUSD = calculateUSDCost(
-      grokModel,
-      execution.usage as unknown as BetaUsage,
-    )
-    addToTotalSessionCost(
-      costUSD,
-      execution.usage as unknown as BetaUsage,
-      options.model,
-    )
+    const usage = execution.usage as unknown as BetaUsage
+    const costUSD = reportedCostUSD ?? calculateUSDCost(grokModel, usage)
+    addToTotalSessionCost(costUSD, usage, options.model)
   }
 
   recordLLMObservation(options.langfuseTrace ?? null, {
