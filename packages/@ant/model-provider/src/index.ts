@@ -34,6 +34,10 @@ export {
   type GrokModelMetadata,
   type GrokReasoningEffort,
 } from './providers/grok/modelMapping.js'
+export {
+  anthropicToolChoiceToGrokResponses,
+  anthropicToolsToGrokResponses,
+} from './providers/grok/convertTools.js'
 export { resolveGeminiModel } from './providers/gemini/modelMapping.js'
 
 // Gemini provider utilities
