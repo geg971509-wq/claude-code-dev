@@ -5,7 +5,11 @@ mock.module('src/utils/proxy.js', () => ({
 }))
 
 import OpenAI from 'openai'
-import { clearGrokClientCache, getGrokClient } from '../client.js'
+import {
+  buildGrokRequestHeaders,
+  clearGrokClientCache,
+  getGrokClient,
+} from '../client.js'
 
 describe('getGrokClient', () => {
   const originalEnv = { ...process.env }
@@ -34,6 +38,23 @@ describe('getGrokClient', () => {
     process.env.GROK_BASE_URL = 'https://custom.grok.api/v1'
 
     expect(getGrokClient().baseURL).toBe('https://custom.grok.api/v1')
+  })
+
+  test('does not reuse a client after base URL changes', () => {
+    const defaultClient = getGrokClient()
+    process.env.GROK_BASE_URL = 'https://custom.grok.api/v1'
+    const customClient = getGrokClient()
+
+    expect(customClient).not.toBe(defaultClient)
+    expect(customClient.baseURL).toBe('https://custom.grok.api/v1')
+  })
+
+  test('does not reuse a client after API key changes', () => {
+    const firstClient = getGrokClient()
+    process.env.GROK_API_KEY = 'second-test-key'
+    const secondClient = getGrokClient()
+
+    expect(secondClient).not.toBe(firstClient)
   })
 
   test('isolates retry buckets when zero is created first', () => {
@@ -76,6 +97,25 @@ describe('getGrokClient', () => {
     expect(secondOverrideClient).not.toBe(overrideClient)
     expect(requests).toHaveLength(1)
     expect(getGrokClient()).toBe(defaultClient)
+  })
+
+  test('builds grok-build request identity headers', () => {
+    const headers = buildGrokRequestHeaders({
+      model: 'grok-4.6',
+      sessionId: 'session-1',
+      requestId: 'request-1',
+      agentId: 'agent-1',
+      transientRetry: 2,
+    })
+
+    expect(headers).toEqual({
+      'x-grok-conv-id': 'session-1',
+      'x-grok-req-id': 'request-1',
+      'x-grok-model-override': 'grok-4.6',
+      'x-grok-session-id': 'session-1',
+      'x-grok-agent-id': 'agent-1',
+      'x-grok-transient-retry': '2',
+    })
   })
 
   test('clears every retry bucket', () => {

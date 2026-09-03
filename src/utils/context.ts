@@ -1,4 +1,5 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
+import { getGrokModelMetadata, resolveGrokModel } from '@ant/model-provider'
 import { CONTEXT_1M_BETA_HEADER } from '../constants/betas.js'
 import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
@@ -59,6 +60,15 @@ export function modelSupports1M(model: string): boolean {
   if (is1mContextDisabled()) {
     return false
   }
+  if (getAPIProvider() === 'grok') {
+    const grokMetadata = getGrokModelMetadata(resolveGrokModel(model))
+    if (grokMetadata) {
+      // grok-build currently declares a 500k context for grok-4.5/4.6; do
+      // not inherit Claude's unrelated [1m] capability just because the UI
+      // model name is Anthropic-shaped.
+      return grokMetadata.contextWindow >= 1_000_000
+    }
+  }
   const entry = lookupModelCatalog(getCanonicalName(model))
   if (!entry) {
     return false
@@ -113,6 +123,16 @@ export function getContextWindowForModel(
     const override = parseInt(process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, 10)
     if (!isNaN(override) && override > 0) {
       return override
+    }
+  }
+
+  // Grok is selected through an Anthropic-facing alias, so the Claude model
+  // catalog must not decide its local budgeting. grok-build's current official
+  // model table is authoritative for known Grok models.
+  if (getAPIProvider() === 'grok') {
+    const grokMetadata = getGrokModelMetadata(resolveGrokModel(model))
+    if (grokMetadata) {
+      return grokMetadata.contextWindow
     }
   }
 

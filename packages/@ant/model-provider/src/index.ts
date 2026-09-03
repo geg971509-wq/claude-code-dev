@@ -24,7 +24,20 @@ export * from './types/index.js'
 
 // Provider model mappings
 export { resolveOpenAIModel } from './providers/openai/modelMapping.js'
-export { resolveGrokModel } from './providers/grok/modelMapping.js'
+export {
+  GROK_DEFAULT_MODEL,
+  getGrokModelMetadata,
+  normalizeGrokReasoningEffort,
+  resolveGrokApiBackend,
+  resolveGrokModel,
+  type GrokApiBackend,
+  type GrokModelMetadata,
+  type GrokReasoningEffort,
+} from './providers/grok/modelMapping.js'
+export {
+  anthropicToolChoiceToGrokResponses,
+  anthropicToolsToGrokResponses,
+} from './providers/grok/convertTools.js'
 export { resolveGeminiModel } from './providers/gemini/modelMapping.js'
 
 // Gemini provider utilities
