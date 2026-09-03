@@ -103,6 +103,12 @@ export async function* queryModelGrokResponses(
     model: grokModel,
     input,
     stream: true,
+    // grok-build forces store=false because the API default is true and would
+    // violate zero-data-retention expectations for shell sessions.
+    store: false,
+    // Required to replay encrypted reasoning on the next turn and keep xAI's
+    // server-side prefix cache stable across multi-turn tool loops.
+    include: ['reasoning.encrypted_content'],
     prompt_cache_key: sessionId,
     ...(responseTools.length > 0 && { tools: responseTools }),
     ...(toolChoice && { tool_choice: toolChoice }),
