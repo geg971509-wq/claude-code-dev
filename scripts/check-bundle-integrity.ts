@@ -1,84 +1,35 @@
 #!/usr/bin/env bun
 /**
- * 构建产物完整性检查脚本
+ * Validate the built dist/ tree rather than source modules.
  *
- * 检查 Bun.build({ splitting: true }) 输出的 dist/ 目录中是否存在：
- * 1. 引用了不存在的 chunk 文件（断链）
- * 2. 通过 __require() 或 import() 引用的第三方模块（非 Node.js 内置），在生产环境中会找不到
- * 3. 缺失的静态 import 依赖（跨 chunk 引用目标不存在）
- *
- * 用法：
- *   bun scripts/check-bundle-integrity.ts          # 检查当前 dist/
- *   bun scripts/check-bundle-integrity.ts ./dist    # 指定目录
+ * Checks:
+ * - relative static/dynamic JS imports resolve inside dist/
+ * - runtime imports are Node builtins, declared runtime dependencies, or
+ *   explicitly optional integrations
+ * - Bun-only imports are surfaced as warnings for the dual Node/Bun build
  */
+import { readdir, readFile } from 'node:fs/promises'
+import { builtinModules } from 'node:module'
+import { dirname, join, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-import { readdir, readFile } from 'fs/promises'
-import { join, resolve, dirname } from 'path'
-import { fileURLToPath } from 'url'
+const scriptDir = dirname(fileURLToPath(import.meta.url))
+const packageJson = JSON.parse(
+  await readFile(join(scriptDir, '..', 'package.json'), 'utf8'),
+) as {
+  dependencies?: Record<string, string>
+  optionalDependencies?: Record<string, string>
+}
 
-// ─── 从 package.json 读取 dependencies 作为白名单 ────────────────
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const pkg = JSON.parse(
-  await readFile(join(__dirname, '..', 'package.json'), 'utf-8'),
-)
-const PKG_DEPS = new Set(Object.keys(pkg.dependencies ?? {}))
-
-// ─── Node.js 内置模块白名单 ────────────────────────────────────────
-const NODE_BUILTINS = new Set([
-  'assert',
-  'async_hooks',
-  'buffer',
-  'child_process',
-  'cluster',
-  'console',
-  'constants',
-  'crypto',
-  'dgram',
-  'diagnostics_channel',
-  'dns',
-  'domain',
-  'events',
-  'fs',
-  'fs/promises',
-  'http',
-  'http2',
-  'https',
-  'inspector',
-  'module',
-  'net',
-  'os',
-  'path',
-  'perf_hooks',
-  'process',
-  'punycode',
-  'querystring',
-  'readline',
-  'repl',
-  'stream',
-  'string_decoder',
-  'sys',
-  'timers',
-  'tls',
-  'tty',
-  'url',
-  'util',
-  'v8',
-  'vm',
-  'worker_threads',
-  'zlib',
-  'node:test',
+const RUNTIME_DEPS = new Set([
+  ...Object.keys(packageJson.dependencies ?? {}),
+  ...Object.keys(packageJson.optionalDependencies ?? {}),
 ])
-
-// Node 18+ 内置但不在传统列表中的模块
-const NODE_18_PLUS_BUILTINS = new Set(['undici'])
-
-// Bun 专用模块（仅在 Bun 运行时可用，Node.js 环境会失败）
+const NODE_BUILTINS = new Set(
+  builtinModules.map(name => name.replace(/^node:/, '')),
+)
 const BUN_MODULES = new Set(['bun', 'bun:ffi', 'bun:test', 'bun:sqlite'])
-
-// Optional runtime integrations whose call sites catch load failure and fall back.
 const OPTIONAL_RUNTIME_MODULES = new Set(['@napi-rs/keyring'])
-
-// macOS JXA / native 框架（通过 ObjC.import，非真正的 require）
 const NATIVE_FRAMEWORKS = new Set([
   'AppKit',
   'CoreGraphics',
@@ -86,23 +37,21 @@ const NATIVE_FRAMEWORKS = new Set([
   'UIKit',
 ])
 
-// ─── 模式 ──────────────────────────────────────────────────────────
-// 匹配 import { ... } from "./chunk-xxxxx.js" 或 import"./chunk-xxxxx.js"
-const STATIC_IMPORT_RE = /(?:from\s+|import\s+)"(\.\/[^"]+\.js)"/g
-// 匹配 __require("xxx")
-const REQUIRE_RE = /__require\("([^"]+)"\)/g
-// 匹配动态 import("xxx")，排除 ./chunk-xxx.js 的内部引用
-const DYNAMIC_IMPORT_RE = /import\("([^"]+)"\)/g
-// 匹配 nodeRequire("xxx")（createRequire 创建的 require 别名）
-const NODE_REQUIRE_RE = /nodeRequire\("([^"]+)"\)/g
+const STATIC_IMPORT_RE =
+  /(?:from\s+|import\s*)["']((?:\.\.?\/)[^"']+\.js)["']/g
+const DYNAMIC_IMPORT_RE = /import\(\s*["']([^"']+)["']\s*\)/g
+const REQUIRE_RE = /__require\(\s*["']([^"']+)["']\s*\)/g
+const NODE_REQUIRE_RE = /nodeRequire\(\s*["']([^"']+)["']\s*\)/g
 
-interface Finding {
-  type:
-    | 'broken-chunk-ref'
-    | 'third-party-require'
-    | 'third-party-import'
-    | 'third-party-node-require'
-    | 'bun-runtime-only'
+type FindingType =
+  | 'broken-js-ref'
+  | 'third-party-require'
+  | 'third-party-import'
+  | 'third-party-node-require'
+  | 'bun-runtime-only'
+
+type Finding = {
+  type: FindingType
   severity: 'error' | 'warning'
   file: string
   line: number
@@ -110,269 +59,241 @@ interface Finding {
   snippet: string
 }
 
-async function main() {
+function normalizePath(path: string): string {
+  return path.replaceAll('\\', '/')
+}
+
+async function collectJsFiles(root: string, directory = root): Promise<string[]> {
+  const files: string[] = []
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const absolute = join(directory, entry.name)
+    if (entry.isDirectory()) {
+      files.push(...(await collectJsFiles(root, absolute)))
+    } else if (entry.isFile() && entry.name.endsWith('.js')) {
+      files.push(normalizePath(relative(root, absolute)))
+    }
+  }
+  return files.sort()
+}
+
+function packageRoot(specifier: string): string {
+  if (!specifier.startsWith('@')) return specifier.split('/')[0] ?? specifier
+  const [scope, name] = specifier.split('/')
+  return name ? `${scope}/${name}` : specifier
+}
+
+function isAllowedRuntimeModule(specifier: string): boolean {
+  if (specifier.startsWith('node:')) return true
+  if (NODE_BUILTINS.has(specifier)) return true
+  if (NODE_BUILTINS.has(packageRoot(specifier))) return true
+  if (RUNTIME_DEPS.has(packageRoot(specifier))) return true
+  if (OPTIONAL_RUNTIME_MODULES.has(packageRoot(specifier))) return true
+  if (NATIVE_FRAMEWORKS.has(specifier)) return true
+  return false
+}
+
+function isBunModule(specifier: string): boolean {
+  return BUN_MODULES.has(specifier)
+}
+
+function resolveRelativeRef(
+  distDir: string,
+  fromFile: string,
+  specifier: string,
+): string {
+  const absolute = resolve(distDir, dirname(fromFile), specifier)
+  return normalizePath(relative(distDir, absolute))
+}
+
+function pushFinding(
+  findings: Finding[],
+  finding: Omit<Finding, 'snippet'>,
+  sourceLine: string,
+): void {
+  findings.push({ ...finding, snippet: sourceLine.trim().slice(0, 120) })
+}
+
+function resetMatches(line: string, pattern: RegExp): IterableIterator<RegExpMatchArray> {
+  pattern.lastIndex = 0
+  return line.matchAll(pattern)
+}
+
+function groupByModule(items: Finding[]): Map<string, Finding[]> {
+  const grouped = new Map<string, Finding[]>()
+  for (const item of items) {
+    const group = grouped.get(item.module) ?? []
+    group.push(item)
+    grouped.set(item.module, group)
+  }
+  return new Map(
+    [...grouped.entries()].sort((left, right) => right[1].length - left[1].length),
+  )
+}
+
+async function main(): Promise<void> {
   const distDir = resolve(process.argv[2] || './dist')
-
-  console.log(`\n🔍 检查构建产物完整性: ${distDir}\n`)
-
-  // 1. 列出所有 chunk 文件
   let files: string[]
   try {
-    files = (await readdir(distDir)).filter(f => f.endsWith('.js'))
+    files = await collectJsFiles(distDir)
   } catch {
-    console.error(`❌ 无法读取目录: ${distDir}`)
-    console.error('   请先运行 bun run build')
+    console.error(`Cannot read build output: ${distDir}`)
+    console.error('Run "bun run build:vite" first.')
+    process.exit(1)
+  }
+
+  if (files.length === 0) {
+    console.error(`No JavaScript build output found in ${distDir}`)
     process.exit(1)
   }
 
   const fileSet = new Set(files)
-  console.log(`📦 找到 ${files.length} 个 JS 文件\n`)
-
   const findings: Finding[] = []
+  console.log(`Checking ${files.length} JavaScript files in ${distDir}`)
 
-  // 2. 逐文件扫描
   for (const file of files) {
-    const filePath = join(distDir, file)
-    const content = await readFile(filePath, 'utf-8')
+    const content = await readFile(join(distDir, file), 'utf8')
     const lines = content.split('\n')
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]
-      const lineNum = i + 1
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index] ?? ''
+      const lineNumber = index + 1
 
-      // 2a. 检查静态 chunk 引用是否断链
-      const staticImportMatches = line.matchAll(STATIC_IMPORT_RE)
-      for (const m of staticImportMatches) {
-        const ref = m[1]
-        // 提取文件名部分（去掉 ./）
-        const refFile = ref.replace(/^\.\//, '')
-        if (!fileSet.has(refFile)) {
-          findings.push({
-            type: 'broken-chunk-ref',
-            severity: 'error',
-            file,
-            line: lineNum,
-            module: ref,
-            snippet: line.trim().slice(0, 120),
-          })
+      for (const match of resetMatches(line, STATIC_IMPORT_RE)) {
+        const specifier = match[1]
+        if (!specifier) continue
+        const target = resolveRelativeRef(distDir, file, specifier)
+        if (target.startsWith('../') || !fileSet.has(target)) {
+          pushFinding(
+            findings,
+            {
+              type: 'broken-js-ref',
+              severity: 'error',
+              file,
+              line: lineNumber,
+              module: specifier,
+            },
+            line,
+          )
         }
       }
 
-      // 2b. 检查 __require 中的第三方模块
-      const requireMatches = line.matchAll(REQUIRE_RE)
-      for (const m of requireMatches) {
-        const mod = m[1]
-        // 跳过 ObjC.import（JXA 语法，不是真正的 require）
-        if (NATIVE_FRAMEWORKS.has(mod)) continue
-        if (
-          NODE_BUILTINS.has(mod) ||
-          NODE_18_PLUS_BUILTINS.has(mod) ||
-          PKG_DEPS.has(mod) ||
-          OPTIONAL_RUNTIME_MODULES.has(mod) ||
-          mod.startsWith('node:')
-        )
-          continue
-        if (BUN_MODULES.has(mod)) {
-          findings.push({
-            type: 'bun-runtime-only',
-            severity: 'warning',
-            file,
-            line: lineNum,
-            module: mod,
-            snippet: line.trim().slice(0, 120),
-          })
+      for (const match of resetMatches(line, DYNAMIC_IMPORT_RE)) {
+        const specifier = match[1]
+        if (!specifier) continue
+        if (specifier.startsWith('./') || specifier.startsWith('../')) {
+          if (specifier.endsWith('.js')) {
+            const target = resolveRelativeRef(distDir, file, specifier)
+            if (target.startsWith('../') || !fileSet.has(target)) {
+              pushFinding(
+                findings,
+                {
+                  type: 'broken-js-ref',
+                  severity: 'error',
+                  file,
+                  line: lineNumber,
+                  module: specifier,
+                },
+                line,
+              )
+            }
+          }
           continue
         }
-        // 第三方模块 — 在生产环境（全局 npm install）中找不到
-        findings.push({
-          type: 'third-party-require',
-          severity: 'error',
-          file,
-          line: lineNum,
-          module: mod,
-          snippet: line.trim().slice(0, 120),
-        })
+        if (isBunModule(specifier)) {
+          pushFinding(
+            findings,
+            {
+              type: 'bun-runtime-only',
+              severity: 'warning',
+              file,
+              line: lineNumber,
+              module: specifier,
+            },
+            line,
+          )
+        } else if (!isAllowedRuntimeModule(specifier)) {
+          pushFinding(
+            findings,
+            {
+              type: 'third-party-import',
+              severity: 'error',
+              file,
+              line: lineNumber,
+              module: specifier,
+            },
+            line,
+          )
+        }
       }
 
-      // 2c. 检查动态 import() 中的第三方模块
-      const dynImportMatches = line.matchAll(DYNAMIC_IMPORT_RE)
-      for (const m of dynImportMatches) {
-        const mod = m[1]
-        // 跳过内部 chunk 引用和相对路径
-        if (mod.startsWith('./') || mod.startsWith('../')) continue
-        // 跳过 ObjC.import
-        if (NATIVE_FRAMEWORKS.has(mod)) continue
-        if (
-          NODE_BUILTINS.has(mod) ||
-          NODE_18_PLUS_BUILTINS.has(mod) ||
-          PKG_DEPS.has(mod) ||
-          OPTIONAL_RUNTIME_MODULES.has(mod) ||
-          mod.startsWith('node:')
-        )
-          continue
-        if (BUN_MODULES.has(mod)) {
-          // bun:test 等只在 Bun 运行时可用，Node.js 运行时会失败
-          findings.push({
-            type: 'bun-runtime-only',
-            severity: 'warning',
-            file,
-            line: lineNum,
-            module: mod,
-            snippet: line.trim().slice(0, 120),
-          })
-          continue
+      for (const [pattern, type] of [
+        [REQUIRE_RE, 'third-party-require'],
+        [NODE_REQUIRE_RE, 'third-party-node-require'],
+      ] as const) {
+        for (const match of resetMatches(line, pattern)) {
+          const specifier = match[1]
+          if (!specifier) continue
+          if (isBunModule(specifier)) {
+            pushFinding(
+              findings,
+              {
+                type: 'bun-runtime-only',
+                severity: 'warning',
+                file,
+                line: lineNumber,
+                module: specifier,
+              },
+              line,
+            )
+          } else if (!isAllowedRuntimeModule(specifier)) {
+            pushFinding(
+              findings,
+              {
+                type,
+                severity: 'error',
+                file,
+                line: lineNumber,
+                module: specifier,
+              },
+              line,
+            )
+          }
         }
-        // 第三方动态 import
-        findings.push({
-          type: 'third-party-import',
-          severity: 'error',
-          file,
-          line: lineNum,
-          module: mod,
-          snippet: line.trim().slice(0, 120),
-        })
-      }
-
-      // 2d. 检查 nodeRequire("xxx") 中的第三方模块（createRequire 别名）
-      const nodeRequireMatches = line.matchAll(NODE_REQUIRE_RE)
-      for (const m of nodeRequireMatches) {
-        const mod = m[1]
-        if (NATIVE_FRAMEWORKS.has(mod)) continue
-        if (
-          NODE_BUILTINS.has(mod) ||
-          NODE_18_PLUS_BUILTINS.has(mod) ||
-          PKG_DEPS.has(mod) ||
-          OPTIONAL_RUNTIME_MODULES.has(mod) ||
-          mod.startsWith('node:')
-        )
-          continue
-        if (BUN_MODULES.has(mod)) {
-          findings.push({
-            type: 'bun-runtime-only',
-            severity: 'warning',
-            file,
-            line: lineNum,
-            module: mod,
-            snippet: line.trim().slice(0, 120),
-          })
-          continue
-        }
-        findings.push({
-          type: 'third-party-node-require',
-          severity: 'error',
-          file,
-          line: lineNum,
-          module: mod,
-          snippet: line.trim().slice(0, 120),
-        })
       }
     }
   }
 
-  // 3. 汇总报告
-  const errors = findings.filter(f => f.severity === 'error')
-  const warnings = findings.filter(f => f.severity === 'warning')
+  const errors = findings.filter(item => item.severity === 'error')
+  const warnings = findings.filter(item => item.severity === 'warning')
 
-  // 按 type 分组
-  const brokenRefs = errors.filter(f => f.type === 'broken-chunk-ref')
-  const thirdPartyRequires = errors.filter(
-    f => f.type === 'third-party-require',
+  for (const type of [
+    'broken-js-ref',
+    'third-party-require',
+    'third-party-import',
+    'third-party-node-require',
+    'bun-runtime-only',
+  ] as const) {
+    const items = findings.filter(item => item.type === type)
+    if (items.length === 0) continue
+    console.log(`\n${type}: ${items.length}`)
+    for (const [module, moduleItems] of groupByModule(items)) {
+      console.log(`  ${module} (${moduleItems.length})`)
+      for (const item of moduleItems.slice(0, 5)) {
+        console.log(`    ${item.file}:${item.line}`)
+      }
+      if (moduleItems.length > 5) {
+        console.log(`    ... ${moduleItems.length - 5} more`)
+      }
+    }
+  }
+
+  console.log(
+    `\nBundle integrity: ${errors.length} error(s), ${warnings.length} warning(s)`,
   )
-  const thirdPartyImports = errors.filter(f => f.type === 'third-party-import')
-  const thirdPartyNodeRequires = errors.filter(
-    f => f.type === 'third-party-node-require',
-  )
-  const bunRuntimeOnly = warnings.filter(f => f.type === 'bun-runtime-only')
-
-  if (brokenRefs.length > 0) {
-    console.log('❌ 断裂的 chunk 引用（引用了不存在的文件）:')
-    for (const f of brokenRefs) {
-      console.log(`   ${f.file}:${f.line} → ${f.module}`)
-    }
-    console.log()
-  }
-
-  if (thirdPartyRequires.length > 0) {
-    console.log('❌ 通过 __require() 引用的第三方模块（生产环境会找不到）:')
-    const grouped = groupByModule(thirdPartyRequires)
-    for (const [mod, items] of grouped) {
-      console.log(`   "${mod}" — 出现 ${items.length} 次:`)
-      for (const f of items.slice(0, 5)) {
-        console.log(`     ${f.file}:${f.line}`)
-      }
-      if (items.length > 5) console.log(`     ... 还有 ${items.length - 5} 处`)
-    }
-    console.log()
-  }
-
-  if (thirdPartyImports.length > 0) {
-    console.log('❌ 通过 import() 动态引用的第三方模块（生产环境会找不到）:')
-    const grouped = groupByModule(thirdPartyImports)
-    for (const [mod, items] of grouped) {
-      console.log(`   "${mod}" — 出现 ${items.length} 次:`)
-      for (const f of items.slice(0, 5)) {
-        console.log(`     ${f.file}:${f.line}`)
-      }
-      if (items.length > 5) console.log(`     ... 还有 ${items.length - 5} 处`)
-    }
-    console.log()
-  }
-
-  if (thirdPartyNodeRequires.length > 0) {
-    console.log(
-      '❌ 通过 nodeRequire() 引用的第三方模块（绕过打包，生产环境会找不到）:',
-    )
-    const grouped = groupByModule(thirdPartyNodeRequires)
-    for (const [mod, items] of grouped) {
-      console.log(`   "${mod}" — 出现 ${items.length} 次:`)
-      for (const f of items.slice(0, 5)) {
-        console.log(`     ${f.file}:${f.line}`)
-      }
-      if (items.length > 5) console.log(`     ... 还有 ${items.length - 5} 处`)
-    }
-    console.log()
-  }
-
-  if (bunRuntimeOnly.length > 0) {
-    console.log('⚠️  Bun 运行时专用模块（Node.js 环境会失败）:')
-    const grouped = groupByModule(bunRuntimeOnly)
-    for (const [mod, items] of grouped) {
-      console.log(`   "${mod}" — 出现 ${items.length} 次`)
-    }
-    console.log()
-  }
-
-  // 4. 总结
-  console.log('─'.repeat(50))
-  if (errors.length === 0 && warnings.length === 0) {
-    console.log('✅ 构建产物完整性检查通过，未发现问题。')
-  } else {
-    console.log(`📊 总计: ${errors.length} 个错误, ${warnings.length} 个警告`)
-    if (errors.length > 0) {
-      console.log(
-        `\n💡 修复建议:
-   - 第三方模块问题：在 build.ts 中通过 external 选项排除，或确保它们被正确打包到 chunk 中
-   - 断链问题：检查 build 时是否有文件被意外删除或构建不完整
-   - Bun 专用模块：确保运行时使用 bun 而非 node`,
-      )
-    }
-  }
-
-  process.exit(errors.length > 0 ? 1 : 0)
+  if (errors.length > 0) process.exit(1)
 }
 
-function groupByModule(items: Finding[]): Map<string, Finding[]> {
-  const map = new Map<string, Finding[]>()
-  for (const item of items) {
-    const list = map.get(item.module) || []
-    list.push(item)
-    map.set(item.module, list)
-  }
-  // 按出现次数降序
-  return new Map([...map.entries()].sort((a, b) => b[1].length - a[1].length))
-}
-
-main().catch(err => {
-  console.error('Fatal error:', err)
+main().catch(error => {
+  console.error('Bundle integrity check failed:', error)
   process.exit(2)
 })
