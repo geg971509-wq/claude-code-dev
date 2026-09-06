@@ -36,7 +36,7 @@ export function anthropicToolsToGrokResponses(
 /** Map Anthropic tool choice to the public Responses tool_choice shape. */
 export function anthropicToolChoiceToGrokResponses(
   toolChoice: unknown,
-): 'auto' | 'required' | { type: 'function'; name: string } | undefined {
+): 'auto' | 'required' | 'none' | { type: 'function'; name: string } | undefined {
   if (!toolChoice || typeof toolChoice !== 'object') return undefined
   const value = toolChoice as Record<string, unknown>
   switch (value.type) {
@@ -44,6 +44,8 @@ export function anthropicToolChoiceToGrokResponses(
       return 'auto'
     case 'any':
       return 'required'
+    case 'none':
+      return 'none'
     case 'tool':
       return typeof value.name === 'string'
         ? { type: 'function', name: value.name }
