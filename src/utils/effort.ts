@@ -1,4 +1,9 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
+import {
+  getGrokModelMetadata,
+  resolveGrokModel,
+  type GrokModelMetadata,
+} from '@ant/model-provider'
 import { isUltrathinkEnabled } from './thinking.js'
 import { getInitialSettings } from './settings/settings.js'
 import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
@@ -32,11 +37,20 @@ export const EFFORT_LEVELS = [
 
 export type EffortValue = EffortLevel | number
 
+function getOfficialGrokMetadata(model: string): GrokModelMetadata | null {
+  if (getAPIProvider() !== 'grok') return null
+  return getGrokModelMetadata(resolveGrokModel(model))
+}
+
 // 能力来自 MODEL_CATALOG 的 `capabilities`（官方原样），加模型不必改这里。
 export function modelSupportsEffort(model: string): boolean {
   const m = model.toLowerCase()
   if (isEnvTruthy(process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT)) {
     return true
+  }
+  const grokMetadata = getOfficialGrokMetadata(model)
+  if (grokMetadata) {
+    return grokMetadata.supportsReasoningEffort
   }
   const supported3P = get3PModelCapabilityOverride(model, 'effort')
   if (supported3P !== undefined) {
@@ -80,6 +94,12 @@ export function modelSupportsEffort(model: string): boolean {
 // opus-4-6 与 sonnet-4-6 有 max_effort 但没有 xhigh_effort，opus-4-7 起才
 // 两者都有。dev 之前忽略 model 参数一律放行，把服务端注定拒绝的组合也发出去。
 export function modelSupportsMaxEffort(model: string): boolean {
+  const grokMetadata = getOfficialGrokMetadata(model)
+  if (grokMetadata) {
+    // grok-build's current 4.5/4.6 catalogs expose low/medium/high and xhigh
+    // (4.6 only), but not the generic Claude/Codex `max` level.
+    return false
+  }
   const supported3P = get3PModelCapabilityOverride(model, 'max_effort')
   if (supported3P !== undefined) {
     return supported3P
@@ -96,6 +116,10 @@ export function modelSupportsMaxEffort(model: string): boolean {
 }
 
 export function modelSupportsXhighEffort(model: string): boolean {
+  const grokMetadata = getOfficialGrokMetadata(model)
+  if (grokMetadata) {
+    return grokMetadata.reasoningEfforts.includes('xhigh')
+  }
   const supported3P = get3PModelCapabilityOverride(model, 'xhigh_effort')
   if (supported3P !== undefined) {
     return supported3P
@@ -350,6 +374,11 @@ export function getDefaultEffortForModel(
   // IMPORTANT: Do not change the default effort level without notifying
   // the model launch DRI and research. Default effort is a sensitive setting
   // that can greatly affect model quality and bashing.
+
+  const grokMetadata = getOfficialGrokMetadata(model)
+  if (grokMetadata?.supportsReasoningEffort) {
+    return grokMetadata.defaultReasoningEffort
+  }
 
   if (
     getAPIProvider() === 'openai' &&
