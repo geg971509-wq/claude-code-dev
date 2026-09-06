@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "packages/**/*.ts",
+    "packages/**/*.tsx",
+    "build.ts",
+    "vite.config.ts",
+    "scripts/**/*.ts"
+  ],
+  "exclude": ["node_modules", "packages/remote-control-server/web"]
+}

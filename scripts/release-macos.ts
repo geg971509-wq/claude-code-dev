@@ -58,6 +58,14 @@ const PACKAGE_IDENTIFIER = 'win.claude-code-best.cli'
 const DEFAULT_OUTPUT_DIR = 'release/macos'
 const ENTITLEMENTS = resolve(import.meta.dir, 'macos.entitlements.plist')
 
+function processReleaseEnvironment(): ReleaseEnvironment {
+  return {
+    MACOS_APPLICATION_IDENTITY: process.env.MACOS_APPLICATION_IDENTITY,
+    MACOS_INSTALLER_IDENTITY: process.env.MACOS_INSTALLER_IDENTITY,
+    MACOS_NOTARY_KEYCHAIN_PROFILE: process.env.MACOS_NOTARY_KEYCHAIN_PROFILE,
+  }
+}
+
 function requiredEnv(
   env: ReleaseEnvironment,
   name: keyof ReleaseEnvironment,
@@ -86,7 +94,7 @@ function assertSafeOutputDir(outputDir: string): void {
 
 export function createReleasePlan(
   options: ReleaseOptions,
-  env: ReleaseEnvironment = process.env,
+  env: ReleaseEnvironment = processReleaseEnvironment(),
   version = packageJson.version,
 ): ReleasePlan {
   assertSafeOutputDir(options.outputDir)
@@ -210,20 +218,34 @@ function commandText(cmd: string[]): string {
 
 function run(cmd: string[], capture = false, cwd?: string): string {
   console.log(`$ ${commandText(cmd)}`)
+  if (capture) {
+    const result = Bun.spawnSync({
+      cmd,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: process.env,
+      cwd,
+    })
+    if (result.exitCode !== 0) {
+      const stderr = result.stderr.toString().trim()
+      throw new Error(
+        `${commandText(cmd)} failed with exit ${result.exitCode}${stderr ? `: ${stderr}` : ''}`,
+      )
+    }
+    return result.stdout.toString().trim()
+  }
+
   const result = Bun.spawnSync({
     cmd,
-    stdout: capture ? 'pipe' : 'inherit',
-    stderr: capture ? 'pipe' : 'inherit',
+    stdout: 'inherit',
+    stderr: 'inherit',
     env: process.env,
     cwd,
   })
   if (result.exitCode !== 0) {
-    const stderr = capture ? result.stderr.toString().trim() : ''
-    throw new Error(
-      `${commandText(cmd)} failed with exit ${result.exitCode}${stderr ? `: ${stderr}` : ''}`,
-    )
+    throw new Error(`${commandText(cmd)} failed with exit ${result.exitCode}`)
   }
-  return capture ? result.stdout.toString().trim() : ''
+  return ''
 }
 
 function ensureDarwin(): void {
